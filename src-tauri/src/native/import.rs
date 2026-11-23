@@ -61,14 +61,6 @@ const IDENTIFIERS: &[&str] = &[crate::identity::RELEASE.identifier, "ai.sprouter
 #[cfg_attr(not(windows), allow(dead_code))]
 const TEST_IDENTIFIERS: &[&str] = &[crate::identity::TEST.identifier, "ai.sprouter.luna.test"];
 
-/// The product the installer installs this build as (identity.rs): its
-/// folder in `LOCALAPPDATA` and its key under `HKCU\Software\luna`, where
-/// the installer keeps the folder it chose.
-#[cfg_attr(not(windows), allow(dead_code))]
-const PRODUCT: &str = crate::identity::RELEASE.product;
-#[cfg_attr(not(windows), allow(dead_code))]
-const TEST_PRODUCT: &str = crate::identity::TEST.product;
-
 /// Where the import looks: the data dir's profile, then, only where its
 /// store is surely not there, the `legacy` ones in order.
 #[derive(Debug, PartialEq)]
@@ -117,13 +109,13 @@ fn sources_here(data: &Path) -> Option<Sources> {
 
 /// Whether this exe is an installed Luna: its folder is the one the
 /// installer puts this build in for this user (the folder it keeps under
-/// `HKCU\Software\luna\<product>`, else `LOCALAPPDATA\<product>`, as
+/// `HKCU\Software\<identifier>`, else `LOCALAPPDATA\rm-luna`, as
 /// installer.nsi chooses), with the uninstaller beside it.
 #[cfg(windows)]
 fn installed(app_local: Option<&Path>) -> bool {
-    let product = if crate::paths::is_test() { TEST_PRODUCT } else { PRODUCT };
+    let id = if crate::paths::is_test() { crate::identity::TEST.identifier } else { crate::identity::RELEASE.identifier };
     let Some(exe_dir) = crate::paths::exe_dir() else { return false };
-    let Some(install) = registered_install(product).or_else(|| app_local.map(|l| l.join(product))) else { return false };
+    let Some(install) = registered_install(id).or_else(|| app_local.map(|l| l.join(crate::paths::APP_DIR))) else { return false };
     is_install(&exe_dir, &install)
 }
 
@@ -134,13 +126,13 @@ fn is_install(dir: &Path, install: &Path) -> bool {
     crate::paths::same_dir(dir, install) && dir.join("uninstall.exe").is_file()
 }
 
-/// The folder the installer last installed `product` in for this user, as
-/// it keeps it (installer.nsi's `MANUPRODUCTKEY`, Tauri's template's too).
+/// The folder the installer last installed the build of identifier `id` in
+/// for this user, as it keeps it (installer.nsi's `PRODUCTKEY`).
 #[cfg(windows)]
-fn registered_install(product: &str) -> Option<PathBuf> {
+fn registered_install(id: &str) -> Option<PathBuf> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
-    let key = HSTRING::from(format!("Software\\luna\\{product}"));
+    let key = HSTRING::from(format!("Software\\{id}"));
     let mut bytes = 0u32;
     // SAFETY: `key` outlives the call; with no buffer it only sizes the value.
     unsafe { RegGetValueW(HKEY_CURRENT_USER, &key, PCWSTR::null(), RRF_RT_REG_SZ, None, None, Some(&mut bytes)) }.ok().ok()?;
@@ -817,13 +809,11 @@ mod tests {
         }
     }
 
-    /// The identifiers looked under are the ones the builds have now, first,
-    /// and the install's folder is named for the builds' products.
+    /// The identifiers looked under are the ones the builds have now, first.
     #[test]
-    fn the_identifiers_and_products_are_the_builds_own() {
+    fn the_identifiers_are_the_builds_own() {
         use crate::identity::{RELEASE, TEST};
         assert_eq!((IDENTIFIERS[0], TEST_IDENTIFIERS[0]), (RELEASE.identifier, TEST.identifier));
-        assert_eq!((PRODUCT, TEST_PRODUCT), (RELEASE.product, TEST.product));
     }
 
     #[test]

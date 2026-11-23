@@ -943,11 +943,14 @@ fn fetchable(url: &str) -> bool {
 }
 
 /// The name an installer is staged under: the app's own, never the URL's
-/// name or extension, as `latest.json` is not signed. The name Tauri's
-/// bundler and `build-windows.ps1` give the setup.
+/// name or extension, as `latest.json` is not signed. The name
+/// `build-windows.ps1` gives the setup.
 pub fn file_name(version: &semver::Version) -> String {
-    format!("Luna_{version}_x64-setup.exe")
+    format!("{SETUP_PREFIX}{version}_x64-setup.exe")
 }
+
+/// What a setup's name starts with, before its version (`file_name`).
+const SETUP_PREFIX: &str = "rm-luna_";
 
 /// Whether `bytes` are an NSIS setup, as makensis writes one (Luna's own and
 /// Tauri's alike): its stub, a 32-bit x86 GUI executable whatever it
@@ -1109,7 +1112,7 @@ pub struct Cleared {
 /// Whether `name` is one `file_name` gives for some version, exactly: the
 /// only names `clear_downloads` deletes.
 fn staged_name(name: &str) -> bool {
-    let version = name.strip_prefix("Luna_").and_then(|rest| rest.strip_suffix("_x64-setup.exe"));
+    let version = name.strip_prefix(SETUP_PREFIX).and_then(|rest| rest.strip_suffix("_x64-setup.exe"));
     version.and_then(|v| semver::Version::parse(v).ok()).is_some_and(|v| file_name(&v) == name)
 }
 
@@ -1910,7 +1913,7 @@ pub(crate) mod tests {
             "pub_date": "2026-11-30T12:00:00Z",
             "platforms": { platform: {
                 "signature": "c2ln",
-                "url": format!("https://github.com/nrubinmosin/luna/releases/download/v{version}/Luna_{version}_x64-setup.exe"),
+                "url": format!("https://github.com/nrubinmosin/luna/releases/download/v{version}/rm-luna_{version}_x64-setup.exe"),
             } },
         })
         .to_string()
@@ -1933,7 +1936,7 @@ pub(crate) mod tests {
         assert_eq!(got.notes.as_deref(), Some("Luna in a native window"));
         assert_eq!(got.core_fingerprint.as_deref(), Some("0123456789abcdef"));
         assert_eq!(got.signature, "c2ln");
-        assert!(got.url.ends_with("/v0.20.0/Luna_0.20.0_x64-setup.exe"));
+        assert!(got.url.ends_with("/v0.20.0/rm-luna_0.20.0_x64-setup.exe"));
         // The -nsis key first, as the plugin looks.
         let both = r#"{"version":"0.20.0","platforms":{
             "windows-x86_64":{"url":"https://a/plain.exe","signature":"p"},
@@ -2006,8 +2009,8 @@ pub(crate) mod tests {
 
     #[test]
     fn the_installer_is_staged_under_the_apps_name_whatever_the_url_says() {
-        assert_eq!(file_name(&v("0.20.0")), "Luna_0.20.0_x64-setup.exe");
-        assert_eq!(file_name(&v("0.21.0-rc.1")), "Luna_0.21.0-rc.1_x64-setup.exe");
+        assert_eq!(file_name(&v("0.20.0")), "rm-luna_0.20.0_x64-setup.exe");
+        assert_eq!(file_name(&v("0.21.0-rc.1")), "rm-luna_0.21.0-rc.1_x64-setup.exe");
     }
 
     #[test]
@@ -2081,7 +2084,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_restart_arguments_go_only_when_the_whole_command_line_fits() {
-        let file = r"C:\Users\a\AppData\Local\Luna\updates\Luna_0.21.0_x64-setup.exe";
+        let file = r"C:\Users\a\AppData\Local\Luna\updates\rm-luna_0.21.0_x64-setup.exe";
         let args = ["--after".to_string(), "4242".to_string()];
         assert_eq!(parameters_for(file, &args).unwrap(), "/P /UPDATE /R /ARGS --after 4242");
         // Exactly at the limit, and one unit over: then none of them, not some.
@@ -2173,12 +2176,12 @@ pub(crate) mod tests {
         let mut seen = Vec::new();
         let got =
             download(&config, &release(&base, "evil.bat?x=1", key.sign(SETUP, "0.20.0")), &root, |n, total| seen.push((n, total))).unwrap();
-        assert_eq!(got.path(), dir.join("Luna_0.20.0_x64-setup.exe"));
+        assert_eq!(got.path(), dir.join("rm-luna_0.20.0_x64-setup.exe"));
         assert_eq!(std::fs::read(got.path()).unwrap(), SETUP);
         assert_eq!(seen.last(), Some(&(SETUP.len() as u64, Some(SETUP.len() as u64))));
         // The setup and the record that it is Luna's, nothing else.
-        assert_eq!(listed(&dir), ["Luna_0.20.0_x64-setup.exe", "Luna_0.20.0_x64-setup.exe.staged"]);
-        assert_eq!(std::fs::read(dir.join("Luna_0.20.0_x64-setup.exe.staged")).unwrap(), STAGED_BY);
+        assert_eq!(listed(&dir), ["rm-luna_0.20.0_x64-setup.exe", "rm-luna_0.20.0_x64-setup.exe.staged"]);
+        assert_eq!(std::fs::read(dir.join("rm-luna_0.20.0_x64-setup.exe.staged")).unwrap(), STAGED_BY);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2423,18 +2426,18 @@ pub(crate) mod tests {
 
     #[test]
     fn only_the_names_file_name_gives_are_taken_for_staged_setups() {
-        for name in ["Luna_0.20.0_x64-setup.exe", "Luna_1.2.3-rc.1_x64-setup.exe"] {
+        for name in ["rm-luna_0.20.0_x64-setup.exe", "rm-luna_1.2.3-rc.1_x64-setup.exe"] {
             assert!(staged_name(name), "{name}");
         }
         for name in [
-            "Luna_0.20_x64-setup.exe",
-            "Luna_00.20.0_x64-setup.exe",
-            "luna_0.20.0_x64-setup.exe",
-            "Luna_0.20.0_x64-setup.EXE",
-            "Luna_0.20.0_x64-setup.exe.bak",
-            "Luna_0.20.0_x64-setup.exe.0a1b2c3d.tmp",
+            "rm-luna_0.20_x64-setup.exe",
+            "rm-luna_00.20.0_x64-setup.exe",
+            "RM-LUNA_0.20.0_x64-setup.exe",
+            "rm-luna_0.20.0_x64-setup.EXE",
+            "rm-luna_0.20.0_x64-setup.exe.bak",
+            "rm-luna_0.20.0_x64-setup.exe.0a1b2c3d.tmp",
             "Luna Test_0.19.0_x64-setup.exe",
-            "Luna__x64-setup.exe",
+            "rm-luna__x64-setup.exe",
             "setup.exe",
         ] {
             assert!(!staged_name(name), "{name}");
@@ -2474,14 +2477,14 @@ pub(crate) mod tests {
         assert!(!dir.exists(), "no updates/ is made");
 
         let stage = Stage::open(&root).unwrap();
-        let old = ["Luna_0.20.0_x64-setup.exe", "Luna_0.21.0-rc.1_x64-setup.exe", "notes.exe", "Luna_0.20.0_x64-setup.exe.bak"];
-        for name in old.iter().chain(&["Luna_0.20.1_x64-setup.exe"]) {
+        let old = ["rm-luna_0.20.0_x64-setup.exe", "rm-luna_0.21.0-rc.1_x64-setup.exe", "notes.exe", "rm-luna_0.20.0_x64-setup.exe.bak"];
+        for name in old.iter().chain(&["rm-luna_0.20.1_x64-setup.exe"]) {
             stage.stage_setup(name, SETUP).unwrap();
         }
         // A setup's name, private and old, but not one Luna staged: no record.
-        stage.write("Luna_0.18.0_x64-setup.exe", SETUP).unwrap();
+        stage.write("rm-luna_0.18.0_x64-setup.exe", SETUP).unwrap();
         drop(stage);
-        for name in old.iter().chain(&["Luna_0.18.0_x64-setup.exe"]) {
+        for name in old.iter().chain(&["rm-luna_0.18.0_x64-setup.exe"]) {
             staged_long_ago(&dir, name);
         }
         // Staged long ago too, but held as `install` holds it: on Windows
@@ -2489,34 +2492,34 @@ pub(crate) mod tests {
         // staged just now.
         #[cfg(windows)]
         let held = {
-            staged_long_ago(&dir, "Luna_0.20.1_x64-setup.exe");
-            open_held(&dir.join("Luna_0.20.1_x64-setup.exe")).unwrap()
+            staged_long_ago(&dir, "rm-luna_0.20.1_x64-setup.exe");
+            open_held(&dir.join("rm-luna_0.20.1_x64-setup.exe")).unwrap()
         };
         // A staged name with its record, on a file that is not Luna's private one.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::write(dir.join("Luna_0.19.0_x64-setup.exe"), SETUP).unwrap();
-            std::fs::set_permissions(dir.join("Luna_0.19.0_x64-setup.exe"), std::fs::Permissions::from_mode(0o644)).unwrap();
-            staged_long_ago(&dir, "Luna_0.19.0_x64-setup.exe");
-            Stage::open(&root).unwrap().write("Luna_0.19.0_x64-setup.exe.staged", STAGED_BY).unwrap();
+            std::fs::write(dir.join("rm-luna_0.19.0_x64-setup.exe"), SETUP).unwrap();
+            std::fs::set_permissions(dir.join("rm-luna_0.19.0_x64-setup.exe"), std::fs::Permissions::from_mode(0o644)).unwrap();
+            staged_long_ago(&dir, "rm-luna_0.19.0_x64-setup.exe");
+            Stage::open(&root).unwrap().write("rm-luna_0.19.0_x64-setup.exe.staged", STAGED_BY).unwrap();
         }
         let mut cleared = clear_downloads(&root);
         cleared.deleted.sort();
-        assert_eq!(cleared.deleted, ["Luna_0.20.0_x64-setup.exe", "Luna_0.21.0-rc.1_x64-setup.exe"]);
+        assert_eq!(cleared.deleted, ["rm-luna_0.20.0_x64-setup.exe", "rm-luna_0.21.0-rc.1_x64-setup.exe"]);
         assert!(cleared.failed.is_empty(), "{:?}", cleared.failed);
         // Each deleted with its record; every other file there as it was.
         let mut kept = vec![
-            "Luna_0.18.0_x64-setup.exe",
-            "Luna_0.20.0_x64-setup.exe.bak",
-            "Luna_0.20.0_x64-setup.exe.bak.staged",
-            "Luna_0.20.1_x64-setup.exe",
-            "Luna_0.20.1_x64-setup.exe.staged",
             "notes.exe",
             "notes.exe.staged",
+            "rm-luna_0.18.0_x64-setup.exe",
+            "rm-luna_0.20.0_x64-setup.exe.bak",
+            "rm-luna_0.20.0_x64-setup.exe.bak.staged",
+            "rm-luna_0.20.1_x64-setup.exe",
+            "rm-luna_0.20.1_x64-setup.exe.staged",
         ];
         if cfg!(unix) {
-            kept.splice(1..1, ["Luna_0.19.0_x64-setup.exe", "Luna_0.19.0_x64-setup.exe.staged"]);
+            kept.splice(3..3, ["rm-luna_0.19.0_x64-setup.exe", "rm-luna_0.19.0_x64-setup.exe.staged"]);
         }
         assert_eq!(listed(&dir), kept);
         #[cfg(windows)]
@@ -2524,12 +2527,12 @@ pub(crate) mod tests {
 
         // A link or junction in place of updates/: nothing goes through it.
         std::fs::remove_dir_all(&dir).unwrap();
-        std::fs::write(elsewhere.join("Luna_0.19.0_x64-setup.exe"), SETUP).unwrap();
-        staged_long_ago(&elsewhere, "Luna_0.19.0_x64-setup.exe");
+        std::fs::write(elsewhere.join("rm-luna_0.19.0_x64-setup.exe"), SETUP).unwrap();
+        staged_long_ago(&elsewhere, "rm-luna_0.19.0_x64-setup.exe");
         link_dir(&dir, &elsewhere);
         let linked = clear_downloads(&root);
         assert!(linked.deleted.is_empty() && !linked.failed.is_empty(), "{linked:?}");
-        assert_eq!(listed(&elsewhere), ["Luna_0.19.0_x64-setup.exe"]);
+        assert_eq!(listed(&elsewhere), ["rm-luna_0.19.0_x64-setup.exe"]);
         unlink_dir(&dir);
         // A file in its place: left, and said.
         std::fs::write(&dir, b"").unwrap();

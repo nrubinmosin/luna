@@ -592,7 +592,7 @@ mod tests {
         let mut hidden = vec![own("report"), solo];
         hidden.sort();
         assert_eq!(helper.args.len(), 4);
-        assert_eq!(helper.args[..2], ["-c", "plugins.repo@luna.enabled=true"]);
+        assert_eq!(helper.args[..2], ["-c", "plugins.repo@rm-luna.enabled=true"]);
         assert_eq!(helper.args[2..], off(&hidden));
     }
 

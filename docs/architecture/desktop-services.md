@@ -172,11 +172,14 @@ own, loads `nvapi64.dll` from System32 (no other folder), and where there is
 an NVIDIA driver opens a session on its profiles. It never changes a profile
 it did not make without the person's yes: the one the driver resolves
 `luna.exe` to by its bare name (NVIDIA ships one named "Luna", a game's)
-applies to every exe of that name.
+applies to every exe of that name. So the installed exe is `rm-luna.exe`,
+and its core's copy `rm-luna-core.exe`, names no profile holds: 0.19 to
+0.20 installed `luna.exe`, which never had a profile of Luna's.
 Where the exe is off already, or a profile holds the exe's own full path (a
 person's choice), it writes nothing. Else it makes its own profile, named
-"Luna (native window, G-SYNC off)" and eight random hex digits, with the
-running exe by its full path (`c:/…/luna.exe`, which nvapi.h recommends and
+"rm-luna native window (G-SYNC off)" and eight random hex digits (no comma: the
+driver refuses one in a profile name, see "Seen on" below), with the
+running exe by its full path (`c:/…/rm-luna.exe`, which nvapi.h recommends and
 the driver matches before a bare name) and the setting at Force Off, and asks
 the session once more which profile the full path resolves to
 (`NvAPI_DRS_FindApplicationByName`, which for a full path answers with the
@@ -220,7 +223,7 @@ applied before, else the person's earlier value set again; a value changed
 since, or a profile gone, is left, and the record goes. A predefined profile
 is never removed, and no other setting in it is touched.
 
-Luna's application entries are its mark: each has a friendly name "Luna
+Luna's application entries are its mark: each has a friendly name "rm-luna
 (…)" with a marker of 16 random hex digits, the record's, and nothing else
 set (no launcher, file in the folder, command line or flag). A profile is
 Luna's only while it is not predefined and holds such an entry for a path
@@ -253,8 +256,11 @@ folder is no link or junction and the record a private file of one name,
 owned by this user's own SID (not Administrators, SYSTEM or
 TrustedInstaller), opened without following a link
 (`secret::read_own_private`), written by a build of the same flavor and
-naming a profile of Luna's naming; else it is left as it is and the window
-shows the notice. A window run as administrator leaves the profiles alone
+naming a profile of Luna's naming (for a release, a record naming the
+earlier "Luna (native window, G-SYNC off) …" counts too, its marker still
+asked of the profile; driver 621.24 refuses that name, and a profile found
+without a record is Luna's only under the current name); else it is left as
+it is and the window shows the notice. A window run as administrator leaves the profiles alone
 and says so in the log: Windows gives what an elevated admin's run makes to
 Administrators, so its record would not be read, and `paths::data_dir`,
 which takes the exe's folder where the process may write there, may not be
@@ -293,8 +299,8 @@ undo does the same. The undo exits 2 (administrator
 rights), 3 (record refused, a window's start held the lock 30 seconds, or
 run as administrator), 4 (something of Luna's may be left) or 1, with a line
 the uninstaller shows. The test build only reads, unless
-`LUNA_TEST_NVIDIA=write` (a live test's), and then names its profile "Luna
-test build (G-SYNC off) …"; it acts on no release's record, nor a release on
+`LUNA_TEST_NVIDIA=write` (a live test's), and then names its profile
+"rm-luna test build (G-SYNC off) …"; it acts on no release's record, nor a release on
 its. NVAPI's ids and structure layouts are those of NVIDIA's MIT-licensed
 headers, no SDK linked; the structures' sizes are held to the headers' in
 unit tests, and the record's logic is tested over a fake of the calls
@@ -338,8 +344,23 @@ The 0.20.1 release logged `NVAPI error -1` (`NVAPI_ERROR`) instead, once,
 0.6 s after its update restarted it; it did not log which call, and the
 same steps on the same path, replayed since, answer -167 at
 `NvAPI_DRS_CreateApplication` every time, so that -1 was not reproduced, and
-which call answered it is not known; the trail now in the log would say. A full read-only dump of the database through
-NVAPI (every profile, entry and setting) was the same before and after.
+which call answered it was not known then; the trail now in the log would
+say; the profile's name, below, gets -1 at `NvAPI_DRS_CreateProfile`,
+which fits. A full read-only dump of the database through NVAPI (every profile, entry and setting) was the same
+before and after.
+
+Seen on the same driver on 2026-11-23, with a probe in a session that never
+saved: `NvAPI_DRS_CreateProfile` answers `NVAPI_ERROR` (-1) for a name with
+a comma. "Luna (native window, G-SYNC off) 0123abcd", the release's name
+before, was refused; "Luna (native window G-SYNC off) 0123abcd" was made.
+So release builds of 0.20.1 and 0.20.2, which have that name, make no
+profile on that driver, and 0.20.2's question about NVIDIA's "Luna" (0.20.1
+has none) is never reached, as the profile is made before its entry; while the test build's "Luna test build (G-SYNC off) …" (its name then) was made, took
+`luna-test.exe` and saved, the same day on the same driver. A read-only dump
+of the database had 8056 profiles, none with a comma in its name; titles
+that have one are stored without it ("Warhammer 40000: …"). Luna's profile
+name now holds only characters seen in names the driver took (letters,
+digits, space, `-`, `(` and `)`).
 
 Seen on the same driver on 2026-11-23, unelevated: NVIDIA's "Luna" has no
 `VRR_APP_OVERRIDE` of its own (`NvAPI_DRS_GetSetting` answers it from the
@@ -431,7 +452,7 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   (link, junction or other) and belongs to this user, Administrators, SYSTEM
   or TrustedInstaller (root on Unix), checked before the download, before
   the file is written and again at the install (`check_root`); under the
-  app's own name, `Luna_<version>_x64-setup.exe`, never the URL's name or
+  app's own name, `rm-luna_<version>_x64-setup.exe`, never the URL's name or
   extension (`latest.json` is not signed), written private (`write_private`)
   only after it checked out. The plugin wrote it to the system's temp
   folder, and left it there (`%TEMP%\<product>-<version>-updater-*`). As
@@ -552,8 +573,8 @@ the refusal offers Retry, Install anyway and Cancel
 
 `windows/installer.nsi`, built with makensis (NSIS 3.11, in the Windows build
 image) by `scripts/build-windows.ps1 -Installer`, into the folder and under
-the name Tauri's bundler gave 0.19's setup
-(`…/release/bundle/nsis/Luna_<version>_x64-setup.exe`). It includes
+the name the release scripts find it by
+(`…/release/bundle/nsis/rm-luna_<version>_x64-setup.exe`). It includes
 `windows/hooks.nsh` unchanged and calls its hooks where Tauri's template does,
 but for the uninstall's order: the install folder's DACL before the first
 file; on uninstall the running check first, which closes the window, then
@@ -574,18 +595,28 @@ license texts are in `third-party-licenses/installer/tauri-nsis-template/`
 and its entry in `components.json` puts them in the installed
 `THIRD-PARTY-NOTICES.txt`.
 
-Compared with Tauri's template:
+Compared with Tauri's template (0.21 takes over none of 0.19 to 0.20's
+names: it is installed fresh. In `.onInit` it refuses to install while
+0.20's uninstall record names an exe that is there (they would share the
+shortcut and the AUMID), and refuses an update, `/UPDATE`, unless its own
+uninstall key and `rm-luna.exe` in the folder are there, as when a 0.20
+Luna's updater runs it: exit code 2, a message that says to start Luna
+again where an updater stopped the sessions, nothing changed, and the old
+Luna is not started again. Uninstalling removes the `core` and `webview`
+folders under `%LOCALAPPDATA%\rm-luna` only where the install folder takes
+no file, so that that folder is this install's data folder
+(`un.LunaDataIsLocal`)):
 
 | | Tauri's (0.19) | Native |
 | --- | --- | --- |
-| Product, identifier, publisher, exe | `Luna`, `rm.luna`, `luna`, `luna.exe` | the same |
+| Product, identifier, publisher, exe | `Luna`, `rm.luna`, `luna`, `luna.exe` | the same, but the exe: `rm-luna.exe` |
 | Mode | per user (`currentUser`), `RequestExecutionLevel user` | the same |
-| Folder | `%LOCALAPPDATA%\Luna`, or `HKCU\Software\luna\Luna`'s last one, or `/D=` | the same |
-| Uninstall key | `HKCU\…\Uninstall\Luna`, the same values (DisplayName, DisplayIcon, DisplayVersion, Publisher, InstallLocation, UninstallString, NoModify, NoRepair, EstimatedSize, MainBinaryName) | the same; EstimatedSize counts the exe, uninstaller and notices, not the folder, which is the data folder too |
+| Folder | `%LOCALAPPDATA%\Luna`, or `HKCU\Software\luna\Luna`'s last one, or `/D=` | `%LOCALAPPDATA%\rm-luna` (the data dir's fallback too), or `HKCU\Software\rm.luna`'s last one (its default value; the installer's language beside it), or `/D=` |
+| Uninstall key | `HKCU\…\Uninstall\Luna`, its values DisplayName, DisplayIcon, DisplayVersion, Publisher, InstallLocation, UninstallString, NoModify, NoRepair, EstimatedSize, MainBinaryName | `HKCU\…\Uninstall\rm.luna`, the same values (DisplayName still Luna); EstimatedSize counts the exe, uninstaller and notices, not the folder, which is the data folder too |
 | Shortcuts | `%APPDATA%\…\Start Menu\Programs\Luna.lnk` with AUMID `rm.luna`; a desktop one on a passive or silent first install, or from the finish page | the same |
 | Command line | `/S`, `/P`, `/UPDATE`, `/R`, `/ARGS`, `/NS`, `/D=` | the same |
 | A running Luna | Restart Manager: asked, or closed at once when passive or silent | the same |
-| Uninstall | shortcuts unpinned and removed, the AUMID's jump list cleared, the Run entry removed; "Delete the application data" removes the install-location key and `%APPDATA%`/`%LOCALAPPDATA%\rm.luna` | the same |
+| Uninstall | shortcuts unpinned and removed, the AUMID's jump list cleared, the Run entry removed; "Delete the application data" removes the install-location key and `%APPDATA%`/`%LOCALAPPDATA%\rm.luna` | the same, but for the Run entry: the RunOnce value `rm.luna` a restart of Luna's left (power/machine.rs `run_once`) |
 | WebView2 | bootstrapped when missing | gone: no WebView |
 | A previous install | a page offering to uninstall it first (not on an update) | always installed in place, as an update is |
 | Helper DLL | `nsis_tauri_utils` (semver compare, de-elevated start, string replace), downloaded on every build | none: the restart is `LunaRunAsUser`, the desktop shell's `IShellDispatch2::ShellExecute` called through the System plug-in, so Luna runs as the shell does and in its environment, asked only when the shell's own token is not elevated (`TokenElevation` of the desktop window's process, `LunaElevation`: an explorer run elevated, as an administrator's is with UAC off, would start Luna elevated too); otherwise, or with no shell to ask, started directly only when the setup's own token is not elevated; when it is, or either token cannot be read, not started at all, and the details say so |
@@ -610,17 +641,14 @@ Luna that was itself started with such an argument, by whoever started it,
 carries one; and whoever can start Luna with arguments of their choosing
 already runs as this user.
 
-**Over 0.19.** The 0.19 window downloads the 0.20 setup (`latest.json`
-unchanged in form), checks its signature with the same key, stops the
-sessions unless the core fingerprint matches, and runs it with
-`/P /UPDATE /R /ARGS`. The native installer finds the folder in
-`HKCU\Software\luna\Luna`, closes what is left of Luna, makes the folder
-private again (hooks.nsh), overwrites `luna.exe`, `uninstall.exe` and the
-notices in place, rewrites the same uninstall key with the new version,
-leaves the shortcut and its pins alone, and starts the new `luna.exe`. From
-then on `uninstall.exe` is the native one, which removes what either
-installed. The data folder is untouched; the `webview\` profile 0.19 left
-stays until the app data is deleted on uninstall.
+**Over 0.20.** None: 0.20's updater downloads and starts the 0.21 setup
+with `/P /UPDATE /R /ARGS` and ends its window (native/desktop.rs
+`install_with` at v0.20.2, which does not wait for the setup); the setup
+finds no `HKCU\Software\rm.luna` and refuses. The 0.20 core the window
+held for the install stays up, its sessions stopped, until a 0.20 window
+comes back (which calls the update off and resumes them) or it has had no
+window and no session for ten minutes. The switch is by hand
+([updates](../user-guide/updates.md#switching-from-020)).
 
 **What a partial install leaves, accepted.** The setup's checks of NSIS's
 error flag (the table above) stop it before the restart, not undo what
@@ -635,7 +663,7 @@ anything.
 ## macOS bundle
 
 `scripts/macos-app.sh <exe> <version> <out-dir>` writes `Luna.app`:
-`Contents/MacOS/luna`, `Info.plist` (identifier `rm.luna`, name Luna, the
+`Contents/MacOS/rm-luna` (`CFBundleExecutable`), `Info.plist` (identifier `rm.luna`, name Luna, the
 version as both version strings, `LSMinimumSystemVersion` 10.15.7, Retina),
 `PkgInfo`, and `Resources/icon.icns` made from `icons/icon.png` with sips
 and iconutil. It is sealed with an ad-hoc signature (`codesign -s -`, no

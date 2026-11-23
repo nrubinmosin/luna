@@ -400,12 +400,13 @@ function Assert-NoLinkBelow([string]$Root, [string]$Path) {
 function Find-ReleaseArtifacts([string]$Version, [string]$Dir = $ReleaseBuildDir, [string]$Root = $RepoRoot) {
     $nsis = Join-Path $Dir 'bundle/nsis'
     Assert-NoLinkBelow $Root $nsis
-    # By version, not by whatever comes first: the bundle folder keeps every
-    # installer ever built there, and picking the first one alphabetically is
-    # how v0.2.0 went out carrying the 0.1.0 setup and its signature, an update
-    # that offered a build its own version.
-    $setup = Get-ChildItem -LiteralPath $nsis -Filter "*_${Version}_*-setup.exe" -ErrorAction SilentlyContinue |
-        Select-Object -First 1
+    # By its exact name (build-windows.ps1's OUTFILE), not by whatever comes
+    # first: the bundle folder keeps every installer ever built there, and
+    # picking the first one alphabetically is how v0.2.0 went out carrying the
+    # 0.1.0 setup and its signature, an update that offered a build its own
+    # version. A folder an older build used also holds setups of 0.20's name,
+    # Luna_<version>_x64-setup.exe, the same version's among them.
+    $setup = Get-Item -LiteralPath (Join-Path $nsis "rm-luna_${Version}_x64-setup.exe") -ErrorAction SilentlyContinue
     if (-not $setup) { throw "no installer for $Version in $nsis" }
     $found = [pscustomobject]@{
         Setup       = $setup.FullName

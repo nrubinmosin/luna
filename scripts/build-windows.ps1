@@ -52,7 +52,7 @@ pe=`$(od -An -tu4 -j60 -N4 $release/luna.exe | tr -d ' ')
 machine=`$(od -An -tx2 -j`$((pe + 4)) -N2 $release/luna.exe | tr -d ' ')
 test `$machine = 8664 || { echo luna.exe is not an AMD64 image, its PE machine is 0x`$machine >&2; exit 1; }
 mkdir -p $release/bundle/nsis
-makensis -V3 -WX -DVERSION=$version -DVIVERSION=$viVersion -DMAINBINARYSRCPATH=/app/$release/luna.exe -DNOTICES=/app/src-tauri/target/THIRD-PARTY-NOTICES.txt -DINSTALLERICON=/app/src-tauri/icons/icon.ico -DOUTFILE=/app/$release/bundle/nsis/Luna_${version}_x64-setup.exe src-tauri/windows/installer.nsi
+makensis -V3 -WX -DVERSION=$version -DVIVERSION=$viVersion -DMAINBINARYSRCPATH=/app/$release/luna.exe -DNOTICES=/app/src-tauri/target/THIRD-PARTY-NOTICES.txt -DINSTALLERICON=/app/src-tauri/icons/icon.ico -DOUTFILE=/app/$release/bundle/nsis/rm-luna_${version}_x64-setup.exe src-tauri/windows/installer.nsi
 "@
 }
 

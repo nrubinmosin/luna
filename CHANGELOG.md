@@ -8,6 +8,53 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-23
+
+Luna's window no longer makes a G-SYNC monitor stutter: on Windows Luna is
+now `rm-luna.exe` and turns G-SYNC off for itself in its own NVIDIA
+profile, as the driver does for browsers. 0.21 is installed fresh, not
+over 0.20: see Switching from 0.20 in the user guide.
+
+### Breaking
+
+- 0.21 must be installed fresh: it does not update 0.20 in place. On
+  Windows its exe is `rm-luna.exe` (was `luna.exe`), so that Luna can have
+  its own NVIDIA profile with G-SYNC off: NVIDIA's "Luna" profile holds the
+  name `luna.exe`, and the driver lets no other profile have a program of
+  that name. Its registry keys are `HKCU\Software\rm.luna` and the uninstall
+  key `rm.luna` (were `Software\luna\Luna` and `Luna`), its default folder
+  and data fallback folder `rm-luna` (was `Luna`, `luna`; on Unix the temp
+  fallback `rm-luna-<uid>`), its setup `rm-luna_<version>_x64-setup.exe`,
+  the restart's RunOnce value `rm.luna`, the test build `rm-luna-test.exe`
+  and the macOS bundle's executable `rm-luna`. 0.20's updater offers 0.21,
+  but its setup stops with a message (exit code 2) and changes nothing, as
+  it does while 0.20 is installed: uninstall 0.20 first. See
+  [Switching from 0.20](docs/user-guide/updates.md#switching-from-020).
+
+### Changed
+
+- The names Luna leaves on Windows and in Codex accounts carry the `rm-`
+  prefix: the core's named pipe is `\\.\pipe\rm-luna-core-<32 hex>`, the
+  native window's frame property `rm-luna-frame-demand`, and the Codex
+  plugin marketplace of the library's folder skills `rm-luna`
+  (`plugins/cache/rm-luna/`, `-c plugins.<slug>@rm-luna.enabled=true`). The
+  next library pass lays the folder skills out under the new name and takes
+  out the copies it had noted under `plugins/cache/luna/`; the rest of that
+  folder (manifests, empty folders) stays in each Codex account, inert, as
+  nothing turns an `@luna` plugin on any more. Remove `plugins/cache/luna/`
+  by hand after the switch.
+
+### Fixed
+
+- On release builds, Luna could not make its NVIDIA profile to turn G-SYNC
+  off for itself, and 0.20.2 never got to ask about NVIDIA's "Luna"
+  profile: driver 621.24
+  refuses a comma in a profile's name, which Luna's had, and the window
+  said G-SYNC could not be turned off (`NvAPI_DRS_CreateProfile`,
+  `NVAPI_ERROR`). The profile is now named "rm-luna native window (G-SYNC
+  off)" and a short code. Where Luna still cannot turn G-SYNC off, its hint
+  names the running exe's file name rather than `luna.exe`.
+
 ## [0.20.2] - 2026-11-23
 
 Luna asks before turning G-SYNC off in NVIDIA's own "Luna" profile, where

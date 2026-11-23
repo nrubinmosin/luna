@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-const APP_DIR: &str = "luna";
+/// The folder Luna's data falls back to, in the user's local data folder or
+/// the system's temp (`local_dir`, `last_resort_dir`); on Windows also the
+/// installer's default install folder (windows/installer.nsi `LOCALDIR`).
+pub(crate) const APP_DIR: &str = "rm-luna";
 
 /// The build scripts/test-build.ps1 makes. It runs beside the Luna in use, so it keeps
 /// everything — log, attachments, settings, downloaded CLIs — next to its exe
@@ -15,7 +18,7 @@ pub(crate) fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
-/// `LOCALAPPDATA\luna` (`Application Support/luna` on macOS): the data dir
+/// `LOCALAPPDATA\rm-luna` (`Application Support/rm-luna` on macOS): the data dir
 /// when the exe's own cannot be. None for the test build, which must not
 /// touch the real Luna's.
 pub fn local_dir() -> Option<PathBuf> {
@@ -60,7 +63,7 @@ pub fn data_dir() -> PathBuf {
 /// by): the system's temp folder, the one place left. On Windows that is the
 /// user's own (`LOCALAPPDATA\Temp`). On Unix it is `/tmp`, shared by every
 /// user and predictable, where another could make Luna's folder first and
-/// read or plant what Luna keeps there: so it is `luna-<uid>`, made `0700`,
+/// read or plant what Luna keeps there: so it is `rm-luna-<uid>`, made `0700`,
 /// and used only if it is a real folder of this user's that nobody else can
 /// get into. Otherwise Luna stops with the reason rather than run on a
 /// folder someone else holds; a temp folder of one's own is still better
@@ -120,6 +123,10 @@ const OWN_NAMES: &[&str] = &[
     "luna.window.sock",
     "mcp",
     "media",
+    // The G-SYNC profile's records and their lock (desktop/gsync.rs).
+    "nvidia-profile.json",
+    "nvidia-profile.lock",
+    "nvidia-setting.json",
     "quota-told.json",
     // Role layers too long for a Codex command line (library/role.rs `Spill`).
     "role-layers",
@@ -128,7 +135,12 @@ const OWN_NAMES: &[&str] = &[
     "session-skills",
     "settings.json",
     "settings.json.lock",
+    // The installer's, beside the exe (windows/installer.nsi). Lowercase:
+    // names are compared so.
+    "third-party-notices.txt",
     "tied-jobs",
+    // What the sessions were stopped for an update with (agents/persist.rs).
+    "update-stop.json",
     "updates",
     "webview",
     "window",
@@ -379,7 +391,7 @@ fn writable(dir: &Path) -> bool {
 }
 
 /// Whether two paths name one directory, whatever their spelling: on Windows
-/// `LOCALAPPDATA\luna` is the installed Luna's own `LOCALAPPDATA\Luna`.
+/// `LOCALAPPDATA\rm-luna` is `LOCALAPPDATA\RM-Luna`.
 pub fn same_dir(a: &Path, b: &Path) -> bool {
     matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
@@ -535,8 +547,29 @@ mod tests {
         for own in ["luna.exe", "Uninstall.exe", "webview", "agents.jsonl", "claude-cli", "settings.json.1a2b3c4d.tmp", "luna.log.1"] {
             assert!(lunas_own(own, "luna.exe"), "{own}");
         }
-        for other in ["notes.txt", "other.exe", "webview2", "settings.json.bak", "agents.jsonl.old", "luna-test.exe"] {
+        for other in ["notes.txt", "other.exe", "webview2", "settings.json.bak", "agents.jsonl.old", "rm-luna-test.exe"] {
             assert!(!lunas_own(other, "luna.exe"), "{other}");
+        }
+    }
+
+    /// Every file the installer puts in its folder is Luna's, so that an
+    /// install outside `local_dir` is made private whole.
+    #[test]
+    fn what_the_installer_installs_is_lunas_own() {
+        let nsi = include_str!("../windows/installer.nsi");
+        let define = |name: &str| {
+            let line = nsi.lines().find(|l| l.starts_with(&format!("!define {name} "))).unwrap();
+            line.split('"').nth(1).unwrap().to_string()
+        };
+        let exe = format!("{}.exe", define("MAINBINARYNAME"));
+        let installed: Vec<String> = nsi
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix(r#"File "/oname="#))
+            .map(|rest| rest.split('"').next().unwrap().replace("${MAINBINARYNAME}", &define("MAINBINARYNAME")))
+            .collect();
+        assert!(installed.len() >= 2 && installed.contains(&exe), "{installed:?}");
+        for name in installed.iter().chain([&"uninstall.exe".to_string()]) {
+            assert!(lunas_own(name, &exe), "{name}");
         }
     }
 

@@ -32,16 +32,18 @@ doubt, prepare and ask.
 - Whatever in this release hangs on the exe's name or path is proven under
   the release flavor's real names, not the test build's: NVIDIA driver
   profiles (the driver matches programs by exe name, and ships a "Luna"
-  profile of its own for any `luna.exe`), the installer and uninstaller,
+  profile of its own for any `luna.exe`, which is why the release's exe is
+  `rm-luna.exe`), the installer and uninstaller,
   Start-menu shortcuts and their app id, registry keys, file associations,
-  firewall rules. The test build is `luna-test.exe` with an identifier of its
-  own, so it passes where the release fails: 0.20.1's G-SYNC fix was proven
-  only as `luna-test.exe`, and on the first real machine the driver refused
-  every entry for `luna.exe`. Which proof holds depends on what the change
+  firewall rules. The test build is `rm-luna-test.exe` with an identifier of
+  its own, so it passes where the release fails: 0.20.1's G-SYNC fix was
+  proven only as `luna-test.exe`, and on the first real machine the driver
+  refused every entry for `luna.exe`, the release's exe then. Which proof holds depends on what the change
   hangs on:
   - the exe's file name or path (a driver profile, a firewall rule, anything
-    that matches `luna.exe`): a copy of the test build named `luna.exe` in a
-    folder of its own under `test-build/`, which then keeps its data there;
+    that matches `rm-luna.exe`): a copy of the test build named
+    `rm-luna.exe` in a folder of its own under `test-build/`, which then
+    keeps its data there;
   - the release's identity (its identifier and app id, product name,
     registry and uninstall keys, the shortcut, data paths): compiled in from
     `LUNA_FLAVOR` (`identity.rs`), so a renamed test build still carries the
@@ -169,7 +171,7 @@ gh release view v1.2.3 --json isDraft,assets,tagName,body
 gh release download v1.2.3 -D test-build/release-v1.2.3
 ```
 
-- **Assets**: the installer `Luna_1.2.3_x64-setup.exe`, its `.sig`,
+- **Assets**: the installer `rm-luna_1.2.3_x64-setup.exe`, its `.sig`,
   `latest.json`, `luna-1.2.3-cargo.cdx.json`,
   `luna-1.2.3-third-party-notices.txt` (from the `sbom` job) and
   `SHA256SUMS`. Nothing missing, nothing extra; it is still a draft.
@@ -208,7 +210,7 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
   the project's real dependencies; the third-party notices open with
   `Third-party notices for Luna 1.2.3`, this version, and list the components
   the installer carries, since they are the same file it installs beside
-  `luna.exe`. A file that hashes right can still be the wrong file.
+  `rm-luna.exe`. A file that hashes right can still be the wrong file.
 
 Report each check as passed or failed with the evidence (hashes compared,
 `gh attestation verify` result lines). Any failure means no publish: find the

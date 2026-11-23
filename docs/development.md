@@ -61,9 +61,9 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
 | `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there: the only place the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) compiles. Checkout mounted read-only; caches in named volumes |
-| `./scripts/test-build.ps1` | the test build, `test-build/luna-test.exe` (below); `-Test` is the Windows tests |
+| `./scripts/test-build.ps1` | the test build, `test-build/rm-luna-test.exe` (below); `-Test` is the Windows tests |
 | `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained), built with `cargo xwin build` |
-| `./scripts/build-windows.ps1 -Installer` | and the unsigned NSIS setup, made by makensis from `src-tauri/windows/installer.nsi`: `…/release/bundle/nsis/Luna_*_x64-setup.exe` ([below](#installer)) |
+| `./scripts/build-windows.ps1 -Installer` | and the unsigned NSIS setup, made by makensis from `src-tauri/windows/installer.nsi`: `…/release/bundle/nsis/rm-luna_*_x64-setup.exe` ([below](#installer)) |
 | `sh scripts/macos-app.sh <exe> <version> <out-dir>` | `Luna.app`, unsigned, from a macOS build of the exe; on a macOS runner (`LUNA_APP_DRY_RUN=1` elsewhere, as `scripts/macos-app.test.sh` in the gate does) |
 | `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Scale 100,125,175` shoots each at those window scales; `-Fit` runs the fit check ([below](#fit-on-small-screens)) and shoots each scene at its sizes |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
@@ -336,7 +336,7 @@ allowed in bulk.
 makensis, in the Windows build image (NSIS 3.11), over
 `src-tauri/windows/installer.nsi`, which includes `hooks.nsh`. The exe is
 built with `cargo xwin build`; the setup lands at
-  `…/release/bundle/nsis/Luna_<version>_x64-setup.exe`, beside the third-party
+  `…/release/bundle/nsis/rm-luna_<version>_x64-setup.exe`, beside the third-party
   notices it carries, where the release scripts look for it. Before makensis
   runs, the script refuses a `luna.exe` whose PE machine is not AMD64 (the
   setup itself is an x86 program, as every NSIS setup is). makensis runs
@@ -346,7 +346,11 @@ built with `cargo xwin build`; the setup lands at
   pre-release version (`x.y.z-pre`) names the setup in full and gives its
   version resource `x.y.z.0`. The script is adapted from Tauri's template,
   which its header credits and `third-party-licenses/` carries the license
-  of.
+  of. Cargo's `luna.exe` is installed as `rm-luna.exe`; the setup's names
+  are those of Luna's identifier, `rm.luna` (the uninstall key, the key
+  that keeps the install folder) and `rm-luna` (the default folder), not
+  those 0.19 to 0.20 had, so 0.21 is installed fresh
+  ([updates](user-guide/updates.md#switching-from-020)).
 
 It is never run on the development machine: an install writes the
 registry and the Start menu. The script is checked by compiling it, and by

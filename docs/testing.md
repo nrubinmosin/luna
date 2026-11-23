@@ -47,7 +47,7 @@ Run them:
   saturation, a posted hook reaching the activity tracker, MCP requests and
   their auth.
 - **Test-build smoke**: `./scripts/test-build.ps1 -Run -Background` builds and
-  starts the test flavor (`test-build/luna-test.exe`), which keeps its log,
+  starts the test flavor (`test-build/rm-luna-test.exe`), which keeps its log,
   settings and downloaded CLIs in `test-build/` and runs beside the Luna in use
   without touching it. `-DevCaller` also registers a scripted MCP caller, so
   Luna's tools can be exercised over HTTP (`agents/registry.rs`

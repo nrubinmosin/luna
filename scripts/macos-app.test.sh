@@ -26,8 +26,8 @@ if ! sh "$here/macos-app.sh" "$tmp/luna" 0.20.0 "$tmp/out" >/dev/null 2>"$tmp/er
     exit 1
 fi
 app="$tmp/out/Luna.app/Contents"
-check 'the exe is in MacOS/ as luna' cmp -s "$tmp/luna" "$app/MacOS/luna"
-check 'the exe is executable' test -x "$app/MacOS/luna"
+check 'the exe is in MacOS/ as rm-luna' cmp -s "$tmp/luna" "$app/MacOS/rm-luna"
+check 'the exe is executable' test -x "$app/MacOS/rm-luna"
 check 'PkgInfo says APPL' grep -qx 'APPL????' "$app/PkgInfo"
 plist="$app/Info.plist"
 # Each key followed by its value, as the plist pairs them.
@@ -35,7 +35,7 @@ pair() { # $1 = key, $2 = value line
     grep -A1 "<key>$1</key>" "$plist" | tail -n 1 | grep -qF "$2"
 }
 check 'the identifier' pair CFBundleIdentifier '<string>rm.luna</string>'
-check 'the executable' pair CFBundleExecutable '<string>luna</string>'
+check 'the executable' pair CFBundleExecutable '<string>rm-luna</string>'
 check 'the name' pair CFBundleName '<string>Luna</string>'
 check 'the version' pair CFBundleShortVersionString '<string>0.20.0</string>'
 check 'the build version' pair CFBundleVersion '<string>0.20.0</string>'

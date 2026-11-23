@@ -61,9 +61,11 @@ whole list, channel by channel, with what each costs and how to turn it off:
 
 ## Install
 
-Download the setup (`Luna_<version>_x64-setup.exe`) from
+Download the setup (`rm-luna_<version>_x64-setup.exe`) from
 [GitHub Releases](https://github.com/nrubinmosin/luna/releases/latest) and install
 it into any folder, on any drive: Luna keeps its data there and updates itself.
+Coming from 0.20, 0.21 does not update it in place: see
+[Switching from 0.20](docs/user-guide/updates.md#switching-from-020).
 
 **Supported OS:** Windows 11 x64. The macOS build is experimental and tested
 on GitHub's Apple silicon runners. Linux builds and tests run in Docker.

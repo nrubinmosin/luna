@@ -4,7 +4,7 @@
 # its own identifier and name (single instance, shortcut, toasts; identity.rs),
 # and its log, settings and downloaded CLIs all live next to its exe.
 #
-#   ./scripts/test-build.ps1                 build test-build\luna-test.exe
+#   ./scripts/test-build.ps1                 build test-build\rm-luna-test.exe
 #   ./scripts/test-build.ps1 -Run            build, then start it
 #   ./scripts/test-build.ps1 -Run -NoBuild   start the last build
 #   ./scripts/test-build.ps1 -Test           also build the Rust unit tests in Docker and
@@ -73,8 +73,8 @@ cargo xwin build --locked --release --target x86_64-pc-windows-msvc
 '@ $TestBuildEnv
     }
 
-    Copy-Item -Force (Join-Path $out 'target/x86_64-pc-windows-msvc/release/luna.exe') (Join-Path $out 'luna-test.exe')
-    Write-Host "built $out\luna-test.exe"
+    Copy-Item -Force (Join-Path $out 'target/x86_64-pc-windows-msvc/release/luna.exe') (Join-Path $out 'rm-luna-test.exe')
+    Write-Host "built $out\rm-luna-test.exe"
 }
 
 if ($Test) {
@@ -82,7 +82,7 @@ if ($Test) {
 }
 
 if ($Run) {
-    $exe = Join-Path $out 'luna-test.exe'
+    $exe = Join-Path $out 'rm-luna-test.exe'
     if (-not (Test-Path $exe)) { throw "no $exe yet - run without -NoBuild first" }
     # The test build's accounts are throwaway ones. A junction or symlink there
     # to a real account folder once had test helpers write their transcripts

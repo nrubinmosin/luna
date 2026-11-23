@@ -277,9 +277,10 @@ it lies in.
   takes them out. A session of a Luna that ran before the switch is not known
   to this one. A skill saved by name as `/luna-<name>` (the fallback's rename
   of a name the repository or the account had) is `/luna-<slug>:<name>` now.
-- **Codex:** a plugin in the account's `plugins/cache/luna/<slug>/local/`
-  (manifest written by Luna, outside the ledger), off until
-  `-c plugins.<slug>@luna.enabled=true`; listed as `<slug>:<name>`. The slug is
+- **Codex:** a plugin in the account's `plugins/cache/rm-luna/<slug>/local/`
+  (its manifest written by Luna and noted in the ledger's `manifests`, apart
+  from the copies it holds), off until
+  `-c plugins.<slug>@rm-luna.enabled=true`; listed as `<slug>:<name>`. The slug is
   `[a-z0-9-]`, no dots: Codex splits a `-c` key at each.
 - A folder's own reach per skill (`LibraryFolder::skills`) decides for its
   sessions; the deepest folder with one decides (`deciding`, `gets_in`). A copy
@@ -293,7 +294,7 @@ it lies in.
   (2.1.325, seen), which is why the plugin is made without what is hidden.
   Codex `-c skills.config=[{path=…, enabled=false}]`, by the path of the skill's
   `SKILL.md` (`skill_path`: the account's `skills/<name>/SKILL.md`, a folder's
-  plugin `plugins/cache/luna/<slug>/local/skills/<name>/SKILL.md`, written with
+  plugin `plugins/cache/rm-luna/<slug>/local/skills/<name>/SKILL.md`, written with
   slashes), as 0.169.0 takes it: not the folder's path, which hides nothing, and
   not the name, which a skill whose front matter names it otherwise than its
   folder, and a repository's skill of the same name, would both get wrong. Codex
@@ -400,7 +401,7 @@ Residuals, accepted:
 - A file a person adds to a skill's folder byte for byte what the library
   later adds to that skill is taken for Luna's (it is the library's already),
   and goes without a backup once the skill is no longer wanted there.
-- A `plugin.json` someone else put in Luna's own `luna` marketplace folder,
+- A `plugin.json` someone else put in Luna's own `rm-luna` marketplace folder,
   for a slug of a folder the library lists and gives skills, is written over
   and noted as Luna's.
 - Inside Luna's own data folder, foreign content under `library-blobs/`, or
@@ -418,7 +419,14 @@ taken out only where noted, so a plugin someone else put in Luna's
 marketplace folder keeps its manifest. Neither is done where a folder on the
 way down from the account's folder (`plugins`, `plugins/cache`, the
 marketplace, the plugin, `.codex-plugin`) or the manifest itself is a link or
-junction (`no_link_between`); the note stays for a later pass. A Claude Code
+junction (`no_link_between`); the note stays for a later pass. 0.20 kept
+these plugins under the marketplace `luna`. With 0.20's ledger, the first pass
+takes out the skill copies it notes under `plugins/cache/luna/` as copies no
+longer wanted (one changed there to the backups first); everything else there
+stays: the manifests, the folders, the ledger's notes of those manifests
+(never looked at again) and whatever else is in it. It is inert, since
+nothing turns an `@luna` plugin on any more, and the switch to 0.21 removes
+`plugins/cache/luna/` by hand. A Claude Code
 account's folder copies in `library-folders/<slug>/<name>/` are its own: while
 that account is not listed they keep their notes and stay, as its account
 copies do.

@@ -207,6 +207,32 @@ Function LunaClaimInstallDir
 FunctionEnd
 !pragma warning pop
 
+; Whether this install's data is in %LOCALAPPDATA%\rm-luna rather than in
+; the install folder, $LunaLocalData 1: as Luna decides it (paths.rs
+; `data_dir`), by whether the install folder takes a file. Else that
+; folder is another Luna's (an install there, a portable copy's), and is
+; left alone.
+Var LunaLocalData
+Function un.LunaDataIsLocal
+  Push $0
+  Push $1
+  StrCpy $LunaLocalData 1
+  ; Named for this run, as Luna's own probe is for its process: a file left
+  ; by an earlier one, read-only say, cannot decide this one.
+  System::Call 'kernel32::GetCurrentProcessId() i .r1'
+  ClearErrors
+  FileOpen $0 "$INSTDIR\.luna-write-probe-$1" w
+  ${IfNot} ${Errors}
+    FileClose $0
+    StrCpy $LunaLocalData 0
+    ; Decided already: a probe that will not go only stays behind.
+    Delete "$INSTDIR\.luna-write-probe-$1"
+    ClearErrors
+  ${EndIf}
+  Pop $1
+  Pop $0
+FunctionEnd
+
 ; Whether the uninstaller knows Luna's window closed (LunaCheckIfRunning, in
 ; installer.nsi) and its core stopped (NSIS_HOOK_PREUNINSTALL): 1 only then.
 ; The NVIDIA undo waits for both.
@@ -214,6 +240,7 @@ Var LunaAppClosed
 Var LunaCoreStopped
 
 !macro NSIS_HOOK_PREUNINSTALL
+  Call un.LunaDataIsLocal
   ; The sessions run in Luna's core, a process started from a copy of the exe
   ; under the data folder. Left running, it would keep its sessions going with
   ; no Luna to reach them, and hold files the uninstaller has to remove. Asked
@@ -223,7 +250,7 @@ Var LunaCoreStopped
   Pop $0
   ; The copies of the exe the core ran from are program, not data: they go
   ; with it. They sit in the data folder, which is the install folder when
-  ; that is writable and %LOCALAPPDATA%\luna otherwise. Only once no core
+  ; that is writable and %LOCALAPPDATA%\rm-luna otherwise. Only once no core
   ; runs (exit 0): one still running (held for an update under way, which
   ; stops only for the window that asked for it) keeps its folder, whose
   ; core.json is how a window finds it and whose lock keeps a second core
@@ -231,7 +258,9 @@ Var LunaCoreStopped
   ${If} $0 == 0
     StrCpy $LunaCoreStopped 1
     RMDir /r "$INSTDIR\core"
-    RMDir /r "$LOCALAPPDATA\luna\core"
+    ${If} $LunaLocalData = 1
+      RMDir /r "$LOCALAPPDATA\${LOCALDIR}\core"
+    ${EndIf}
   ${Else}
     DetailPrint "A Luna core is still running (luna --stop-core: $0); its folder is left in place."
   ${EndIf}
@@ -286,6 +315,8 @@ FunctionEnd
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     RMDir /r "$INSTDIR\webview"
-    RMDir /r "$LOCALAPPDATA\luna\webview"
+    ${If} $LunaLocalData = 1
+      RMDir /r "$LOCALAPPDATA\${LOCALDIR}\webview"
+    ${EndIf}
   ${EndIf}
 !macroend

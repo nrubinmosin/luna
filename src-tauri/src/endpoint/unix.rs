@@ -292,7 +292,7 @@ pub(super) fn invalid_names() -> Vec<&'static str> {
         "../core-0123456789abcdef.sock",
         "/tmp/core-0123456789abcdef.sock",
         "core-0123456789abcdef.sock/x",
-        r"\\.\pipe\luna-core-0123456789abcdef0123456789abcdef",
+        r"\\.\pipe\rm-luna-core-0123456789abcdef0123456789abcdef",
     ]
 }
 

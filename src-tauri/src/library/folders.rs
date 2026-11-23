@@ -751,7 +751,7 @@ mod tests {
         assert!(f.account(0).join("skills/review/SKILL.md").is_file());
         assert!(!f.dirs.folders().join("asuri-app/work").exists(), "it has it as a whole already");
         assert!(f.dirs.folders().join("asuri-app/home/.claude/skills/review/SKILL.md").is_file());
-        let plugin = f.account(1).join("plugins/cache/luna/asuri-app/local");
+        let plugin = f.account(1).join("plugins/cache/rm-luna/asuri-app/local");
         assert!(plugin.join("skills/review/SKILL.md").is_file());
         let manifest: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(plugin.join(".codex-plugin/plugin.json")).unwrap()).unwrap();
@@ -768,7 +768,7 @@ mod tests {
         assert!(!f.account(0).join("skills/review").exists());
         assert!(f.dirs.folders().join("asuri-app/work/.claude/skills/review/SKILL.md").is_file());
         assert!(!f.dirs.folders().join("asuri-app/home/.claude/skills/review").exists());
-        assert!(!f.account(1).join("plugins/cache/luna").exists(), "a plugin with nothing in it goes, manifest and all");
+        assert!(!f.account(1).join("plugins/cache/rm-luna").exists(), "a plugin with nothing in it goes, manifest and all");
 
         // A folder no longer listed: what waited for it goes.
         let lib = LibrarySettings { folders: Vec::new(), ..lib };
@@ -885,7 +885,7 @@ mod tests {
         assert!(work.join("luna-review/SKILL.md").is_file(), "ours keeps the name it has");
         assert!(work.join("notes/SKILL.md").is_file() && !work.join("luna-notes").exists());
         assert!(home.join("luna-notes/SKILL.md").is_file());
-        assert!(f.account(1).join("plugins/cache/luna/repo/local/skills/review/SKILL.md").is_file(), "Codex prefixes them all");
+        assert!(f.account(1).join("plugins/cache/rm-luna/repo/local/skills/review/SKILL.md").is_file(), "Codex prefixes them all");
         let shown = p.places.iter().find(|x| Path::new(&x.dest) == work.join("luna-review-2")).unwrap();
         assert_eq!(shown.skill.as_deref(), Some("review"));
         assert_eq!(shown.shown_as.as_deref(), Some("luna-review-2"));
@@ -1024,7 +1024,7 @@ mod tests {
         let wt = f.account(1).join("worktrees/0a1b/repo");
         write_file(&wt.join(".git"), format!("gitdir: {}\n", repo.join(".git").join("worktrees").join("repo").display()).as_bytes())
             .unwrap();
-        let codex = ["-c".to_string(), "plugins.repo@luna.enabled=true".to_string()];
+        let codex = ["-c".to_string(), "plugins.repo@rm-luna.enabled=true".to_string()];
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &repo_s).args, codex);
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &wt.to_string_lossy()).args, codex);
         f.run(&empty, &mut ledger, true);
@@ -1096,7 +1096,10 @@ mod tests {
         let review = md(f.account(1).join("skills"), "review");
         let notes = md(codex_plugin_dir(&f.accounts[1], "work").join("skills"), "notes");
         let codex = folder_args(&f.dirs, &lib, &f.accounts[1], &other).args;
-        assert_eq!(codex, ["-c", "plugins.work@luna.enabled=true", "-c", &format!("skills.config=[{{path=\"{review}\",enabled=false}}]")]);
+        assert_eq!(
+            codex,
+            ["-c", "plugins.work@rm-luna.enabled=true", "-c", &format!("skills.config=[{{path=\"{review}\",enabled=false}}]")]
+        );
 
         // In the repository: notes too. Claude Code's account copy by its name,
         // the outer folder's copy never made for the plugin; Codex's by path,
@@ -1172,8 +1175,8 @@ mod tests {
         codex_manifests(&lib, &f.accounts, &mut ledger);
         assert!(f.account(0).join("skills/review/SKILL.md").is_file());
         assert!(!f.account(2).join("skills/review").exists());
-        assert!(f.account(1).join("plugins/cache/luna/app/local/skills/review/SKILL.md").is_file());
-        assert!(f.account(1).join("plugins/cache/luna/web/local/skills/review/SKILL.md").is_file());
+        assert!(f.account(1).join("plugins/cache/rm-luna/app/local/skills/review/SKILL.md").is_file());
+        assert!(f.account(1).join("plugins/cache/rm-luna/web/local/skills/review/SKILL.md").is_file());
 
         let (app_s, web_s) = (app.to_string_lossy().into_owned(), web.to_string_lossy().into_owned());
         assert!(folder_args(&f.dirs, &lib, &f.accounts[0], &app_s).hidden.is_empty());
@@ -1191,7 +1194,7 @@ mod tests {
         // In web the account that has it as a whole does not get it; Codex does.
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[0], &web_s).hidden, ["review"]);
         assert!(folder_args(&f.dirs, &lib, &f.accounts[2], &web_s).hidden.is_empty(), "nothing of it to hide");
-        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &web_s).args, ["-c", "plugins.web@luna.enabled=true"]);
+        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &web_s).args, ["-c", "plugins.web@rm-luna.enabled=true"]);
     }
 
     #[test]
@@ -1302,9 +1305,9 @@ mod tests {
         codex_manifests(&lib, &f.accounts, &mut ledger);
         assert!(f.dirs.folders().join("repo/work/.claude/skills/review/SKILL.md").is_file());
         assert!(!f.dirs.folders().join("web/work/.claude/skills/review").exists());
-        assert!(!f.account(1).join("plugins/cache/luna/web").exists());
+        assert!(!f.account(1).join("plugins/cache/rm-luna/web").exists());
         let web = repo.join("web").to_string_lossy().into_owned();
-        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &web).args, ["-c", "plugins.repo@luna.enabled=true"]);
+        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &web).args, ["-c", "plugins.repo@rm-luna.enabled=true"]);
 
         // Kept from the account outside, given again inside: the inside's own.
         lib.folders[0].skills.insert("review".into(), reach(&["codex"]));

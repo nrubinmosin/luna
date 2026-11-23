@@ -27,7 +27,7 @@ use windows::Win32::System::Pipes::{
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
-const PREFIX: &str = r"\\.\pipe\luna-core-";
+const PREFIX: &str = r"\\.\pipe\rm-luna-core-";
 /// Each direction's buffer: a frame larger than this waits for its reader,
 /// as it would on a socket.
 const BUFFER: u32 = 64 * 1024;
@@ -467,13 +467,15 @@ pub(super) fn test_name() -> String {
 pub(super) fn invalid_names() -> Vec<&'static str> {
     vec![
         "",
-        r"\\.\pipe\luna-core-",
-        r"\\.\pipe\luna-core-0123456789abcdef0123456789ABCDEF",
-        r"\\.\pipe\luna-core-0123456789abcdef0123456789abcdef0",
+        r"\\.\pipe\rm-luna-core-",
+        r"\\.\pipe\rm-luna-core-0123456789abcdef0123456789ABCDEF",
+        r"\\.\pipe\rm-luna-core-0123456789abcdef0123456789abcdef0",
         r"\\.\pipe\other-0123456789abcdef0123456789abcdef",
-        r"\\server\pipe\luna-core-0123456789abcdef0123456789abcdef",
-        r"\\?\pipe\luna-core-0123456789abcdef0123456789abcdef",
-        r"\\.\pipe\luna-core-0123456789abcdef\..\0123456789abcdef",
+        r"\\server\pipe\rm-luna-core-0123456789abcdef0123456789abcdef",
+        r"\\?\pipe\rm-luna-core-0123456789abcdef0123456789abcdef",
+        r"\\.\pipe\rm-luna-core-0123456789abcdef\..\0123456789abcdef",
+        // 0.20's prefix: a core.json it left names no core of this one's.
+        r"\\.\pipe\luna-core-0123456789abcdef0123456789abcdef",
         "core-0123456789abcdef.sock",
     ]
 }

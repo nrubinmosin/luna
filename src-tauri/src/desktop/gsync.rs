@@ -91,11 +91,22 @@ pub const VRR_APP_OVERRIDE: u32 = 0x10A8_79CF;
 pub const FORCE_OFF: u32 = 1;
 /// The start of the name of the profile Luna makes; a space and eight hex
 /// digits, random, follow, so neither NVIDIA's profiles, a person's nor
-/// another copy of Luna's share it.
-const PREFIX: &str = "Luna (native window, G-SYNC off)";
+/// another copy of Luna's share it. `rm-`, as every name Luna leaves on a
+/// PC has. Only characters seen in names the driver takes (letters, digits,
+/// space, '-', '(' and ')'): driver 621.24 refuses a comma
+/// (`NvAPI_DRS_CreateProfile`, `NVAPI_ERROR`).
+const PREFIX: &str = "rm-luna native window (G-SYNC off)";
+/// The release's earlier prefix. Driver 621.24 refuses a profile of this
+/// name (the comma), so it is taken for Luna's in a record alone, whose
+/// marker every write and the undo still ask of the profile
+/// (`Record::owns`, `recover`, `undo_in`); a profile found without a record
+/// is Luna's only under `prefix`.
+const COMMA_PREFIX: &str = "Luna (native window, G-SYNC off)";
 /// The test build's, so that its live test and a Luna in use never act on
 /// each other's.
-const TEST_PREFIX: &str = "Luna test build (G-SYNC off)";
+const TEST_PREFIX: &str = "rm-luna test build (G-SYNC off)";
+/// The friendly name of Luna's entries, before their marker in brackets.
+const MARK: &str = "rm-luna";
 /// What Luna made, in its data folder, for the undo.
 const RECORD: &str = "nvidia-profile.json";
 /// What Luna set in a profile not of its making, on the person's yes.
@@ -126,9 +137,19 @@ fn hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn named(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).and_then(|tail| tail.strip_prefix(' ')).is_some_and(|tail| hex(tail, 8))
+}
+
 /// Whether `name` is one `new_profile` makes.
 fn ours(name: &str, test: bool) -> bool {
-    name.strip_prefix(prefix(test)).and_then(|tail| tail.strip_prefix(' ')).is_some_and(|tail| hex(tail, 8))
+    named(name, prefix(test))
+}
+
+/// Whether a record's `name` is of Luna's naming: `ours`, or for a
+/// release one under `COMMA_PREFIX`.
+fn recorded_ours(name: &str, test: bool) -> bool {
+    ours(name, test) || (!test && named(name, COMMA_PREFIX))
 }
 
 /// Two application names for one exe: the driver keeps them in its own
@@ -167,7 +188,7 @@ impl Entry {
     pub fn lunas(app: &str, marker: &str) -> Entry {
         Entry {
             app: app.to_owned(),
-            friendly: format!("Luna ({marker})"),
+            friendly: format!("{MARK} ({marker})"),
             predefined: false,
             launcher: String::new(),
             file_in_folder: String::new(),
@@ -179,7 +200,7 @@ impl Entry {
     /// The marker of an entry of Luna's making, whatever its path: one of
     /// its shape, no field of it but these two set.
     fn marker(&self) -> Option<&str> {
-        let marker = self.friendly.strip_prefix("Luna (")?.strip_suffix(')')?;
+        let marker = self.friendly.strip_prefix(MARK)?.strip_prefix(" (")?.strip_suffix(')')?;
         let bare = !self.predefined
             && self.launcher.is_empty()
             && self.file_in_folder.is_empty()
@@ -270,7 +291,7 @@ pub fn refusal(record: &Record, test: bool) -> Option<String> {
         let by = if record.test { "the test build" } else { "a release" };
         return Some(format!("{RECORD} was written by {by}"));
     }
-    if !ours(&record.profile, test) || !hex(&record.marker, 16) {
+    if !recorded_ours(&record.profile, test) || !hex(&record.marker, 16) {
         return Some(format!("{RECORD} names a profile Luna does not make (\"{}\")", record.profile));
     }
     if !record.created && record.pending.is_none() {
@@ -562,10 +583,12 @@ pub enum Outcome {
     NotOff(String),
 }
 
-/// The window's one-line hint for `Outcome::NotOff`.
-pub fn hint(why: &str) -> String {
+/// The window's one-line hint for `Outcome::NotOff`, `exe` the running
+/// exe's file name (None where it did not read).
+pub fn hint(why: &str, exe: Option<&str>) -> String {
+    let exe = exe.unwrap_or("Luna's exe");
     format!(
-        "NVIDIA G-SYNC could not be turned off for Luna ({why}). If the screen stutters while Luna is open, set luna.exe to \
+        "NVIDIA G-SYNC could not be turned off for Luna ({why}). If the screen stutters while Luna is open, set {exe} to \
          Fixed Refresh: the user guide's \"The window and panes\", G-SYNC."
     )
 }
@@ -1246,6 +1269,7 @@ fn undo(_data: &Path) -> Undone {
 mod nvapi {
     pub type Status = i32;
     pub const OK: Status = 0;
+    pub const ERROR: Status = -1;
     pub const LIBRARY_NOT_FOUND: Status = -2;
     pub const NVIDIA_DEVICE_NOT_FOUND: Status = -6;
     pub const END_ENUMERATION: Status = -7;
@@ -1404,7 +1428,7 @@ mod nvapi {
     pub fn name(status: Status) -> &'static str {
         match status {
             OK => "NVAPI_OK",
-            -1 => "NVAPI_ERROR",
+            ERROR => "NVAPI_ERROR",
             LIBRARY_NOT_FOUND => "NVAPI_LIBRARY_NOT_FOUND",
             -3 => "NVAPI_NO_IMPLEMENTATION",
             -4 => "NVAPI_API_NOT_INITIALIZED",
@@ -1805,7 +1829,9 @@ mod tests {
 
     const A: &str = "C:/Apps/Luna/luna.exe";
     const B: &str = "D:/Portable/Luna/luna.exe";
-    const NAME: &str = "Luna (native window, G-SYNC off) 0a1b2c3d";
+    const NAME: &str = "rm-luna native window (G-SYNC off) 0a1b2c3d";
+    /// A name under the release's earlier prefix, which the driver refuses.
+    const COMMA_NAME: &str = "Luna (native window, G-SYNC off) 0a1b2c3d";
     const MARKER: &str = "00112233445566ff";
     const OTHER_SETTING: u32 = 0x1057_EB71;
 
@@ -1986,7 +2012,12 @@ mod tests {
             })
         }
 
+        /// As driver 621.24 does: refused where the name has a comma, or
+        /// where a profile has the name already.
         fn create_profile(&self, name: &str) -> Result<usize, Fault> {
+            if name.contains(',') {
+                return Err(Fault::at("NvAPI_DRS_CreateProfile", nvapi::ERROR));
+            }
             if self.find_profile(name)?.is_some() {
                 return Err(Fault::at("NvAPI_DRS_CreateProfile", nvapi::PROFILE_NAME_IN_USE));
             }
@@ -2264,7 +2295,7 @@ mod tests {
         let journal = Journal::default();
         let drs = Fake::new(vec![game(), nvidias()], &journal);
         let store = Mem::new(None, &journal);
-        for other in ["Some Game", "Luna (native window, G-SYNC off) 0a1b2c3d", "luna"] {
+        for other in ["Some Game", NAME, "luna"] {
             let why = turn_off_in(&drs, &store, A, other, false).unwrap_err();
             assert!(why.contains("no longer applies") && why.contains("nothing changed"), "{why}");
         }
@@ -2387,7 +2418,7 @@ mod tests {
     #[test]
     fn lunas_entry_carries_its_marker_and_nothing_else() {
         let entry = Entry::lunas(A, MARKER);
-        assert_eq!(entry.friendly, format!("Luna ({MARKER})"));
+        assert_eq!(entry.friendly, format!("rm-luna ({MARKER})"));
         assert_eq!(entry.marker(), Some(MARKER));
         assert!(entry.is_lunas(r"c:\apps\luna\LUNA.EXE", MARKER) && !entry.is_lunas(A, "ffffffffffffffff"));
         // A launcher, a file in the folder, a command line, a flag, another
@@ -2399,7 +2430,8 @@ mod tests {
             Entry { flags: 2, ..entry.clone() },
             Entry { predefined: true, ..entry.clone() },
             theirs(A),
-            Entry { friendly: "Luna (0011)".into(), ..entry.clone() },
+            Entry { friendly: "rm-luna (0011)".into(), ..entry.clone() },
+            Entry { friendly: format!("Luna ({MARKER})"), ..entry.clone() },
         ];
         for e in not {
             assert_eq!(e.marker(), None, "{e:?}");
@@ -2476,6 +2508,67 @@ mod tests {
         assert!(made.0.starts_with(TEST_PREFIX) && ours(&made.0, true) && !ours(&made.0, false) && hex(&made.1, 16));
         assert_eq!(ensure_in(&drs, &store, A, true, true, &made), Outcome::Made(made.0.clone()));
         assert!(store.get().unwrap().test);
+    }
+
+    /// Seen on driver 621.24: `NvAPI_DRS_CreateProfile` answers
+    /// `NVAPI_ERROR` for a name with a comma, as the release's earlier
+    /// prefix had. A name `new_profile` makes has none, in either flavor,
+    /// and the profile is made; the earlier name is refused before anything
+    /// is saved.
+    #[test]
+    fn a_new_profile_name_has_no_comma_and_the_driver_takes_it() {
+        let seen = |c: char| c.is_ascii_alphanumeric() || " -()".contains(c);
+        assert!(PREFIX.chars().chain(TEST_PREFIX.chars()).chain(MARK.chars()).all(seen));
+        for test in [false, true] {
+            let made = new_profile(test);
+            assert!(made.0.chars().all(seen) && made.0.starts_with("rm-") && ours(&made.0, test), "{}", made.0);
+            let journal = Journal::default();
+            let drs = Fake::new(vec![game()], &journal);
+            let store = Mem::new(None, &journal);
+            assert_eq!(ensure_in(&drs, &store, A, true, test, &made), Outcome::Made(made.0.clone()));
+        }
+        let journal = Journal::default();
+        let drs = Fake::new(vec![game()], &journal);
+        let store = Mem::new(None, &journal);
+        let refused = ensure_in(&drs, &store, A, true, false, &(COMMA_NAME.into(), MARKER.into()));
+        assert!(matches!(&refused, Outcome::NotOff(why) if why.contains("NVAPI_ERROR (-1)")), "{refused:?}");
+        assert_eq!((drs.saves.get(), drs.profiles()), (0, vec![game()]));
+    }
+
+    /// A record naming a profile under the release's earlier prefix is still
+    /// of Luna's naming, for a release and not for the test build: the undo
+    /// finds nothing where the profile is absent and lets the record go, and
+    /// a pending one is settled and the profile made under the new name.
+    #[test]
+    fn a_record_under_the_comma_prefix_is_still_lunas() {
+        assert!(recorded_ours(COMMA_NAME, false) && !recorded_ours(COMMA_NAME, true) && !ours(COMMA_NAME, false));
+        assert!(!recorded_ours(&format!("{COMMA_PREFIX} 0a1b2c3"), false));
+        let record = Record { profile: COMMA_NAME.into(), ..confirmed(&[A]) };
+        assert_eq!(refusal(&record, false), None);
+        assert!(refusal(&Record { test: true, ..record.clone() }, true).is_some());
+        let journal = Journal::default();
+        let drs = Fake::new(vec![game()], &journal);
+        let store = Mem::new(Some(record), &journal);
+        assert_eq!(undo_in(&drs, &store, None, false), Undone::Nothing);
+        assert_eq!((store.get(), drs.saves.get(), drs.profiles()), (None, 0, vec![game()]));
+        let pending = Record { created: false, apps: Vec::new(), pending: Some(A.into()), ..confirmed(&[]) };
+        let store = Mem::new(Some(Record { profile: COMMA_NAME.into(), ..pending }), &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Made(NAME.into()));
+        assert_eq!(store.get(), Some(confirmed(&[A])));
+        assert_eq!(drs.saved(NAME), Some(lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])));
+    }
+
+    /// A profile under the earlier prefix with an entry of Luna's shape and
+    /// no record is not Luna's: not taken back, not removed.
+    #[test]
+    fn a_profile_under_the_comma_prefix_without_a_record_is_left_alone() {
+        let journal = Journal::default();
+        let legacy = p(COMMA_NAME, false, &[ours_for(A)], &[(VRR_APP_OVERRIDE, FORCE_OFF)]);
+        let drs = Fake::new(vec![game(), legacy.clone()], &journal);
+        let store = Mem::new(None, &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Theirs(COMMA_NAME.into()));
+        assert_eq!(undo_in(&drs, &store, Some(A), false), Undone::Nothing);
+        assert_eq!((store.get(), drs.saves.get(), drs.profiles()), (None, 0, vec![game(), legacy]));
     }
 
     #[test]
@@ -2601,7 +2694,7 @@ mod tests {
         assert_eq!(drs.profiles(), [game()]);
         assert_eq!(store.get(), None);
         // The record's profile and another of Luna's the exe resolves to.
-        let other = p("Luna (native window, G-SYNC off) ffff0000", false, &[Entry::lunas(B, "ffffffffffffffff")], &[]);
+        let other = p(&format!("{PREFIX} ffff0000"), false, &[Entry::lunas(B, "ffffffffffffffff")], &[]);
         let drs = Fake::new(vec![game(), lunas(&[A], &[]), other], &journal);
         let store = Mem::new(Some(confirmed(&[A])), &journal);
         assert!(matches!(undo_in(&drs, &store, Some(B), false), Undone::Done(p) if p.len() == 2));
@@ -2624,7 +2717,7 @@ mod tests {
         // the profile is made afresh, under a new name.
         let drs = Fake::new(vec![game()], &journal);
         let store = Mem::new(Some(pending(false, &[], A)), &journal);
-        let other = ("Luna (native window, G-SYNC off) ffff0000".to_owned(), "ffffffffffffffff".to_owned());
+        let other = (format!("{PREFIX} ffff0000"), "ffffffffffffffff".to_owned());
         assert_eq!(ensure_in(&drs, &store, A, true, false, &other), Outcome::Made(other.0.clone()));
         assert_eq!(drs.profiles().len(), 2);
         // Ended after the save: confirmed, and not set again.
@@ -2759,7 +2852,7 @@ mod tests {
         let text = serde_json::to_string(&record).unwrap();
         assert_eq!(
             text,
-            r#"{"profile":"Luna (native window, G-SYNC off) 0a1b2c3d","marker":"00112233445566ff","test":false,"created":true,"apps":["C:/Apps/Luna/luna.exe"],"pending":"D:/Portable/Luna/luna.exe"}"#
+            r#"{"profile":"rm-luna native window (G-SYNC off) 0a1b2c3d","marker":"00112233445566ff","test":false,"created":true,"apps":["C:/Apps/Luna/luna.exe"],"pending":"D:/Portable/Luna/luna.exe"}"#
         );
         assert_eq!(serde_json::from_str::<Record>(&text).unwrap(), record);
         // Neither shape 0.20.1's development builds wrote is taken for it.
@@ -3003,7 +3096,8 @@ mod tests {
         assert!(!nvapi::no_nvidia(nvapi::INVALID_USER_PRIVILEGE));
         let why = nvapi::why(Fault::at("NvAPI_DRS_SaveSettings", nvapi::INVALID_USER_PRIVILEGE));
         assert!(why.contains("administrator") && why.contains("NvAPI_DRS_SaveSettings: NVAPI_INVALID_USER_PRIVILEGE (-137)"), "{why}");
-        assert!(hint("x").contains("Fixed Refresh"));
+        assert!(hint("x", Some("moon.exe")).contains("set moon.exe to Fixed Refresh"));
+        assert!(hint("x", None).contains("set Luna's exe to Fixed Refresh"));
     }
 
     /// A failure names its call and status, and the log has every step

@@ -143,7 +143,7 @@ crossing these lines, stop and report what is left unchecked.
 Accounts the test build writes into are throwaway ones under
 `test-build/accounts` (the `live-test` skill makes them). When done, stop
 the test build's own processes only, matched by path
-(`test-build\luna-test.exe`), and anything else you started; unset the
+(`test-build\rm-luna-test.exe`), and anything else you started; unset the
 variables you set.
 
 ## Retaking the README's pictures

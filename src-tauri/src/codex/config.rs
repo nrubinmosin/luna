@@ -418,7 +418,7 @@ mod tests {
         write(
             &account,
             "[mcp_servers.gmail]\ncommand = \"x\"\n[plugins.\"crm@market\"]\nenabled = true\n\
-             [plugins.\"off@market\"]\nenabled = false\n[plugins.\"repo@luna\"]\nenabled = true\n",
+             [plugins.\"off@market\"]\nenabled = false\n[plugins.\"repo@rm-luna\"]\nenabled = true\n",
         );
         let names = |got: HelperMcp| got.servers.into_iter().map(|(n, _)| n).collect::<Vec<_>>();
         let got = helper_mcp(&a, &s).unwrap();

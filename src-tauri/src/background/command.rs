@@ -1547,7 +1547,7 @@ mod tests {
         want.extend(apps_off());
         want.extend(strings(&[
             "-c",
-            &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
+            &format!("plugins.{}@rm-luna.enabled=true", crate::library::GoldenLibrary::SLUG),
             "-c",
             // By the path of its `SKILL.md`, not by name.
             "skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]",

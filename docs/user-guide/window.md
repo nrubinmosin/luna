@@ -32,33 +32,35 @@ changes. On a monitor with variable refresh (NVIDIA G-SYNC, AMD FreeSync)
 that follows a window's frames, the whole monitor would then slow down to
 Luna's pace, its lowest refresh, and everything on it would stutter, most of
 all with Luna maximized. So, on Windows with an NVIDIA driver, Luna turns
-G-SYNC off for its own `luna.exe` in NVIDIA's settings the first time it
-starts, as NVIDIA does for browsers and Windows Terminal: it adds a profile
-of its own, "Luna (native window, G-SYNC off)" with a short code after it,
-holding `luna.exe` from the folder Luna runs from and one setting, "G-SYNC -
-Application State" at Force Off. It changes no other profile, not even the
+G-SYNC off for its own `rm-luna.exe` in NVIDIA's settings the first time
+it starts, as NVIDIA does for browsers and Windows Terminal: it adds a
+profile of its own, "rm-luna native window (G-SYNC off)" with a short code
+after it, holding `rm-luna.exe` from the folder Luna runs from and one
+setting, "G-SYNC - Application State" at Force Off. It changes no other profile, not even the
 one NVIDIA ships named "Luna" (for a game of that name), unless you say so
 (below). It does this once:
 if you change the setting there afterwards, Luna leaves your choice alone.
-If you move a portable Luna, it adds the new folder's `luna.exe` to the same
+If you move a portable Luna, it adds the new folder's exe to the same
 profile. Uninstalling Luna removes the profile, or, if you added settings or
 programs of your own to it, only Luna's part. If NVIDIA's driver does not
 let the uninstaller do that (it may want administrator rights), or the
 uninstaller cannot tell that Luna has closed or that it removed all of
-Luna's part, it says so; the profile then does nothing without `luna.exe`,
+Luna's part, it says so; the profile then does nothing without Luna's exe,
 and you can remove it in the NVIDIA Control Panel. Luna run as
 administrator, and its uninstaller run that way, leave NVIDIA's settings as
 they are. While you type, click or scroll, Luna also keeps
 drawing at the monitor's full rate for a second after each input, on any
 graphics card.
 
-Where the driver has NVIDIA's own "Luna" profile (driver 621.24 has it, for
-a game of that name), it lets no other profile have a program named
-`luna.exe`, so Luna cannot have a profile of its own. Luna then asks in a
-line at the top of the window: NVIDIA's "Luna" profile holds `luna.exe`, so
-Luna can't turn G-SYNC off for itself alone; turn it off in that profile?
-That setting then also applies to any other program named `luna.exe`, such
-as that game.
+A profile of NVIDIA's that holds the exe's name lets no other profile have
+a program of that name: NVIDIA's own "Luna" profile (driver 621.24 has it,
+for a game of that name) holds `luna.exe`, which is why Luna's exe is
+`rm-luna.exe` since 0.21. Where Luna runs under a name such a profile holds
+(a copy you renamed `luna.exe`, say), it cannot have a profile of its own
+and asks in a line at the top of the window: NVIDIA's "Luna" profile holds
+`luna.exe`, so Luna can't turn G-SYNC off for itself alone; turn it off in
+that profile? That setting then also applies to any other program of that
+name, such as that game.
 
 - **Turn off** sets "G-SYNC - Application State" to Force Off in that
   profile, and nothing else: no other setting, no program added or removed.
@@ -76,15 +78,15 @@ If NVIDIA's driver does not let Luna change the setting at all, Luna says so
 in a line at the top of the window; it may want administrator rights. Then,
 or if you would rather leave NVIDIA's "Luna" profile alone, or if the screen
 still stutters while Luna is open, set it yourself: in the NVIDIA Control Panel, open **Manage 3D
-settings**, **Program Settings**, add `luna.exe` (from the folder Luna is
-installed in), set **Monitor Technology** to **Fixed Refresh**, click
-**Apply**, and restart Luna. If the Control Panel then shows NVIDIA's "Luna"
-profile for it, the setting applies to every program named `luna.exe`, a
-game of that name included. Choosing "Enable for
+settings**, **Program Settings**, add Luna's exe from the folder Luna is
+installed in (`rm-luna.exe`, or the name the window's line gives), set
+**Monitor Technology** to **Fixed Refresh**, click **Apply**, and restart
+Luna. If the Control Panel then shows a profile of NVIDIA's for it, the
+setting applies to every program of that name. Choosing "Enable for
 full screen mode" instead of "windowed and full screen mode" under **Set up
 G-SYNC** helps too. With another graphics card or driver, turn variable
-refresh off for `luna.exe` in its own settings (AMD Software: a profile for
-`luna.exe` with FreeSync off), or give the monitor a fixed refresh rate in
+refresh off for `rm-luna.exe` in its own settings (AMD Software: a profile
+for `rm-luna.exe` with FreeSync off), or give the monitor a fixed refresh rate in
 Windows' display settings (no "Dynamic" rate).
 
 ## Chats and boards
@@ -99,9 +101,9 @@ in this Luna; coming from 0.20.0, whose import ran already, they are taken
 at the first start of 0.20.1 the same way, a setting 0.20.0 still had at
 its default counting as unchanged. On Windows it reads the list from Luna's data folder
 (its `webview` folder), where every 0.6.32 to 0.19 kept it; that is the
-folder beside `luna.exe`, or `%LOCALAPPDATA%\luna` where Luna could not
+folder beside Luna's exe, or `%LOCALAPPDATA%\rm-luna` where Luna could not
 write beside it. A portable copy in a folder it cannot write to therefore
-uses `%LOCALAPPDATA%\luna` too: it reads the installed Luna's list and
+uses `%LOCALAPPDATA%\rm-luna` too: it reads the installed Luna's list and
 shares all its other state with it, on purpose. Only if there is none there at all, it reads the one a
 Luna last started on 0.6.31 or before left in `%LOCALAPPDATA%\rm.luna`, as
 0.19 itself took it for any copy (the test build reads its own,

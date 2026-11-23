@@ -1024,7 +1024,7 @@ mod tests {
     fn no_way_into_the_core(args: &[String], envs: &[(&str, String)]) {
         let all = args.iter().map(String::as_str).chain(envs.iter().flat_map(|(k, v)| [*k, v.as_str()]));
         for s in all {
-            let endpoint = s.contains(r"\pipe\luna-core-") || s.contains("/core/core-") || s.contains(r"\core\core-");
+            let endpoint = s.contains(r"\pipe\rm-luna-core-") || s.contains("/core/core-") || s.contains(r"\core\core-");
             assert!(!endpoint && !s.contains("core.json"), "a start carries something of the core's: {s}");
         }
         assert!(envs.iter().all(|(k, _)| !k.starts_with("LUNA_CORE")), "{envs:?}");
@@ -1975,7 +1975,7 @@ mod tests {
         want.extend(golden::codex_status_hooks());
         want.extend(strings(&[
             "-c",
-            &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
+            &format!("plugins.{}@rm-luna.enabled=true", crate::library::GoldenLibrary::SLUG),
             "-c",
             // By the path of its `SKILL.md`, not by name.
             "skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]",
@@ -1988,7 +1988,7 @@ mod tests {
         assert_eq!(s.envs, envs);
         assert_eq!(s.instructions, None, "Codex has no way to take other instructions");
         assert_eq!(s.cwd, "<project>");
-        let plugin = format!("-c plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG);
+        let plugin = format!("-c plugins.{}@rm-luna.enabled=true", crate::library::GoldenLibrary::SLUG);
         assert_eq!(s.value("library.skills"), Some(plugin.as_str()));
         assert_eq!(s.value("library.hidden-skills"), Some("-c skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]"));
     }
