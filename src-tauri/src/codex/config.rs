@@ -1,5 +1,4 @@
-//! `config.toml` under a Codex account (`CODEX_HOME`), read and written with
-//! the user's own formatting and comments intact.
+//! How Codex reads config layers for an account (`CODEX_HOME`).
 
 use std::path::{Path, PathBuf};
 use toml_edit::DocumentMut;
@@ -11,16 +10,16 @@ pub fn account_file(account_path: &str) -> Result<PathBuf, String> {
     Ok(Path::new(account_path).join("config.toml"))
 }
 
-/// The document to change and write back, or an empty one when the file is
-/// missing. A file that will not read or parse is an error rather than an
-/// empty document: writing back over it would throw the user's config away.
+/// Reads the document, or returns an empty one when the file is missing.
+/// An unreadable or invalid file returns an error so a preflight check
+/// cannot mistake it for an empty config.
 /// Codex or an editor rewriting the file in place can be caught midway —
 /// blank, cut short, or on Windows held open — so such a read looks again a
 /// moment later. Blank on every look, the file is blank, and an empty
 /// document loses nothing of it. Read as a settings file is
 /// (`boundary::read_settings_file`): a plain file of at most
 /// `boundary::SETTINGS_MAX` bytes, a link to one followed, so a FIFO there
-/// holds no sync, trust mark or start that reads it. A parse error says
+/// holds no sync or start that reads it. A parse error says
 /// where (`not_toml`), never what is there.
 pub fn read(path: &Path) -> Result<DocumentMut, String> {
     #[cfg(test)]
@@ -100,18 +99,14 @@ pub struct HelperMcp {
 /// apps: it comes above the command line's `-c`, which cannot turn them off.
 /// A project layer Codex leaves out names nothing to turn off: a server only
 /// it defines, named in the `-c`, would fail the run ("invalid transport").
-pub fn helper_mcp(account_path: &str, folder: &str) -> Result<HelperMcp, String> {
+pub fn helper_mcp(account_path: &str, folder: &str, trust_key: &str) -> Result<HelperMcp, String> {
     let refused =
         |e: String| format!("the helper is not started: Luna could not read which MCP servers its run would have, to turn them off ({e})");
-    let files = loaded_layers(account_path, folder, true).map_err(refused)?;
+    let files = loaded_layers(account_path, folder, Some(trust_key)).map_err(refused)?;
     let mut docs = Vec::new();
     let mut servers: Vec<(String, Vec<String>)> = Vec::new();
-    for (file, sure) in &files {
-        let doc = match read(file) {
-            Ok(doc) => doc,
-            Err(_) if !sure => continue,
-            Err(e) => return Err(refused(e)),
-        };
+    for (file, _) in files.iter().filter(|(_, sure)| *sure) {
+        let doc = read(file).map_err(refused)?;
         for (name, keys) in servers_in(&doc) {
             match servers.iter_mut().find(|(n, _)| *n == name) {
                 Some((_, all)) => all.extend(keys.into_iter().filter(|k| !all.contains(k)).collect::<Vec<_>>()),
@@ -139,15 +134,15 @@ pub fn helper_mcp(account_path: &str, folder: &str) -> Result<HelperMcp, String>
 /// The layers below the command line that Codex loads for a session in
 /// `folder`, lowest first, each with whether it surely does: its system one
 /// (`system_layer`) and the account's, then the project's (`project_root_and_layers`)
-/// as Codex decides each (`trust::Decisions`; `helper`: a helper's run, its
-/// folder trusted for it). One saved as untrusted Codex leaves out, a parse
+/// as Codex decides each (`trust::Decisions`; `trust_key` follows the
+/// launch override). One saved as untrusted Codex leaves out, a parse
 /// error in it and all (config/src/loader/mod.rs at rust-v0.171.0), and so
 /// does Luna. One with no decision saved is in, but not surely: the person
 /// may trust it at Codex's trust screen, after Luna has read it, or never,
 /// so a reader takes what it holds but no parse error of it for an error.
-fn loaded_layers(account_path: &str, folder: &str, helper: bool) -> Result<Vec<(PathBuf, bool)>, String> {
+fn loaded_layers(account_path: &str, folder: &str, trust_key: Option<&str>) -> Result<Vec<(PathBuf, bool)>, String> {
     let (root, project) = project_root_and_layers(account_path, folder)?;
-    let trust = super::trust::Decisions::of(account_path, folder, helper);
+    let trust = super::trust::Decisions::of(account_path, folder, trust_key);
     let root = root.to_string_lossy().into_owned();
     let mut files = vec![(system_layer(), true), (account_file(account_path)?, true)];
     for file in project {
@@ -175,8 +170,8 @@ pub struct Compaction {
 /// layers Codex is known to load below the command line, then the
 /// managed one above it; Luna's `-c` names none of these keys. A layer Codex
 /// surely loads that will not read is an error: what it says is not known.
-pub fn compaction(account_path: &str, folder: &str) -> Result<Compaction, String> {
-    let below = loaded_layers(account_path, folder, false)?.into_iter().filter_map(|(file, sure)| sure.then_some(file));
+pub fn compaction(account_path: &str, folder: &str, trust_key: Option<&str>) -> Result<Compaction, String> {
+    let below = loaded_layers(account_path, folder, trust_key)?.into_iter().filter_map(|(file, sure)| sure.then_some(file));
     let mut out = Compaction::default();
     for file in below.chain(managed_layers()) {
         let doc = read(&file)?;
@@ -207,15 +202,15 @@ pub struct NamedServer {
 
 /// Each layer Codex merges for a session in `folder` that defines an MCP
 /// server called `name`, lowest first: those it loads below the command line
-/// (`loaded_layers`; `helper` as there), then the managed one above it
+/// (`loaded_layers`; `trust_key` as there), then the managed one above it
 /// (`managed_layers`). For a name Luna gives its own server by
 /// (codex/launch.rs `luna_server_free`): Codex 0.171.0 merges a table key by
 /// key, a `-c`'s included, so what a layer sets there runs as part of
 /// Luna's. A layer Codex surely loads that will not read or parse is an
 /// error, as it may define one.
-pub fn servers_named(account_path: &str, folder: &str, name: &str, helper: bool) -> Result<Vec<NamedServer>, String> {
+pub fn servers_named(account_path: &str, folder: &str, name: &str, trust_key: Option<&str>) -> Result<Vec<NamedServer>, String> {
     // (file, a managed layer, a parse error there is an error)
-    let below = loaded_layers(account_path, folder, helper)?.into_iter().map(|(f, sure)| (f, false, sure));
+    let below = loaded_layers(account_path, folder, trust_key)?.into_iter().map(|(f, sure)| (f, false, sure));
     let layers = below.chain(managed_layers().into_iter().map(|f| (f, true, true)));
     let mut found = Vec::new();
     for (file, managed, sure) in layers {
@@ -351,9 +346,9 @@ pub(crate) fn layer_dir(file: &Path) -> String {
 /// none at or below a folder saved as untrusted, which Luna leaves out where
 /// unsure: a layer left out loses its text from Luna's `-c`, one put in would
 /// bring back text Codex skipped.
-fn instruction_layers(account_path: &str, folder: &str, helper: bool) -> Result<Vec<PathBuf>, String> {
+fn instruction_layers(account_path: &str, folder: &str, trust_key: Option<&str>) -> Result<Vec<PathBuf>, String> {
     let (root, layers) = project_root_and_layers(account_path, folder)?;
-    let trust = super::trust::Decisions::of(account_path, folder, helper);
+    let trust = super::trust::Decisions::of(account_path, folder, trust_key);
     let root = root.to_string_lossy().into_owned();
     Ok(layers
         .into_iter()
@@ -507,8 +502,8 @@ fn system_requirements() -> Option<PathBuf> {
 /// Luna's replaces whole (a higher layer's string takes a lower one's place,
 /// codex-rs/config): the system layer (`system_layer`), the
 /// account's `config.toml`, the project's layers the run trusts
-/// (`instruction_layers`; `helper`: a helper's, its folder trusted for its
-/// run), each later one's value over the earlier. No
+/// (`instruction_layers`; `trust_key` follows the launch override),
+/// each later one's value over the earlier. No
 /// profile: 0.167.2 refuses to start on a `profile = "<name>"` in a config
 /// (`[profiles.<name>]` is legacy), and a `--profile`, which Luna never
 /// passes, is a user layer (`<name>.config.toml`) below the `-c`
@@ -516,10 +511,10 @@ fn system_requirements() -> Option<PathBuf> {
 /// A managed layer comes above the `-c` itself:
 /// one that sets the key, or one Luna cannot read, is said in `unsure`, and
 /// the session is started all the same (ADR-0026).
-pub fn developer_instructions_in(account_path: &str, folder: &str, helper: bool) -> StackInstructions {
+pub fn developer_instructions_in(account_path: &str, folder: &str, trust_key: Option<&str>) -> StackInstructions {
     let mut out = StackInstructions::default();
     let mut files = vec![system_layer(), Path::new(account_path).join("config.toml")];
-    match instruction_layers(account_path, folder, helper) {
+    match instruction_layers(account_path, folder, trust_key) {
         Ok(layers) => files.extend(layers),
         Err(e) => out.unsure.push(format!("{e}: the project's developer_instructions not read")),
     }
@@ -585,27 +580,6 @@ fn plugins_on(layers: &[DocumentMut]) -> Vec<String> {
 /// One look, as nothing is written back.
 pub fn read_or_empty(path: &Path) -> DocumentMut {
     std::fs::read_to_string(path).ok().and_then(|t| t.parse().ok()).unwrap_or_default()
-}
-
-/// Writes via a sibling temp file so a crash mid-write cannot truncate the
-/// account's whole config. The temp name is this write's own (process and
-/// count), so two writes at once never share one.
-pub fn write(path: &Path, doc: &DocumentMut) -> Result<(), String> {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = path.with_extension(format!("toml.{}-{n}.tmp", std::process::id()));
-    std::fs::write(&tmp, doc.to_string()).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e.to_string()
-    })?;
-    // A rename refused (Codex holding the file) leaves no temp file behind.
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e.to_string()
-    })
 }
 
 /// Whether the account's config.toml names a `windows.sandbox`: the user's
@@ -696,35 +670,36 @@ mod tests {
         let folder = root.join("work");
         std::fs::create_dir_all(&folder).unwrap();
         let (account, f) = (root.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
-        assert_eq!(helper_mcp(&account, &f), Ok(HelperMcp::default()), "no file: nothing to turn off");
+        let read_mcp = || helper_mcp(&account, &f, &super::super::trust::override_key(&f));
+        assert_eq!(read_mcp(), Ok(HelperMcp::default()), "no file: nothing to turn off");
         std::fs::write(root.join("config.toml"), "model = \"m\"\n[mcp_servers.gmail]\ncommand = \"node\"\n").unwrap();
-        assert_eq!(helper_mcp(&account, &f).unwrap().servers, vec![("gmail".to_string(), vec!["command".to_string()])]);
+        assert_eq!(read_mcp().unwrap().servers, vec![("gmail".to_string(), vec!["command".to_string()])]);
         // Caught mid-write, or broken: an error, never a short list.
         std::fs::write(root.join("config.toml"), "[mcp_servers.gmail\ncommand = ").unwrap();
-        assert!(helper_mcp(&account, &f).unwrap_err().contains("not started"));
+        assert!(read_mcp().unwrap_err().contains("not started"));
         // So is a project layer, which could define servers of its own.
         std::fs::write(root.join("config.toml"), "").unwrap();
         std::fs::create_dir_all(folder.join(".codex")).unwrap();
         std::fs::write(folder.join(".codex").join("config.toml"), "[mcp_servers.docs\n").unwrap();
-        assert!(helper_mcp(&account, &f).unwrap_err().contains("not started"));
+        assert!(read_mcp().unwrap_err().contains("not started"));
         std::fs::write(folder.join(".codex").join("config.toml"), "").unwrap();
         // The account's own managed_config.toml is no layer of Codex's, on
         // Windows or elsewhere.
         std::fs::write(root.join("managed_config.toml"), "[mcp_servers.it]\nurl = \"u\"\n").unwrap();
-        assert_eq!(helper_mcp(&account, &f), Ok(HelperMcp::default()), "CODEX_HOME's managed_config.toml");
+        assert_eq!(read_mcp(), Ok(HelperMcp::default()), "CODEX_HOME's managed_config.toml");
         // The machine's managed layer comes over the command line: no -c turns
         // its servers off.
         let managed = root.join("etc-managed_config.toml");
         managed_at(Some(managed.clone()));
         std::fs::write(&managed, "[mcp_servers.it]\nurl = \"u\"\n").unwrap();
-        let e = helper_mcp(&account, &f).unwrap_err();
+        let e = read_mcp().unwrap_err();
         assert!(e.contains("not started") && e.contains("etc-managed_config.toml") && e.contains("connectors: true"), "{e}");
         std::fs::write(&managed, "[plugins.\"crm@m\"]\nenabled = true\n").unwrap();
-        assert!(helper_mcp(&account, &f).is_err(), "nor its plugins");
+        assert!(read_mcp().is_err(), "nor its plugins");
         std::fs::write(&managed, "[features]\napps = true\n").unwrap();
-        assert!(helper_mcp(&account, &f).is_err(), "nor its apps");
+        assert!(read_mcp().is_err(), "nor its apps");
         std::fs::write(&managed, "model = \"m\"\n").unwrap();
-        assert_eq!(helper_mcp(&account, &f), Ok(HelperMcp::default()), "a managed layer setting none of them");
+        assert_eq!(read_mcp(), Ok(HelperMcp::default()), "a managed layer setting none of them");
         managed_at(None);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -746,7 +721,9 @@ mod tests {
         let (a, s) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
         std::fs::write(repo.join(".codex").join("config.toml"), "[mcp_servers.docs]\ncommand = \"x\"\n").unwrap();
         std::fs::write(sub.join(".codex").join("config.toml"), "[mcp_servers.app]\ncommand = \"x\"\n").unwrap();
-        let names = || helper_mcp(&a, &s).map(|m| m.servers.into_iter().map(|(n, _)| n).collect::<Vec<_>>());
+        let names = || {
+            helper_mcp(&a, &s, &super::super::trust::override_key(&s)).map(|m| m.servers.into_iter().map(|(n, _)| n).collect::<Vec<_>>())
+        };
         assert_eq!(names().unwrap(), ["docs", "app"], "both trusted for the run");
         std::fs::write(account.join("config.toml"), format!("[projects.'{s}']\ntrust_level = \"untrusted\"\n")).unwrap();
         assert_eq!(names().unwrap(), ["docs"], "the folder's own layer, saved as untrusted, left out");
@@ -782,7 +759,7 @@ mod tests {
         repo_at(&repo);
         let (a, r) = (account.to_string_lossy().into_owned(), repo.to_string_lossy().into_owned());
         let project = repo.join(".codex").join("config.toml");
-        assert_eq!(servers_named(&a, &r, "luna", false), Ok(Vec::new()), "no config anywhere");
+        assert_eq!(servers_named(&a, &r, "luna", None), Ok(Vec::new()), "no config anywhere");
         let theirs = "[mcp_servers.luna]\ncommand = \"node\"\n[mcp_servers.gmail]\nurl = \"u\"\n";
         std::fs::write(account.join("config.toml"), theirs).unwrap();
         std::fs::write(&project, "mcp_servers.luna.enabled = false\n").unwrap();
@@ -791,32 +768,36 @@ mod tests {
             |file: PathBuf, keys: &[&str], managed: bool| NamedServer { file, keys: keys.iter().map(|k| k.to_string()).collect(), managed };
         let both = [named(account.join("config.toml"), &["command"], false), named(project.clone(), &["enabled"], false)];
         for helper in [false, true] {
-            assert_eq!(servers_named(&a, &r, "luna", helper).unwrap(), both, "undecided for a chat, trusted for a helper");
+            assert_eq!(
+                servers_named(&a, &r, "luna", helper.then_some(r.as_str())).unwrap(),
+                both,
+                "undecided for a chat, trusted for a helper"
+            );
         }
-        assert_eq!(servers_named(&a, &r, "gmail", false).unwrap().len(), 1);
+        assert_eq!(servers_named(&a, &r, "gmail", None).unwrap().len(), 1);
         // One that will not parse: an error where Codex loads it, not where
         // it may never.
         std::fs::write(&project, "[mcp_servers.luna\n").unwrap();
-        assert_eq!(servers_named(&a, &r, "luna", false).unwrap(), both[..1], "undecided");
-        assert!(servers_named(&a, &r, "luna", true).is_err(), "trusted for the helper's run");
+        assert_eq!(servers_named(&a, &r, "luna", None).unwrap(), both[..1], "undecided");
+        assert!(servers_named(&a, &r, "luna", Some(&r)).is_err(), "trusted for the helper's run");
         // Saved as untrusted, Codex leaves it out of a chat, a `luna` or a
         // parse error in it; a helper's run trusts its folder over that.
         let untrusted = format!("{theirs}[projects.'{r}']\ntrust_level = \"untrusted\"\n");
         std::fs::write(account.join("config.toml"), &untrusted).unwrap();
-        assert_eq!(servers_named(&a, &r, "luna", false).unwrap(), both[..1], "a parse error left out");
-        assert!(servers_named(&a, &r, "luna", true).is_err(), "the run's own -c projects over the saved decision");
+        assert_eq!(servers_named(&a, &r, "luna", None).unwrap(), both[..1], "a parse error left out");
+        assert!(servers_named(&a, &r, "luna", Some(&r)).is_err(), "the run's own -c projects over the saved decision");
         std::fs::write(&project, "mcp_servers.luna.enabled = false\n").unwrap();
-        assert_eq!(servers_named(&a, &r, "luna", false).unwrap(), both[..1], "a `luna` left out");
+        assert_eq!(servers_named(&a, &r, "luna", None).unwrap(), both[..1], "a `luna` left out");
         // The managed layer's trust is above the account's: trusted there,
         // Codex loads the layer, and its `luna` would turn Luna's tools off.
         let managed = root.join("etc-managed_config.toml");
         managed_at(Some(managed.clone()));
         std::fs::write(&managed, format!("[projects.'{r}']\ntrust_level = \"trusted\"\n")).unwrap();
-        assert_eq!(servers_named(&a, &r, "luna", false).unwrap(), both, "trusted by the managed config");
+        assert_eq!(servers_named(&a, &r, "luna", None).unwrap(), both, "trusted by the managed config");
         // And above a helper's own `-c projects`: untrusted there, left out.
         std::fs::write(account.join("config.toml"), theirs).unwrap();
         std::fs::write(&managed, format!("[projects.'{r}']\ntrust_level = \"untrusted\"\n")).unwrap();
-        assert_eq!(servers_named(&a, &r, "luna", true).unwrap(), both[..1], "untrusted by the managed config");
+        assert_eq!(servers_named(&a, &r, "luna", Some(&r)).unwrap(), both[..1], "untrusted by the managed config");
         managed_at(None);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -857,7 +838,8 @@ mod tests {
         }
         repo_at(&repo);
         let (a, s) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
-        assert_eq!(helper_mcp(&a, &s), Ok(HelperMcp::default()), "no config anywhere");
+        let read_mcp = || helper_mcp(&a, &s, &super::super::trust::override_key(&s));
+        assert_eq!(read_mcp(), Ok(HelperMcp::default()), "no config anywhere");
         let write = |dir: &Path, text: &str| std::fs::write(dir.join("config.toml"), text).unwrap();
         write(&repo.join(".codex"), "[mcp_servers.docs]\ncommand = \"x\"\n[mcp_servers.gmail]\nenv = { A = \"1\" }\n");
         write(&sub.join(".codex"), "[mcp_servers.\"team.db\"]\nurl = \"u\"\n");
@@ -869,30 +851,30 @@ mod tests {
              [plugins.\"off@market\"]\nenabled = false\n[plugins.\"repo@rm-luna\"]\nenabled = true\n",
         );
         let names = |got: HelperMcp| got.servers.into_iter().map(|(n, _)| n).collect::<Vec<_>>();
-        let got = helper_mcp(&a, &s).unwrap();
+        let got = read_mcp().unwrap();
         assert_eq!(got.servers[0].1, ["command", "env"], "a server's keys from every layer that sets it");
         assert_eq!(got.plugins, ["crm@market"], "on, and not the library's");
         assert_eq!(names(got), ["gmail", "docs", "team.db"], "the account's, then the project's from its root down");
         // Without a root marker, the folder's own layer alone.
         let _ = std::fs::remove_dir_all(repo.join(".git"));
-        assert_eq!(names(helper_mcp(&a, &s).unwrap()), ["gmail", "team.db"]);
+        assert_eq!(names(read_mcp().unwrap()), ["gmail", "team.db"]);
         // A `.git` folder without a HEAD is no root to Codex either.
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        assert_eq!(names(helper_mcp(&a, &s).unwrap()), ["gmail", "team.db"]);
+        assert_eq!(names(read_mcp().unwrap()), ["gmail", "team.db"]);
         // The account's own root markers, as Codex reads them before the project's.
         write(&account, "project_root_markers = [\"Cargo.lock\"]\n");
         std::fs::write(repo.join("Cargo.lock"), "").unwrap();
-        assert_eq!(names(helper_mcp(&a, &s).unwrap()), ["docs", "gmail", "team.db"]);
+        assert_eq!(names(read_mcp().unwrap()), ["team.db"], "an ancestor marker does not grant trust");
         write(&account, "project_root_markers = []\n");
-        assert_eq!(names(helper_mcp(&a, &s).unwrap()), ["team.db"], "no root at all: the folder's own");
+        assert_eq!(names(read_mcp().unwrap()), ["team.db"], "no root at all: the folder's own");
         write(&account, "project_root_markers = \".git\"\n");
-        assert!(helper_mcp(&a, &s).is_err(), "markers Codex would refuse");
+        assert!(read_mcp().is_err(), "markers Codex would refuse");
         // Replaced by a higher layer's, they refuse nothing: Codex checks the
         // merged value.
         let managed = root.join("etc-managed_config.toml");
         std::fs::write(&managed, "project_root_markers = [\"Cargo.lock\"]\n").unwrap();
         managed_at(Some(managed));
-        assert_eq!(names(helper_mcp(&a, &s).unwrap()), ["docs", "gmail", "team.db"], "the managed layer's markers");
+        assert_eq!(names(read_mcp().unwrap()), ["team.db"], "a managed marker alone grants no ancestor trust");
         managed_at(None);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -912,7 +894,7 @@ mod tests {
         repo_at(&repo);
         let (a, r) = (account.to_string_lossy().into_owned(), repo.to_string_lossy().into_owned());
         let write = |dir: &Path, text: &str| std::fs::write(dir.join("config.toml"), text).unwrap();
-        let plugins = || helper_mcp(&a, &r).unwrap().plugins;
+        let plugins = || helper_mcp(&a, &r, &super::super::trust::override_key(&r)).unwrap().plugins;
 
         // On in the project alone.
         write(&account, "");
@@ -969,7 +951,8 @@ mod tests {
         }
         repo_at(&repo);
         let (a, s) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
-        let value = |trusted| developer_instructions_in(&a, &s, trusted);
+        let key = super::super::trust::override_key(&s);
+        let value = |trusted: bool| developer_instructions_in(&a, &s, trusted.then_some(key.as_str()));
         assert_eq!(value(true), StackInstructions::default(), "nothing set anywhere");
         std::fs::write(account.join("config.toml"), "developer_instructions = \"The account's.\"\n").unwrap();
         assert_eq!(value(true).value.as_deref(), Some("The account's."));
@@ -1035,7 +1018,7 @@ mod tests {
         )
         .unwrap();
         let a = account.to_string_lossy().into_owned();
-        let value = |folder: &Path| developer_instructions_in(&a, &folder.to_string_lossy(), false).value;
+        let value = |folder: &Path| developer_instructions_in(&a, &folder.to_string_lossy(), None).value;
         assert_eq!(value(&deep).as_deref(), Some("The repository's."), "the middle and below it left out");
         assert_eq!(value(&repo).as_deref(), Some("The repository's."));
 
@@ -1045,6 +1028,8 @@ mod tests {
         std::fs::create_dir_all(&gitdir).unwrap();
         std::fs::create_dir_all(wt.join(".codex")).unwrap();
         std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.to_string_lossy())).unwrap();
+        std::fs::write(gitdir.join("gitdir"), format!("{}\n", wt.join(".git").display())).unwrap();
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
         std::fs::write(wt.join(".codex").join("config.toml"), "developer_instructions = \"The worktree's.\"\n").unwrap();
         assert_eq!(value(&wt).as_deref(), Some("The worktree's."));
         let _ = std::fs::remove_dir_all(&root);

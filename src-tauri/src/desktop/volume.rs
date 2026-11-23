@@ -94,6 +94,26 @@ pub fn is_remote(path: &str) -> bool {
     upper.as_deref() == Some(r"\\?\UNC\") || (path.starts_with(r"\\") && !path.starts_with(r"\\?\"))
 }
 
+/// The folder's volume serial number and 128-bit file id; None where the
+/// volume gives none.
+#[cfg(windows)]
+pub(crate) fn file_id(file: &std::fs::File) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO};
+    let mut id = FILE_ID_INFO::default();
+    // SAFETY: the handle is the File's, open through the call; the buffer is
+    // of the size the call is told.
+    let got = unsafe {
+        GetFileInformationByHandleEx(HANDLE(file.as_raw_handle()), FileIdInfo, (&raw mut id).cast(), size_of::<FILE_ID_INFO>() as u32)
+    };
+    if got.is_err() || id.FileId.Identifier.iter().all(|b| *b == 0) {
+        return None;
+    }
+    let hex: String = id.FileId.Identifier.iter().map(|b| format!("{b:02x}")).collect();
+    Some(format!("{:016x}:{hex}", id.VolumeSerialNumber))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

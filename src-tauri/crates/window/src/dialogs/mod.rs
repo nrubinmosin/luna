@@ -56,7 +56,6 @@ pub mod cmd {
     pub const CLAUDE_FOLDER_TRUSTED: &str = "claude_folder_trusted";
     pub const CODEX_FOLDER_TRUSTED: &str = "codex_folder_trusted";
     pub const CLAUDE_TRUST_FOLDER: &str = "claude_trust_folder";
-    pub const CODEX_TRUST_FOLDER: &str = "codex_trust_folder";
     pub const DELETE_SESSION: &str = "delete_session";
     pub const BACKGROUND_HELPERS: &str = "background_helpers";
     pub const BACKGROUND_AT_STAKE: &str = "background_at_stake";
@@ -81,7 +80,6 @@ pub mod cmd {
         CLAUDE_FOLDER_TRUSTED,
         CODEX_FOLDER_TRUSTED,
         CLAUDE_TRUST_FOLDER,
-        CODEX_TRUST_FOLDER,
         DELETE_SESSION,
         BACKGROUND_HELPERS,
         BACKGROUND_AT_STAKE,

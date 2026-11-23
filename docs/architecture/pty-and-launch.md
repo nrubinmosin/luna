@@ -108,10 +108,17 @@ Codex TUI is told at every start instead of a line in the account's
 Chats › Copy on select: `"never"` for off (the default), `"always"` for on,
 and no `-c` at all where it is left to the account (0.171.0 takes `auto`,
 `always` or `never`). A helper's `app-server` has no TUI and
-takes the update check alone. A helper adds its folder's trust for the run; a
-person's chat does so only under a trusted folder (Settings) or when trust was
-recorded while its account was in use, else an untrusted folder shows
-Codex's own trust screen. `never` + `danger-full-access` becomes
+takes the update check alone. A background helper passes `-c projects=…`
+keyed by its Git checkout root, its main repository for a verified linked
+worktree, or its own folder outside Git. A chat can get a grant from
+Settings or from its saved choice (`codexTrust` in window state and
+`agents/persist.rs`'s `SavedChat`). At start and resume, Luna checks the
+current project against the approved path and filesystem identity when
+available. The same resolved key goes to Codex and to Luna's config readers,
+including the reserved MCP server name check. The core uses its saved copy
+for its own launch snapshot. Codex consults the account's trust when there
+is no Luna grant.
+`never` + `danger-full-access` becomes
 `--dangerously-bypass-approvals-and-sandbox`; `auto-review` is
 `--approve-for-me` in place of `-a`/`-s`, in `workspace-write`.
 `--no-daemon` keeps the session in this process and pty rather than in Codex's
@@ -151,9 +158,9 @@ ordinary case, not an error:
 - `codex/config.rs` `project_root_and_layers`: no `.git` (with a `HEAD`) and no
   `project_root_markers` hit means the folder is its own project root and
   only its own `.codex/config.toml` is a layer, as Codex has it.
-- `codex/trust.rs` `checkout_of`: outside git the folder is its own checkout,
-  so `trust_override` and the saved decisions key by the folder itself and a
-  trusted parent trusts no subfolder.
+- `codex/trust.rs` `override_key`: outside Git the key is the chosen folder,
+  even when a custom marker gives Codex an ancestor project root. A
+  registered linked worktree uses its main repository's key.
 - `library/folders.rs` `claude_names_taken`: with no repository root to stop
   at, the skill names a folder's own `.claude/skills` take are read all the way
   up.

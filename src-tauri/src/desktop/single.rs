@@ -155,7 +155,7 @@ pub fn dir_keys(dir: &Path) -> Result<Vec<String>, String> {
             }
         };
         let identity = match super::volume::of(&file, &path) {
-            Ok(volume) if volume.stable_ids() => file_id(&file),
+            Ok(volume) if volume.stable_ids() => super::volume::file_id(&file),
             Ok(_) => None,
             Err(e) => {
                 crate::log::warn(
@@ -186,26 +186,6 @@ fn keys(identity: Option<String>, path: &str) -> Vec<String> {
     let mut keys: Vec<String> = identity.into_iter().map(|id| format!("id:{id}")).collect();
     keys.push(format!("path:{}", path.to_uppercase()));
     keys
-}
-
-/// The folder's volume serial number and 128-bit file id; None where the
-/// volume gives none.
-#[cfg(windows)]
-fn file_id(file: &std::fs::File) -> Option<String> {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO};
-    let mut id = FILE_ID_INFO::default();
-    // SAFETY: the handle is the File's, open through the call; the buffer is
-    // of the size the call is told.
-    let got = unsafe {
-        GetFileInformationByHandleEx(HANDLE(file.as_raw_handle()), FileIdInfo, (&raw mut id).cast(), size_of::<FILE_ID_INFO>() as u32)
-    };
-    if got.is_err() || id.FileId.Identifier.iter().all(|b| *b == 0) {
-        return None;
-    }
-    let hex: String = id.FileId.Identifier.iter().map(|b| format!("{b:02x}")).collect();
-    Some(format!("{:016x}:{hex}", id.VolumeSerialNumber))
 }
 
 /// `claim` with its place given: `names` on Windows, `dir` elsewhere. With

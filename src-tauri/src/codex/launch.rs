@@ -20,7 +20,7 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) account_path: &'a str,
     pub(crate) resume: Option<&'a str>,
     /// A `-c` trusting the folder for this run, and what it comes of: a
-    /// trusted root, or a trust asked for while the account was in use.
+    /// trusted root or the person's choice for this chat.
     pub(crate) trust: Option<([String; 2], Item)>,
     /// The account's config names a `windows.sandbox` of its own
     /// (codex/config.rs `windows_sandbox_set`): Luna gives it none.

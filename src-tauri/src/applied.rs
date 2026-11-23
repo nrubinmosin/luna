@@ -114,7 +114,7 @@ items! {
     HelperBackgroundWait = "helper.background-wait", Runtime,
         "A helper's turn ends with its CLI's stdin closed, and Claude Code would then stop the subagents and jobs it put in the background after 10 minutes, their work unfinished: it waits for them up to 3 hours, so a forgotten watcher cannot hold the helper for good. Until then the turn goes on; one that waits half an hour without a word is told to the chat that started it, with what it waits on, and luna_session_stop ends it.";
     HelperTrust = "helper.trust", Runtime,
-        "A helper has nobody to answer Codex's trust screen: the folder it was sent to is trusted for this run only, nothing written.";
+        "A helper has nobody to answer Codex's trust screen: its project is trusted for this run only.";
     ReadOnly = "read-only", UserAction,
         "The agent that spawned it asked for it without the edit tools.";
     Agent = "agent", UserAction,
@@ -122,7 +122,9 @@ items! {
     TrustedRoot = "trusted-root", UserAction,
         "Settings › Trusted roots: the folder is under one, trusted for this run, nothing written.";
     SessionTrust = "session-trust", UserAction,
-        "You asked for this folder to be trusted while a Codex session held the account's config.toml: trusted for runs of this Luna instead.";
+        "You approved this Codex project for runs of this chat.";
+    SessionTrustDropped = "session-trust-dropped", Boundary,
+        "The saved Codex project grant was dropped for this run because the approved directory no longer matches.";
     NoDaemon = "codex.no-daemon", Runtime,
         "The session runs in Luna's terminal, not in Codex's shared background server, so Luna can stop and count it.";
     ThreadTitle = "codex.thread-title", Runtime,

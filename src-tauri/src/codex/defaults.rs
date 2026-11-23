@@ -190,7 +190,7 @@ pub async fn codex_defaults(account_path: OrEmpty<AccountPath>, folder: OrEmpty<
 }
 
 fn resolve(account_path: &str, folder: &str, models: &[CodexModel]) -> CodexDefaults {
-    settle(read(account_path, folder, false), models)
+    settle(read(account_path, folder, None), models)
 }
 
 fn settle(said: Said, models: &[CodexModel]) -> CodexDefaults {
@@ -218,15 +218,15 @@ fn settle(said: Said, models: &[CodexModel]) -> CodexDefaults {
 }
 
 /// What the layers say for a run of the account in `folder`: a chat's, or a
-/// `helper`'s, which Luna trusts its folder for (pty/start.rs `codex_trust`).
+/// run whose folder Luna explicitly trusts (`trust_key`).
 /// Every layer is looked at for what Luna cannot read; the model and effort
 /// are taken only from those Codex trusts (codex/trust.rs `Decisions`), as
 /// they are passed as flags.
-fn read(account_path: &str, folder: &str, helper: bool) -> Said {
-    read_with_managed(account_path, folder, helper, config::managed_layers())
+fn read(account_path: &str, folder: &str, trust_key: Option<&str>) -> Said {
+    read_with_managed(account_path, folder, trust_key, config::managed_layers())
 }
 
-fn read_with_managed(account_path: &str, folder: &str, helper: bool, managed: Vec<std::path::PathBuf>) -> Said {
+fn read_with_managed(account_path: &str, folder: &str, trust_key: Option<&str>, managed: Vec<std::path::PathBuf>) -> Said {
     let mut out = Said::default();
     if account_path.is_empty() {
         return out;
@@ -236,7 +236,7 @@ fn read_with_managed(account_path: &str, folder: &str, helper: bool, managed: Ve
     if !folder.is_empty() {
         match config::project_root_and_layers(account_path, folder) {
             Ok((root, layers)) => {
-                let trust = super::trust::Decisions::of(account_path, folder, helper);
+                let trust = super::trust::Decisions::of(account_path, folder, trust_key);
                 let root = root.to_string_lossy().into_owned();
                 for file in layers {
                     let dir = config::layer_dir(&file);
@@ -272,8 +272,8 @@ fn read_with_managed(account_path: &str, folder: &str, helper: bool, managed: Ve
     out
 }
 
-pub(crate) fn chat_mode(account_path: &str, folder: &str) -> Mode {
-    read(account_path, folder, false).mode()
+pub(crate) fn chat_mode(account_path: &str, folder: &str, trust_key: Option<&str>) -> Mode {
+    read(account_path, folder, trust_key).mode()
 }
 
 /// Keep the prompt unless Luna names `never` and admin policy cannot
@@ -290,12 +290,12 @@ pub(crate) fn prompt_for_spawn(approval: Option<&str>, account: &str, folder: &s
 /// account's and the project layers Codex trusts is `untrusted`, and no layer
 /// Luna takes for untrusted, or cannot read, names one, which Codex might
 /// read all the same. Unsure, it starts, and Codex decides.
-pub(crate) fn refuses_untrusted(account_path: &str, folder: &str) -> Result<(), String> {
+pub(crate) fn refuses_untrusted(account_path: &str, folder: &str, trust_key: Option<&str>) -> Result<(), String> {
     let Ok(account_file) = config::account_file(account_path) else { return Ok(()) };
     let mut files = vec![(config::system_layer(), true), (account_file, true)];
     if !folder.is_empty() {
         let Ok((root, layers)) = config::project_root_and_layers(account_path, folder) else { return Ok(()) };
-        let trust = super::trust::Decisions::of(account_path, folder, false);
+        let trust = super::trust::Decisions::of(account_path, folder, trust_key);
         let root = root.to_string_lossy().into_owned();
         files.extend(layers.into_iter().map(|f| {
             let trusted = trust.layer_trusted(&config::layer_dir(&f), &root, folder);
@@ -352,7 +352,7 @@ pub(crate) fn launch_mode(approval: &str, sandbox: &str) -> (String, String) {
 /// the spawn — off the model list as far as it is known without asking the
 /// CLI.
 pub(crate) fn helper_defaults(account_path: &str, folder: &str) -> (serde_json::Value, Mode) {
-    let said = read(account_path, folder, true);
+    let said = read(account_path, folder, Some(&super::trust::override_key(folder)));
     let mode = said.mode();
     let d = settle(said, &super::models::models_known(account_path));
     (
@@ -412,7 +412,7 @@ mod tests {
         let account = root.join("account");
         let policy = root.join("managed_config.toml");
         let higher = root.join("higher.toml");
-        let defaults = || settle(read_with_managed(&account.to_string_lossy(), "", false, vec![policy.clone(), higher.clone()]), &[]);
+        let defaults = || settle(read_with_managed(&account.to_string_lossy(), "", None, vec![policy.clone(), higher.clone()]), &[]);
         write(&policy, "approval_policy = \"on-request\"\n");
         assert_eq!(pair(&defaults()), OWN_PAIR);
         write(&higher, "sandbox_mode = \"unsupported\"\n");
@@ -551,7 +551,8 @@ mod tests {
         let (acc, dir) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
         let d = resolve(&acc, &dir, &[]);
         assert_eq!((d.model.as_ref().unwrap().value.as_str(), pair(&d)), ("gpt-acc", OWN_PAIR), "untrusted: the account's model");
-        super::super::trust::codex_trust_folder(acc.clone(), repo.to_string_lossy().into_owned()).unwrap();
+        let key = toml_edit::Key::new(repo.to_string_lossy().as_ref());
+        write(&account.join("config.toml"), &format!("model = \"gpt-acc\"\n[projects.{key}]\ntrust_level = \"trusted\"\n"));
         let d = resolve(&acc, &dir, &[]);
         assert_eq!((d.model.as_ref().unwrap().value.as_str(), pair(&d)), ("gpt-repo", OWN_PAIR), "the repository trusted");
         // An untrusted folder's layer naming what Luna does not know.
@@ -587,6 +588,7 @@ mod tests {
     /// a project layer that may go over it, read or not, lets Codex decide.
     #[test]
     fn an_untrusted_approval_is_refused_only_where_codex_surely_reads_it() {
+        config::use_empty_machine_layers_for_test();
         let root = root("untrusted");
         let (account, repo) = (root.join("account"), root.join("repo"));
         let sub = repo.join("app");
@@ -595,25 +597,23 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         let (acc, dir) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
         write(&account.join("config.toml"), "approval_policy = \"untrusted\"\n");
-        let e = refuses_untrusted(&acc, "").unwrap_err();
+        let e = refuses_untrusted(&acc, "", None).unwrap_err();
         assert!(e.contains("approval_policy = \"untrusted\"") && e.contains("no longer supported") && e.contains("config.toml"), "{e}");
-        assert!(refuses_untrusted(&acc, &dir).is_err(), "no project layer names one");
+        assert!(refuses_untrusted(&acc, &dir, None).is_err(), "no project layer names one");
         // The repository's layer names another, untrusted by Luna's reading:
         // Codex may read it, so the chat starts.
         write(&repo.join(".codex").join("config.toml"), "approval_policy = \"on-request\"\n");
-        assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
+        assert_eq!(refuses_untrusted(&acc, &dir, None), Ok(()));
         // Trusted, by the repository: it goes over the account's.
-        super::super::trust::codex_trust_folder(acc.clone(), repo.to_string_lossy().into_owned()).unwrap();
-        assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
+        assert_eq!(refuses_untrusted(&acc, &dir, Some(&super::super::trust::override_key(&dir))), Ok(()));
         // The repository's own `untrusted`, trusted, over an account saying never.
         write(&account.join("config.toml"), "approval_policy = \"never\"\n");
-        super::super::trust::codex_trust_folder(acc.clone(), repo.to_string_lossy().into_owned()).unwrap();
         write(&repo.join(".codex").join("config.toml"), "approval_policy = \"untrusted\"\n");
-        assert!(refuses_untrusted(&acc, &dir).is_err());
+        assert!(refuses_untrusted(&acc, &dir, Some(&super::super::trust::override_key(&dir))).is_err());
         // Only the folder trusted, not the root: Codex skips the root's layer.
-        write(&account.join("config.toml"), "approval_policy = \"never\"\n");
-        super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
-        assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
+        let key = toml_edit::Key::new(dir.as_str());
+        write(&account.join("config.toml"), &format!("approval_policy = \"never\"\n[projects.{key}]\ntrust_level = \"trusted\"\n"));
+        assert_eq!(refuses_untrusted(&acc, &dir, None), Ok(()));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -58,7 +58,6 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("rename_account", Lane::Call),
     ("sync_settings_now", Lane::Call),
     ("codex_folder_trusted", Lane::Call),
-    ("codex_trust_folder", Lane::Call),
     ("claude_trust_folder", Lane::Call),
 ];
 
@@ -80,6 +79,11 @@ impl<T> Arg<T> for T {
 impl Arg<String> for AbsPath {
     fn arg(self) -> String {
         self.into()
+    }
+}
+impl Arg<Option<String>> for Option<AbsPath> {
+    fn arg(self) -> Option<String> {
+        self.map(Into::into)
     }
 }
 impl Arg<String> for AccountPath {
@@ -146,7 +150,8 @@ pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>,
         "ensure_codex_session" => call!(wait res args, pty::ensure_codex_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: Option<String>, effort: String,
             approval: String, sandbox: String, worktree: Option<bool>, resume: Option<String>, login: bool,
-            tools: Option<bool>, account_id: Option<String>, attach: Option<pty::Start>, mode_from: Option<luna_window::dto::ModeSource>),
+            tools: Option<bool>, account_id: Option<String>, attach: Option<pty::Start>, mode_from: Option<luna_window::dto::ModeSource>,
+            trust_folder: Option<luna_window::dto::ProjectTrust>),
         "write_session" => call!(res args, pty::write_session, id: String, data: String, reply: Option<bool>),
         "resize_session" => {
             call!(res args, pty::resize_session, id: String, cols: u16, rows: u16, pixel_width: Option<u16>, pixel_height: Option<u16>)
@@ -185,7 +190,6 @@ pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>,
         "rename_account" => call!(res args, accounts::rename_account, provider: Provider, name: String, to: String),
         "sync_settings_now" => call!(res args, account_settings::sync_settings_now, provider: Provider),
         "codex_folder_trusted" => call!(res args, crate::codex::trust::codex_folder_trusted, account_path: AccountPath, folder: AbsPath),
-        "codex_trust_folder" => call!(res args, crate::codex::trust::codex_trust_folder, account_path: AccountPath, folder: AbsPath),
         "claude_trust_folder" => call!(res args, crate::claude::trust::claude_trust_folder, account_path: AccountPath, folder: AbsPath),
         other => Err(format!("the core has no command {other}")),
     }
@@ -236,7 +240,7 @@ mod tests {
             assert!(err.contains("bad arguments"), "{cmd}: {err}");
         }
         // The call dispatcher refuses protocol commands and retired calls.
-        for cmd in ["hello", "info", "shutdown", "background_move", "background_move_targets", ""] {
+        for cmd in ["hello", "info", "shutdown", "background_move", "background_move_targets", "codex_trust_folder", ""] {
             assert!(lane(cmd).is_none(), "{cmd}");
             assert!(dispatch(cmd, Value::Null).unwrap_err().contains("no command"), "{cmd}");
         }
@@ -259,7 +263,6 @@ mod tests {
             ("ensure_claude_session", session(elsewhere, elsewhere)),
             ("codex_folder_trusted", json!({ "accountPath": elsewhere, "folder": elsewhere })),
             ("codex_folder_trusted", json!({ "accountPath": up, "folder": elsewhere })),
-            ("codex_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
             ("claude_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
         ] {
             // Refused as the arguments are read: the session or trust function

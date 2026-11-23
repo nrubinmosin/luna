@@ -50,6 +50,7 @@ pub(super) fn owed_chat(id: &str, caller: &str, baseline: u32, cursor: u64) -> S
         turns_ended: baseline,
         transcript: None,
         mid_turn: false,
+        codex_trust: None,
         ties: Ties { owed: vec![(caller.into(), baseline, cursor)], seen: vec![(caller.into(), baseline)], ..Default::default() },
     }
 }

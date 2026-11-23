@@ -117,9 +117,8 @@ pub fn answer_all(host: &FakeHost) {
     host.answer(cmd::CODEX_MODELS, codex_models());
     host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "inGit": true }));
     host.answer(cmd::CLAUDE_FOLDER_TRUSTED, json!(true));
-    host.answer(cmd::CODEX_FOLDER_TRUSTED, json!(true));
+    host.answer(cmd::CODEX_FOLDER_TRUSTED, json!({ "trusted": true, "project": null }));
     host.answer(cmd::CLAUDE_TRUST_FOLDER, Value::Null);
-    host.answer(cmd::CODEX_TRUST_FOLDER, Value::Null);
     host.answer(cmd::DELETE_SESSION, json!(null));
     host.answer(cmd::BACKGROUND_HELPERS, helpers());
     host.answer(
@@ -145,6 +144,7 @@ pub fn scenes() -> Vec<(&'static str, Vec<&'static str>)> {
         ("dialog-new-chat-models", vec!["dialog new-chat", "newchat menu model"]),
         ("dialog-new-chat-codex-models", vec!["dialog new-chat", "newchat account 3", "newchat menu model"]),
         ("dialog-new-chat-untrusted", vec!["dialog new-chat"]),
+        ("dialog-new-chat-codex-untrusted", vec!["dialog new-chat", "newchat account 3"]),
         ("dialog-new-chat-worktree", vec!["dialog new-chat", "newchat worktree"]),
         ("dialog-new-chat-no-git", vec!["dialog new-chat"]),
         ("dialog-quick-chat", vec!["dialog quick"]),

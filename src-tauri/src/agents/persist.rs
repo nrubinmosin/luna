@@ -6,7 +6,7 @@
 use crate::agents::held::{GoingIn, Held};
 use crate::agents::owed::Owed;
 use crate::agents::read::transcripts;
-use crate::agents::registry::{account_name, is_dev, label, reg, register, without_retired, Known, Registry};
+use crate::agents::registry::{account_name, is_dev, label, reg, register, without_retired, Known, Registry, CODEX_TRUST};
 use crate::agents::spawn::SpawnTaken;
 use crate::agents::teardown::Auto;
 use crate::provider::Provider;
@@ -135,6 +135,8 @@ pub(super) struct SavedChat {
     /// Its turn was running as this was written.
     #[serde(default)]
     pub(super) mid_turn: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) codex_trust: Option<luna_window::dto::ProjectTrust>,
     pub(super) ties: Ties,
 }
 
@@ -592,8 +594,7 @@ fn freeze(last: &Mutex<Vec<u8>>, frozen: &std::sync::atomic::AtomicBool) {
 }
 
 /// What there is to keep of the sessions the window runs, and the rest the next
-/// core is to tell. A chat nobody wrote to has nothing to keep: it comes back as
-/// it was.
+/// core is to tell. A chat also keeps the person's Codex trust choice.
 pub(super) fn chats_now() -> SavedChats {
     let (mut chats, sends, mut spawns, news) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -608,7 +609,7 @@ pub(super) fn chats_now() -> SavedChats {
             .filter(|(id, k)| {
                 k.settings["background"] != true
                     && !is_dev(id.as_str())
-                    && (r.owed.keys().any(|(_, s)| s == *id) || sends.iter().any(|h| h.id == **id))
+                    && (k.codex_trust.is_some() || r.owed.keys().any(|(_, s)| s == *id) || sends.iter().any(|h| h.id == **id))
             })
             .filter_map(|(id, k)| {
                 Some(SavedChat {
@@ -619,6 +620,7 @@ pub(super) fn chats_now() -> SavedChats {
                     turns_ended: 0,
                     transcript: None,
                     mid_turn: false,
+                    codex_trust: k.codex_trust.clone(),
                     ties: ties_in(&r, id)?,
                 })
             })
@@ -721,6 +723,8 @@ pub(super) fn take_up_chats(saved: SavedChats) {
             for key in HELPER_SETTINGS {
                 o.remove(key);
             }
+            o.remove(CODEX_TRUST);
+            o.remove("trustedInLuna");
         }
         r.known.entry(c.id.clone()).or_insert(Known {
             provider: c.provider,
@@ -729,6 +733,7 @@ pub(super) fn take_up_chats(saved: SavedChats) {
             account_path: c.account_path,
             parent: None,
             settings,
+            codex_trust: c.codex_trust.filter(|_| c.provider == Provider::Codex),
             tools: ties.tools,
             waiting: true,
             orphan: false,
@@ -1364,6 +1369,38 @@ mod tests {
         assert!(!reg().lock().unwrap().owed.contains_key(&key));
         assert!(!owed_stands(&reg().lock().unwrap().known, "rb-caller", "nobody", 0), "and an unknown session is owed nothing");
         forget("rb-helper");
+    }
+
+    #[test]
+    fn trust_in_luna_survives_a_core_restart_for_that_chat_only() {
+        const ID: &str = "persist-codex-trust";
+        const ACCOUNT: &str = "/accounts/openai/test";
+        let folder = crate::golden::project();
+        let grant = crate::codex::trust::project_trust(&folder).unwrap();
+        let key = super::super::registry::codex_chat_trust_key;
+        let trusted = || key(ID, ACCOUNT, &folder);
+        register(ID, Provider::Codex, &folder, ACCOUNT, None, false, serde_json::json!({ (CODEX_TRUST): grant }));
+        assert_eq!(crate::agents::settings_of(ID).get(CODEX_TRUST), None, "the grant stays out of MCP settings");
+        let mut saved = chats_now();
+        saved.chats.retain(|chat| chat.id == ID);
+        let mut json = serde_json::to_value(SavedChats { chats: saved.chats, ..Default::default() }).unwrap();
+        assert_eq!(json["chats"][0][CODEX_TRUST], serde_json::json!(grant));
+        assert_eq!(json["chats"][0]["ties"]["settings"].get(CODEX_TRUST), None);
+        forget(ID);
+        take_up_chats(serde_json::from_value(json.clone()).unwrap());
+        assert_eq!(trusted(), Some(grant.key));
+        assert_eq!(key("another-chat", ACCOUNT, &folder), None);
+        assert_eq!(key(ID, "/accounts/openai/other", &folder), None);
+        assert_eq!(key(ID, ACCOUNT, "/other"), None);
+        forget(ID);
+        assert_eq!(trusted(), None);
+        assert!(chats_now().chats.iter().all(|chat| chat.id != ID), "deleting removes the saved grant");
+        json["chats"][0].as_object_mut().unwrap().remove(CODEX_TRUST);
+        json["chats"][0]["trustedInLuna"] = serde_json::json!(true);
+        take_up_chats(serde_json::from_value(json).unwrap());
+        assert_eq!(trusted(), None, "an older boolean cannot name an approved project");
+        forget(ID);
+        crate::activity::forget(ID);
     }
 
     #[test]

@@ -188,20 +188,18 @@ sign it out.
 
 ## Trust
 
-Neither CLI can show its trust prompt as Luna runs it (Claude Code refuses
-under `--worktree`; Codex follows it with a Windows sandbox question), so the
-bit is written before the spawn: `hasTrustDialogAccepted` in `.claude.json`, or
-`[projects.'<native path>'] trust_level = "trusted"` in `config.toml` (via
-`toml_edit`; the key compared case-insensitively and with either slash).
+A ticked Claude Code trust box writes `hasTrustDialogAccepted` to the
+account's `.claude.json` before spawn. Claude Code requires this consent in
+advance when starting with `--worktree`.
 
-Codex can also be trusted for one run, `-c projects={"<checkout>"={trust_level=
-"trusted"}}` (`trust_override`), which writes nothing: every background
-helper's turn, and any session in a project under a folder of
-`codexTrustedRoots` (Settings → Agents & trust → Trusted folders). Codex matches
-trust by the exact path, never a parent's. With a Codex running on the account,
-trust goes as this override instead of into `config.toml`: the core remembers
-the account and folder in memory, and every matching start gets the override
-until the core exits (`codex/trust.rs`).
+Luna supplies Codex trust for one run via
+`-c projects={"<project>"={trust_level="trusted"}}` (`trust_override`).
+Background helpers use the Git checkout root or, for verified linked
+worktrees, the main repository. Outside Git the helper uses its own
+folder. The same override applies under `codexTrustedRoots` (Settings →
+Agents & trust → Trusted folders) or for a chat whose approved directory
+still matches at launch. Luna saves the chat's grant with the chat and
+leaves `config.toml` to Codex and the account owner.
 
 A Codex chat stopped on "Hooks need review" is an `ask` (`agents/ask.rs`
 `codex_list_on`), the person's to answer: Luna never passes

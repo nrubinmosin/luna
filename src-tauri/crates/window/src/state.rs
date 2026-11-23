@@ -129,6 +129,9 @@ pub struct Chat {
     /// Luna's MCP tools attached.
     #[serde(default)]
     pub tools: bool,
+    /// The person's Codex trust choice for this chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_trust: Option<crate::dto::ProjectTrust>,
     /// Claude Code: a family's label (`Opus`) or a full id. Codex: its model,
     /// none for Codex's own default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1394,6 +1397,7 @@ mod tests {
             worktree_path: None,
             session_id: None,
             tools: false,
+            codex_trust: None,
             model: Some("Opus".into()),
             effort: "high".into(),
             perm: Some("Ask".into()),

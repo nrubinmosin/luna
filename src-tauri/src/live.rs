@@ -458,25 +458,23 @@ fn a_chat_runs_in_a_folder_without_git(provider: Provider) {
                 None,
             ))
         }
-        Provider::Codex => {
-            crate::codex::trust::codex_trust_folder(account.clone(), folder.clone()).expect("trusting the folder in the throwaway account");
-            crate::runtime::block_on(crate::pty::ensure_codex_session(
-                id.clone(),
-                folder.clone(),
-                account.clone(),
-                model,
-                "low".into(),
-                "never".into(),
-                "read-only".into(),
-                Some(false),
-                None,
-                false,
-                Some(false),
-                None,
-                None,
-                None,
-            ))
-        }
+        Provider::Codex => crate::runtime::block_on(crate::pty::ensure_codex_session(
+            id.clone(),
+            folder.clone(),
+            account.clone(),
+            model,
+            "low".into(),
+            "never".into(),
+            "read-only".into(),
+            Some(false),
+            None,
+            false,
+            Some(false),
+            None,
+            None,
+            None,
+            crate::codex::trust::project_trust(&folder),
+        )),
     };
     struct Chat(String, String);
     impl Drop for Chat {

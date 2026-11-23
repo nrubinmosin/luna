@@ -304,6 +304,7 @@ fn chat(c: &Value) -> Option<Chat> {
         worktree_path: str_of(c, "worktreePath").filter(|s| !s.is_empty()),
         session_id,
         tools: flag("tools"),
+        codex_trust: None,
         model: str_of(c, "model"),
         effort: str_of(c, "effort").unwrap_or_default(),
         perm: (provider == Provider::Claude).then(|| str_of(c, "perm")).flatten(),

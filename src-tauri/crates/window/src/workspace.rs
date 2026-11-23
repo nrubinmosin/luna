@@ -2497,6 +2497,7 @@ pub fn spec(chat: &Chat, folder: &str, account: &str) -> SessionSpec {
                 "resume": chat.session_id,
                 "login": false,
                 "tools": chat.tools,
+                "trustFolder": chat.codex_trust,
             }),
         },
     };

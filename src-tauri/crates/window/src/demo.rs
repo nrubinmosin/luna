@@ -232,6 +232,12 @@ impl Scene {
         if self.name == "dialog-new-chat-untrusted" {
             host.answer(crate::dialogs::cmd::CLAUDE_FOLDER_TRUSTED, json!(false));
         }
+        if self.name == "dialog-new-chat-codex-untrusted" {
+            host.answer(
+                crate::dialogs::cmd::CODEX_FOLDER_TRUSTED,
+                json!({ "trusted": false, "project": { "key": r"C:\work", "canonicalPath": r"C:\work", "fileId": null } }),
+            );
+        }
         if self.name == "dialog-helpers-many" {
             host.answer(crate::dialogs::cmd::BACKGROUND_HELPERS, crate::dialogs::demo::many_helpers());
         }
@@ -359,6 +365,7 @@ pub fn term_state() -> crate::state::WindowState {
         worktree_path: None,
         session_id: Some("5f0c9a7e-0000-4000-8000-00000000d3e0".into()),
         tools: false,
+        codex_trust: None,
         model: Some("Opus".into()),
         effort: "high".into(),
         perm: Some("Ask".into()),

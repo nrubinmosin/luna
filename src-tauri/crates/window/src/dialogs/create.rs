@@ -8,6 +8,7 @@
 
 use super::choice::{ClaudeSettings, CodexSettings, Settings, claude_stock, codex_stock, model_label_of, same_path};
 use super::cmd;
+use crate::dto::{CodexFolderTrust, ProjectTrust};
 use crate::host::Host;
 use crate::models::Models;
 use crate::panels::ask;
@@ -45,17 +46,18 @@ pub fn trusted_cmd(p: Provider) -> &'static str {
     }
 }
 
-pub fn trust_cmd(p: Provider) -> &'static str {
-    match p {
-        Provider::Claude => cmd::CLAUDE_TRUST_FOLDER,
-        Provider::Codex => cmd::CODEX_TRUST_FOLDER,
-    }
-}
-
 /// Whether the account has accepted the CLI's trust prompt for the folder;
 /// true when it cannot be told.
 pub async fn folder_trusted(host: &Arc<dyn Host>, p: Provider, account: &str, folder: &str) -> Result<bool, String> {
-    ask::<bool>(host, trusted_cmd(p), json!({ "accountPath": account, "folder": folder })).await
+    Ok(folder_trust(host, p, account, folder).await?.trusted)
+}
+
+pub async fn folder_trust(host: &Arc<dyn Host>, p: Provider, account: &str, folder: &str) -> Result<CodexFolderTrust, String> {
+    let args = json!({ "accountPath": account, "folder": folder });
+    match p {
+        Provider::Claude => Ok(CodexFolderTrust { trusted: ask(host, trusted_cmd(p), args).await?, project: None }),
+        Provider::Codex => ask(host, trusted_cmd(p), args).await,
+    }
 }
 
 /// What a chat is made from.
@@ -68,9 +70,10 @@ pub struct Make {
     pub worktree: bool,
     /// Luna's MCP tools attached.
     pub tools: bool,
-    /// Mark the folder trusted in the account, as the CLI's own prompt
-    /// would: ticked in the dialog, never for a helper opened as a chat.
+    /// The person's choice to save Claude Code account trust.
     pub trust: bool,
+    /// The Codex project shown and approved in the dialog.
+    pub codex_trust: Option<ProjectTrust>,
     pub name: Option<String>,
     /// A helper opened as a chat keeps the id its transcript and Luna's log
     /// know it by.
@@ -95,6 +98,7 @@ impl Make {
             worktree: false,
             tools: false,
             trust: false,
+            codex_trust: None,
             name: None,
             id: None,
             from_helper: false,
@@ -117,8 +121,13 @@ async fn prepare(host: &Arc<dyn Host>, make: &Make) -> Result<(), String> {
             return Err(why);
         }
     }
-    if make.trust && !make.from_helper && !account.is_empty() && !folder_trusted(host, p, account, &make.folder).await? {
-        ask::<serde_json::Value>(host, trust_cmd(p), json!({ "accountPath": account, "folder": make.folder })).await?;
+    if p == Provider::Claude
+        && make.trust
+        && !make.from_helper
+        && !account.is_empty()
+        && !folder_trusted(host, p, account, &make.folder).await?
+    {
+        ask::<serde_json::Value>(host, cmd::CLAUDE_TRUST_FOLDER, json!({ "accountPath": account, "folder": make.folder })).await?;
     }
     Ok(())
 }
@@ -140,6 +149,7 @@ fn build(make: &Make, ws: &Workspace) -> Chat {
         worktree_path: make.in_worktree.clone(),
         session_id: make.session_id.clone(),
         tools: make.tools,
+        codex_trust: make.codex_trust.clone(),
         model: None,
         effort: String::new(),
         perm: None,
@@ -257,6 +267,7 @@ impl Workspace {
             worktree_path: in_worktree.then(|| o.cwd.clone()),
             session_id: o.session_id.clone(),
             tools: known.tools,
+            codex_trust: None,
             model: None,
             effort: String::new(),
             perm: None,
