@@ -67,6 +67,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   terminals), so the gap between two panes reads as a separator.
 - A pane's title bar sets its details apart with " · ": "Opus · high ·
   Claude Code: backend · ctx 9%", where they ran together.
+- Plain Claude Code chats use the CLI's prompt snapshot to keep the prompt
+  cache warm. Role layers, Luna tools, library plugins, and named agents
+  use a fresh prompt. A resume also renders fresh if it might replay an
+  older snapshot containing Luna tools.
 
 ### Removed
 

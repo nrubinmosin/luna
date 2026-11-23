@@ -114,9 +114,10 @@ Claude Code 2.1.326 asks, at every interactive start, whether to trust each
 the answer. A chat was given two of Luna's folders that way, its notes and its
 role layers, so every start and resume asked twice. `-p` is not asked.
 
-- **A chat** gets `hooks/<id>/CLAUDE.md` by `--append-system-prompt-file`,
-  without `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, and
-  `--system-prompt-snapshot off` at every start, so a resume renders its
+- **A chat with role layers** gets `hooks/<id>/CLAUDE.md` by
+  `--append-system-prompt-file`, without
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, and passes
+  `--system-prompt-snapshot off` so a resume renders its
   system prompt afresh with the layers as they are now (on, the default, a
   resume sends the prompt the conversation began with). Its notes folder is
   readable by a `Read` allow rule in its `--settings` instead of an
