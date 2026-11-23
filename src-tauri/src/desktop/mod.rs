@@ -132,10 +132,23 @@ mod tests {
         let init = block(nsi, "Function .onInit");
         assert!(!init.is_empty(), "installer.nsi has no .onInit");
         let refusal = init.iter().position(|l| l.trim() == "!insertmacro LunaRefuse").expect("the refusal is in .onInit");
-        for (what, needle) in [("the 0.20 record", "${FORMERUNINSTKEY}"), ("the update's record", "${UNINSTKEY}"), ("the exe", "${MAINBINARYNAME}.exe")] {
+        for (what, needle) in
+            [("the 0.20 record", "${FORMERUNINSTKEY}"), ("the update's record", "${UNINSTKEY}"), ("the exe", "${MAINBINARYNAME}.exe")]
+        {
             assert!(init[..refusal].iter().any(|l| l.contains(needle)), "{what} is checked before the refusal");
         }
-        let changes = ["SetOutPath", "Write", "Delete", "RMDir", "CreateDirectory", "CopyFiles", "Rename", "Exec", "CreateMutex", "Call LunaOneSetupAtATime"];
+        let changes = [
+            "SetOutPath",
+            "Write",
+            "Delete",
+            "RMDir",
+            "CreateDirectory",
+            "CopyFiles",
+            "Rename",
+            "Exec",
+            "CreateMutex",
+            "Call LunaOneSetupAtATime",
+        ];
         for line in &init {
             assert!(!changes.iter().any(|c| line.trim_start().starts_with(c)), ".onInit changes something: {line}");
         }

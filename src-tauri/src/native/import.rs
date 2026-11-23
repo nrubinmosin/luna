@@ -61,7 +61,6 @@ const IDENTIFIERS: &[&str] = &[crate::identity::RELEASE.identifier, "ai.sprouter
 #[cfg_attr(not(windows), allow(dead_code))]
 const TEST_IDENTIFIERS: &[&str] = &[crate::identity::TEST.identifier, "ai.sprouter.luna.test"];
 
-
 /// Where the import looks: the data dir's profile, then, only where its
 /// store is surely not there, the `legacy` ones in order.
 #[derive(Debug, PartialEq)]
