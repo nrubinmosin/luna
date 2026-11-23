@@ -323,7 +323,7 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     }
     // At once: a core killed now would take it up as one that never got started,
     // and start its work over; or hand back as undelivered what the model has.
-    if named || landed {
+    if named || landed || heard.approval_changed {
         save();
     }
     true

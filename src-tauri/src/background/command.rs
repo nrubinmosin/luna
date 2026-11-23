@@ -8,6 +8,9 @@ use crate::applied::{Applied, Item};
 /// in, its environment, and what Luna applied in them (applied.rs).
 pub(super) type Command = (Vec<String>, String, Vec<(&'static str, String)>, Vec<Applied>);
 
+/// The thread-level override for the one Luna tool that can require approval.
+pub(super) const SPAWN_APPROVAL_KEY: &str = "mcp_servers.luna.tools.luna_session_spawn.approval_mode";
+
 /// How long `claude -p`, its stdin closed, waits for what its turn left in the
 /// background before it stops it, in ms (`0`: as long as that takes).
 const BG_WAIT_CEILING_ENV: &str = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS";
@@ -265,6 +268,7 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // the server's answer is checked against them (appserver.rs
             // `settings_differ`).
             let mut typed = serde_json::Map::new();
+            let inherited_approval = !s.auto_review && s.approval.is_none() && resume.is_some();
             if s.auto_review {
                 typed.insert("approvalPolicy".into(), json!("on-request"));
                 typed.insert("approvalsReviewer".into(), json!("auto_review"));
@@ -335,6 +339,14 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             let luna = s.token.clone().filter(|_| s.tools).zip(crate::hub::mcp_url()).map(|(token, url)| {
                 let approval = typed.get("approvalPolicy").and_then(Value::as_str);
                 let prompt = crate::codex::defaults::prompt_for_spawn(approval, &s.account_path, &dir);
+                // The process can also start a replacement thread. Only the
+                // resume request can use an exception based on the old policy.
+                let prompt = if inherited_approval && !prompt {
+                    typed.insert("config".into(), json!({ (SPAWN_APPROVAL_KEY): "approve" }));
+                    true
+                } else {
+                    prompt
+                };
                 (crate::codex::launch::mcp_args(&url, prompt), token, prompt)
             });
             if luna.is_some() {
@@ -1543,9 +1555,12 @@ mod tests {
             e.session = thread.map(str::to_owned);
             e.observed.codex_approval = learned.map(|value| json!(value));
             let t = turn(&e, ID, &r);
-            let prompt = effective.is_none() || cfg!(target_os = "macos");
+            let resume_exception = approval.is_none() && effective == Some("never") && !cfg!(target_os = "macos");
+            let prompt = approval.is_none() || cfg!(target_os = "macos");
             assert!(t.args.ends_with(&golden::codex_mcp(prompt)), "{approval:?} {thread:?}: {:?}", t.args);
-            assert_eq!(t.open.unwrap()["params"]["approvalPolicy"].as_str(), effective);
+            let open = t.open.unwrap();
+            assert_eq!(open["params"]["approvalPolicy"].as_str(), effective);
+            assert_eq!(open["params"]["config"][SPAWN_APPROVAL_KEY].as_str(), resume_exception.then_some("approve"));
         }
         std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
         let refused = command_for(&e, ID).err().unwrap();

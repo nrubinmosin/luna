@@ -193,6 +193,8 @@ pub(super) struct Heard {
     pub(super) turn_ready: bool,
     /// `turn/start` was answered: its start is through (the CLI canary).
     pub(super) turn_started: bool,
+    /// The saved policy changed when a thread could not resume or started its turn.
+    pub(super) approval_changed: bool,
 }
 
 /// One message off a turn's server, into helper `id`, under the registry's
@@ -278,10 +280,17 @@ fn start_fresh(e: &mut Entry, why: &str, heard: &mut Heard) {
     if !rpc_of(e).is_some_and(|rpc| rpc.open["method"] == "thread/resume") {
         return broke(e, format!("the thread would not open: {why}"), heard);
     }
+    let inherited_approval = !e.spec.auto_review && e.spec.approval.is_none();
+    heard.approval_changed = e.observed.codex_approval.take().is_some();
     let Some(rpc) = rpc_mut(e) else { return };
     rpc.open["method"] = json!("thread/start");
     if let Some(params) = rpc.open["params"].as_object_mut() {
         params.remove("threadId");
+        if inherited_approval {
+            params.remove("approvalPolicy");
+            // The only config override in the request is the resume's spawn exception.
+            params.remove("config");
+        }
     }
     let params = rpc.open["params"].clone();
     note(e, &format!("its thread cannot be resumed ({}): a new one is started", one_line(why)));
@@ -400,12 +409,13 @@ fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
             // conversation, and the server has the turn's text, not to be
             // handed back.
             if let Some((thread, approval)) = opened {
-                if e.session.as_ref() != Some(&thread) {
+                if e.session.as_ref() != Some(&thread) || e.observed.codex_approval.is_none() {
+                    heard.approval_changed = e.observed.codex_approval != approval;
                     e.observed.codex_approval = approval;
+                }
+                if e.session.as_ref() != Some(&thread) {
                     e.session = Some(thread);
                     mark_by_thread(e);
-                } else if e.observed.codex_approval.is_none() {
-                    e.observed.codex_approval = approval;
                 }
             }
             heard.landed = stdin_took(e) || heard.landed;
@@ -1126,27 +1136,41 @@ mod tests {
     /// thread: a new thread is started with the turn's text, once.
     #[test]
     fn a_thread_that_cannot_be_resumed_is_started_afresh_with_the_text() {
-        for answer in [
-            json!({ "id": OPEN, "error": { "code": -32600, "message": "no rollout found for thread id t-old" } }),
-            json!({ "id": OPEN, "result": { "thread": { "id": "t-other" } } }),
+        for (answer, named_policy) in [
+            (json!({ "id": OPEN, "error": { "code": -32600, "message": "no rollout found for thread id t-old" } }), None),
+            (json!({ "id": OPEN, "result": { "thread": { "id": "t-other" } } }), Some("on-request")),
         ] {
             let id = "as-fresh";
-            let open =
-                json!({ "method": "thread/resume", "params": { "threadId": "t-old", "cwd": "C:\\p", "developerInstructions": "role" } });
+            let mut open = json!({ "method": "thread/resume", "params": {
+                "threadId": "t-old", "cwd": "C:\\p", "developerInstructions": "role", "approvalPolicy": named_policy.unwrap_or("never")
+            } });
+            if named_policy.is_none() {
+                open["params"]["config"] = json!({ (SPAWN_APPROVAL_KEY): "approve" });
+            }
             let lines = running(id, open);
-            lock().entries.get_mut(id).unwrap().session = Some("t-old".into());
-            hear(id, &answer);
+            {
+                let mut r = lock();
+                let e = r.entries.get_mut(id).unwrap();
+                e.session = Some("t-old".into());
+                e.spec.approval = named_policy.map(str::to_owned);
+                e.observed.codex_approval = Some(json!("never"));
+            }
+            assert!(hear(id, &answer).approval_changed);
+            assert!(lock().entries[id].observed.codex_approval.is_none());
             let line: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
             assert_eq!(line["method"], "thread/start", "{answer}");
             assert!(line["params"].get("threadId").is_none() && line["params"]["developerInstructions"] == "role", "{line}");
-            hear(id, &json!({ "id": OPEN, "result": { "thread": { "id": "t-new" } } }));
+            assert_eq!(line["params"]["approvalPolicy"].as_str(), named_policy);
+            assert!(line["params"].get("config").is_none());
+            hear(id, &json!({ "id": OPEN, "result": { "thread": { "id": "t-new" }, "approvalPolicy": "on-request" } }));
             let start: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
             assert_eq!(
                 (start["params"]["threadId"].as_str(), start["params"]["input"][0]["text"].as_str()),
                 (Some("t-new"), Some("the task"))
             );
-            hear(id, &json!({ "id": TURN, "result": { "turn": { "id": "u-1" } } }));
+            assert!(hear(id, &json!({ "id": TURN, "result": { "turn": { "id": "u-1" } } })).approval_changed);
             assert_eq!(lock().entries[id].session.as_deref(), Some("t-new"));
+            assert_eq!(lock().entries[id].observed.codex_approval, Some(json!("on-request")));
             // Refused a second time: the turn fails, rather than loop.
             hear(id, &json!({ "id": OPEN, "error": { "code": -32600, "message": "no rollout found for thread id t-new" } }));
             lock().entries.remove(id);
