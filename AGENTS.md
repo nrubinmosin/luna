@@ -73,10 +73,8 @@ Rules for anyone (person or agent) changing Luna.
     starts it, and `-Test` builds and runs the Windows tests.
   - `./scripts/linux-check.ps1` — the crate built for Linux and all its unit tests run
     there, the Unix code included.
-  - `./scripts/gpui-shots.ps1` — the native window's demo scenes
-    (`src-tauri/crates/window/src/demo.rs`) shot off screen to PNGs. `-Scenes`
-    filters by scene name. `-Fit` runs the window crate's fit test before
-    capturing the small-screen scenes (docs/development.md, "Fit on small screens").
+  - `./scripts/gpui-shots.ps1` — the native window's demo scenes shot off
+    screen to PNGs (the `ui-check` skill says how to use it).
   - `./scripts/fuzz.ps1` — the fuzz targets over the transcript readers, on a
     nightly pinned for them alone (docs/testing.md, "Fuzzing").
 - Test only on the test build, never on the Luna in use. It has its own
@@ -84,7 +82,8 @@ Rules for anyone (person or agent) changing Luna.
   beside its exe in `test-build/` (ignored by git), so it runs alongside the
   real one. `./scripts/test-build.ps1 -Run -DevCaller ...` also registers a scripted
   MCP caller for exercising Luna tools.
-- An agent runs the test build with `-Background` (implied by `-DevCaller`):
+- An agent runs the test build with `-Background` (implied by `-DevCaller`
+  unless `-Foreground` is given, which an agent never passes):
   its window stays off screen, unfocused and off the taskbar, and keeps
   working. Drive its UI only by targeted means aimed at the test build's own
   window, using the test build's `LUNA_TEST_DRIVE` file or messages to its own
@@ -143,13 +142,9 @@ one CLI only.
   committed with it. macOS and Linux check symlinks out as they are; on
   Windows it takes Developer Mode and `git config --global core.symlinks
   true`, or the link arrives as a text file Claude Code does not see.
-- The skills there are the processes too long for a line here: `live-test`
-  (the live suite on throwaway accounts), `release` (a version from bump to
-  published draft), `cli-upgrade` (a new Claude Code or Codex version),
-  `luna-security-review` (a change to a trust boundary, against the threat
-  model), `ui-check` (gate, screenshots and test-build smoke for a UI
-  change) and `commit-message` (a message that passes the hook and CI,
-  and the git moves around one: a refusal, fixups, rewording, reverts).
+- The skills there are the processes too long for a line here (live tests,
+  releases, CLI upgrades, security review, UI checks, commit messages); each
+  one's description says when it applies.
 - Once per clone, `git config core.hooksPath .githooks`: its pre-commit hook
   refuses a commit with anything under `.claude/skills/` that is not a symlink.
 - A commit message is a sentence saying what the change does, 72 characters at
