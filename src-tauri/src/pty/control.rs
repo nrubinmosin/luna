@@ -513,7 +513,7 @@ pub fn orphan_live(id: String, start: super::Start) -> bool {
 
 fn refuse_a_helper(id: &str) -> Result<(), String> {
     if crate::background::has(id) {
-        // In words the window knows it by, to keep the row (dialogs/delete.rs).
+        // The window shows this refusal in the delete dialog.
         return Err(format!(
             "{id} {}; it can be deleted once it has opened or is back with its agent",
             luna_window::dialogs::rows::HELD_AS_HELPER

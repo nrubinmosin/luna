@@ -9,8 +9,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 /// What the core's refusal to delete a chat's session says when the id is a
-/// helper it still holds for an opening (pty/control.rs `refuse_a_helper`):
-/// the delete dialog lists the row again on it (delete.rs `confirm`).
+/// helper it still holds for an opening (pty/control.rs `refuse_a_helper`).
 pub const HELD_AS_HELPER: &str = "is still a helper being opened as a chat";
 
 /// A helper that runs with no row of its own.

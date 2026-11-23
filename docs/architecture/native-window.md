@@ -1550,13 +1550,14 @@ it closes, the keyboard goes back to the terminal it belongs in.
   the same line (`agents/teardown.rs`). Delete sends `background_delete` for
   the helpers chosen (`stopWorking`, `ofChat` the chat), `delete_session` for
   the chat (`{ id }`: the session and its scrollback, the transcript staying;
-  the core also clears attachments a 0.19 window left) and takes the row off
-  every board (`Workspace::remove_chat`); a `delete_session` the core refuses
-  because the id is a helper it still holds for an opening puts the row back
-  where it stood (`Workspace::relist`). Until the core has answered that
-  delete, or `DELETE_HELD` (12 s) has passed, the delete is work an update's
-  last write waits for (`Workspace::admit`), so a refusal puts the row back
-  before that write, frozen or not. Luna removes no worktree
+  the core also clears attachments a 0.19 window left). The dialog waits
+  for the reply and the orphan scan still knows the chat's ID. On success,
+  `Workspace::remove_chat` takes the row off every board, which triggers
+  another scan. On failure the dialog shows the error and keeps the row in
+  place. The dialog refreshes its helper list before a retry. While Delete
+  is pending, the dialog explains why other dialogs have to wait. An
+  update's last write waits for the core's reply and the resulting chat list
+  change (`Workspace::admit`). Luna removes no worktree
   (ADR-0030): a chat's that its CLI made stays on disk, and the dialog says
   so. Passing a helper to another chat is cut.
 - **Helpers popover** (`helpers.rs`): `dialogs::open_helpers(chat, window, cx)` is its entry point,

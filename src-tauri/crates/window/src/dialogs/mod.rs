@@ -191,7 +191,10 @@ impl DialogLayer {
         self.open.as_ref().map(Dialog::name)
     }
 
-    fn show(&mut self, dialog: Dialog, window: &mut Window, cx: &mut Context<Self>) {
+    fn show(&mut self, dialog: Dialog, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if matches!(&self.open, Some(Dialog::Delete(v)) if !v.read(cx).may_close()) {
+            return false;
+        }
         if self.open.is_none() {
             self.before = window.focused(cx).map(|f| f.downgrade());
         }
@@ -199,6 +202,7 @@ impl DialogLayer {
         self.open = Some(dialog);
         self.focus.focus(window, cx);
         cx.notify();
+        true
     }
 
     /// The new-chat dialog, on `folder` where it was asked for one.
@@ -214,8 +218,9 @@ impl DialogLayer {
         let Some(chat) = self.models.workspace.read(cx).state.find(id).cloned() else { return };
         let (models, layer) = (self.models.clone(), cx.weak_entity());
         let dialog = cx.new(|cx| DeleteChat::new(models, layer, chat, cx));
-        self.show(Dialog::Delete(dialog), window, cx);
-        self.deleting = Some(id.to_owned());
+        if self.show(Dialog::Delete(dialog), window, cx) {
+            self.deleting = Some(id.to_owned());
+        }
     }
 
     /// The helpers popover: `chat`'s helpers (its helpers' helpers with them),
@@ -261,7 +266,7 @@ impl DialogLayer {
     fn ask_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let go = match &self.open {
             Some(Dialog::NewChat(v)) => v.update(cx, |v, cx| v.may_close(cx)),
-            Some(Dialog::Delete(v)) => v.update(cx, |v, cx| v.may_close(cx)),
+            Some(Dialog::Delete(v)) => v.read(cx).may_close(),
             Some(Dialog::Helpers(v)) => v.update(cx, |v, cx| v.may_close(cx)),
             Some(Dialog::Crash(_)) => true,
             None => false,
