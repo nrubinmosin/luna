@@ -7,6 +7,7 @@
 #   ./scripts/windows-tests.ps1 -Run        run what is there
 #   ./scripts/windows-tests.ps1 -Build -Run
 #   -Dir <path>                             another folder (relative to the repo root)
+#   -Filter <name>,<name>                    run tests whose names contain any filter
 #
 # Which files are the tests is cargo's to say: its JSON messages name each test
 # executable it built, so nothing here guesses by file name or time. -Build
@@ -20,7 +21,8 @@
 param(
     [switch]$Build,
     [switch]$Run,
-    [string]$Dir = 'test-build/windows-tests'
+    [string]$Dir = 'test-build/windows-tests',
+    [string[]]$Filter = @()
 )
 . "$PSScriptRoot/lib.ps1"
 
@@ -84,6 +86,11 @@ cargo xwin test --locked --release --no-run --workspace --lib --bins --target x8
 }
 
 if ($Run) {
+    $filtered = $PSBoundParameters.ContainsKey('Filter')
+    $filters = @($Filter -split ',' | ForEach-Object { $_.Trim() })
+    if ($filtered -and (-not $filters -or $filters -contains '')) {
+        throw '-Filter needs a test name fragment in each position'
+    }
     $exes = @(Get-ChildItem -LiteralPath $Dir -Filter *.exe -File -ErrorAction SilentlyContinue)
     if (-not $exes) { throw "no test executables in $Dir - build them with -Build" }
     $passed = 0; $ignored = 0
@@ -92,7 +99,7 @@ if ($Run) {
         foreach ($exe in $exes) {
             Write-Host "== $($exe.Name)" -ForegroundColor Cyan
             # Echoed as it comes and kept for the counts below.
-            & $exe.FullName 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable lines | Out-Host
+            & $exe.FullName @filters 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable lines | Out-Host
             if ($LASTEXITCODE) { throw "$($exe.Name) failed (exit $LASTEXITCODE)" }
             foreach ($line in $lines) {
                 if ($line -match '^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored') {
@@ -103,5 +110,6 @@ if ($Run) {
     } finally {
         Pop-Location
     }
+    if ($filtered -and $passed -eq 0) { throw "no tests passed for -Filter $($filters -join ',')" }
     Write-Host "Windows unit tests: $passed passed, $ignored ignored, in $($exes.Count) executables" -ForegroundColor Green
 }

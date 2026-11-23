@@ -88,6 +88,14 @@ pub fn of(file: &std::fs::File, path: &str) -> std::io::Result<Volume> {
     Ok(Volume { file_system: String::from_utf16_lossy(&name[..len]), flags, remote: is_remote(path) })
 }
 
+/// A directory's resolved spelling and identity, where the volume keeps IDs.
+#[cfg(windows)]
+pub(crate) fn directory_stamp(file: &std::fs::File) -> Option<(String, Option<String>)> {
+    let path = final_path(file).ok()?;
+    let id = of(file, &path).ok().filter(Volume::stable_ids).and_then(|_| file_id(file));
+    Some((path, id))
+}
+
 /// Whether `path`, as `final_path` gives it, is on a share.
 pub fn is_remote(path: &str) -> bool {
     let upper = path.get(..8).map(str::to_ascii_uppercase);

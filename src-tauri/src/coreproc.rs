@@ -162,13 +162,15 @@ fn run() {
     // Before anything is written there. A failure is logged and shown in
     // Settings' checks; the token folders below are made private regardless.
     let _ = crate::paths::protect_data_dir();
-    let dir = ipc::core_dir();
     // Owner-only: off Windows the core's socket is in it, and the folder's
     // mode is what keeps other users from reaching it.
-    if let Err(e) = crate::secret::private_dir(&dir) {
-        crate::log::error("core", &format!("cannot create {}: {e}", dir.display()));
-        return;
-    }
+    let dir = match ipc::prepare_core_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            crate::log::error("core", &format!("cannot create {}: {e}", ipc::core_dir().display()));
+            return;
+        }
+    };
     // Held for the life of the process; a second core started meanwhile finds
     // it taken and leaves the first one be.
     let Ok(lock) = std::fs::File::options().create(true).truncate(false).write(true).open(dir.join("core.lock")) else {
@@ -196,6 +198,7 @@ fn run() {
         crate::log::error("core", &format!("{why} The core starts no session or helper."));
     }
     crate::lifecycle::start_core();
+    crate::checkout::sweep_ignore_repos(&dir);
     sweep_old_copies();
     keep_full_speed();
     crate::peer::note_launch();

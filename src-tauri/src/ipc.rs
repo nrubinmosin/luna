@@ -201,6 +201,19 @@ pub fn core_dir() -> PathBuf {
     crate::paths::data_dir().join("core")
 }
 
+pub(crate) fn prepare_core_dir() -> io::Result<PathBuf> {
+    static CORE_DIR: std::sync::OnceLock<io::Result<PathBuf>> = std::sync::OnceLock::new();
+    CORE_DIR
+        .get_or_init(|| {
+            let dir = core_dir();
+            crate::secret::private_dir(&dir)?;
+            Ok(dir)
+        })
+        .as_ref()
+        .cloned()
+        .map_err(io::Error::other)
+}
+
 pub fn discovery_file() -> PathBuf {
     core_dir().join("core.json")
 }

@@ -214,10 +214,23 @@ pub fn release(chat_id: &str) {
 /// session was started in. That repository is in git's spelling (long names) and
 /// the folder may be in 8.3 short ones, so the two are compared by place.
 fn in_folder(cwd: &str, folder: &str) -> bool {
-    use crate::checkout::{codex_shaped, project_of, same_place};
+    use crate::checkout::{codex_shaped, rollout_matches_project, same_plain_place};
     // The cwd is the rollout's text: looked up from only as a plain path.
-    norm_path(cwd) == norm_path(folder)
-        || (codex_shaped(cwd) && crate::boundary::derived_ok(cwd, folder) && project_of(cwd).is_some_and(|p| same_place(&p, folder)))
+    if norm_path(cwd) == norm_path(folder) {
+        return true;
+    }
+    if !crate::boundary::derived_ok(cwd, folder) {
+        return false;
+    }
+    if same_plain_place(Path::new(cwd), Path::new(folder)) {
+        return true;
+    }
+    if !codex_shaped(cwd) {
+        return false;
+    }
+    let settings = crate::settings::get();
+    let projects = settings.library.folders.iter().map(|f| f.path.as_str()).chain(settings.codex_trusted_roots.iter().map(String::as_str));
+    rollout_matches_project(cwd, folder, projects)
 }
 
 /// The rollout of a thread a live session's TUI says it is on, by the start of
@@ -391,6 +404,13 @@ mod tests {
         assert!(git(&["worktree", "add", "-q", "--detach", &s(&wt)]));
         assert!(in_folder(&s(&wt), &s(&repo)), "Codex's worktree of it");
         assert!(in_folder(&s(&repo), &s(&repo)));
+        #[cfg(windows)]
+        {
+            let long = std::fs::canonicalize(&repo).unwrap();
+            let long = long.to_str().unwrap();
+            let long = long.strip_prefix(r"\\?\").unwrap_or(long);
+            assert!(in_folder(long, &s(&repo)), "a direct rollout can use the long spelling");
+        }
         assert!(!in_folder(&s(&wt), &s(&other)), "another folder's");
         let _ = std::fs::remove_dir_all(&root);
     }

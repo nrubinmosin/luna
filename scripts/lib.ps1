@@ -162,6 +162,7 @@ $Script
     # reaps them; otherwise they stay zombies and look alive to kill(pid, 0).
     Invoke-Checked $What {
         docker run --rm --init `
+          -e CI `
           -e LUNA_BUILD=$Build `
           -e LUNA_FLAVOR=test `
           -e CARGO_TARGET_DIR=/target `

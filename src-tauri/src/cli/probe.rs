@@ -177,8 +177,8 @@ fn run(provider: Provider, exe: &Path, home: &Path, args: &[String]) -> Result<(
 /// What the probe started, all of it: a Job Object of its own on Windows,
 /// the process's own group on Unix. Whatever the CLI starts is born inside,
 /// and goes with it when the run ends, however it ends.
-struct Tree {
-    child: std::process::Child,
+pub(crate) struct Tree {
+    pub(crate) child: std::process::Child,
     #[cfg(windows)]
     job: crate::procs::KillJob,
 }
@@ -203,7 +203,7 @@ fn job_for(pid: u32) -> windows::core::Result<crate::procs::KillJob> {
 }
 
 impl Tree {
-    fn spawn(mut cmd: Process) -> std::io::Result<Tree> {
+    pub(crate) fn spawn(mut cmd: Process) -> std::io::Result<Tree> {
         // Suspended until it is in its job: what it starts at once would
         // otherwise be born outside it.
         #[cfg(windows)]
@@ -236,9 +236,7 @@ impl Tree {
         Ok(Tree { child })
     }
 
-    /// Ends every process of the run, the CLI's leftovers among them, and
-    /// reaps the CLI.
-    fn end(&mut self) {
+    fn kill_tree(&self) {
         // Every member, a process with a window of its own among them.
         #[cfg(windows)]
         self.job.end();
@@ -248,8 +246,44 @@ impl Tree {
         unsafe {
             libc::killpg(self.child.id() as i32, libc::SIGKILL);
         }
+    }
+
+    /// Ends every process of the run and reaps the leader.
+    pub(crate) fn end(&mut self) {
+        self.kill_tree();
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    /// Finishes a completed probe, including any descendants it left behind.
+    pub(crate) fn try_finish(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        #[cfg(unix)]
+        {
+            // Leave the leader unreaped until after signaling its group so
+            // its PID cannot be reused as an unrelated process group ID.
+            // SAFETY: zeroed siginfo is valid and waitid writes into it.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: this child is ours and info is writable for the call.
+            let result = unsafe { libc::waitid(libc::P_PID, self.child.id(), &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+            if result != 0 {
+                let error = std::io::Error::last_os_error();
+                return if error.kind() == std::io::ErrorKind::Interrupted { Ok(None) } else { Err(error) };
+            }
+            // SAFETY: waitid supplies si_pid when it returns an exit event.
+            if unsafe { info.si_pid() } == 0 {
+                return Ok(None);
+            }
+            self.kill_tree();
+            self.child.wait().map(Some)
+        }
+        #[cfg(not(unix))]
+        {
+            let status = self.child.try_wait()?;
+            if status.is_some() {
+                self.kill_tree();
+            }
+            Ok(status)
+        }
     }
 }
 
