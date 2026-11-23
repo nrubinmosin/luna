@@ -6,6 +6,7 @@ use super::guide::guide_text_as;
 use super::tools::{names_as, REMOVED};
 use super::{content, Call};
 use crate::agents;
+use crate::boundary::AbsPath;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -331,8 +332,8 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
             .and_then(|q| agents::session_list(caller, &q))
             .map(|p| json!(p)),
         "luna_session_get" => agents::scope_all(caller, scope).and_then(|all| agents::session_get(caller, &id, all)).map(|s| json!(s)),
-        "luna_session_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
-            .map_err(|e| format!("bad arguments: {e}"))
+        "luna_session_spawn" => folder_arg(a)
+            .and_then(|_| serde_json::from_value::<agents::SpawnParams>(a.clone()).map_err(|e| format!("bad arguments: {e}")))
             .and_then(|p| crate::power::admitted(|| agents::spawn(caller, p)))
             .map(|s| json!(s)),
         // Admitted for the whole send, the turn it starts included: a
@@ -408,9 +409,9 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
             .and_then(|()| agents::report_get(caller, &id, a["since"].as_u64(), a["ack"].as_bool().unwrap_or(false), this))
             .map(|r| json!(r)),
         "luna_account_list" => Ok(json!({ "accounts": agents::account_list(a["provider"].as_str()) })),
-        "luna_account_get" => {
-            agents::account_get(caller, a["name"].as_str().unwrap_or(""), a["provider"].as_str(), a["folder"].as_str()).map(|r| json!(r))
-        }
+        "luna_account_get" => folder_arg(a)
+            .and_then(|folder| agents::account_get(caller, a["name"].as_str().unwrap_or(""), a["provider"].as_str(), folder))
+            .map(|r| json!(r)),
         "luna_run_list" => run_list(caller, a),
         "luna_guide_get" => {
             // Plain text, not a JSON value spelled out.
@@ -430,6 +431,20 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
     match out {
         Ok(v) => json!({ "content": content(v) }),
         Err(e) => failure(e),
+    }
+}
+
+/// The `folder` of `luna_session_spawn` and `luna_account_get`, held to what
+/// an agent may name (boundary.rs `agent_folder`: no network share, then
+/// absolute, no `.` or `..` part, no device or verbatim prefix, no stream
+/// suffix) before anything under it is looked at: the project's settings
+/// there are read as the user and a helper started there, and a relative path
+/// would be taken from the core's working folder, Luna's own. Not named, or
+/// blank: the caller's own.
+fn folder_arg(a: &Value) -> Result<Option<AbsPath>, String> {
+    match a["folder"].as_str().filter(|f| !f.trim().is_empty()) {
+        None => Ok(None),
+        Some(f) => crate::boundary::agent_folder(f).map(Some).map_err(|e| format!("folder: {e}")),
     }
 }
 
@@ -675,6 +690,167 @@ mod tests {
 
     fn slot(caller: &str, key: &str) -> (String, String, String) {
         (caller.to_string(), "luna_session_send".to_string(), key.to_string())
+    }
+
+    /// A folder that is not an absolute plain path, each of them a spelling a
+    /// caller could send: relative, a `.` or `..` part, a device or verbatim
+    /// prefix, a drive with no root; on Windows a root with no drive and a
+    /// stream name too.
+    fn refused_folders(base: &str) -> Vec<String> {
+        let sep = std::path::MAIN_SEPARATOR;
+        let mut refused = vec![
+            "project".into(),
+            ".".into(),
+            format!("..{sep}project"),
+            format!("{base}{sep}..{sep}elsewhere"),
+            format!("{base}{sep}.{sep}here"),
+            r"\\?\C:\work".into(),
+            r"\\.\pipe\luna".into(),
+            "C:work".into(),
+        ];
+        if cfg!(windows) {
+            refused.extend([r"\work".to_string(), format!("{base}:stream")]);
+        }
+        refused
+    }
+
+    /// The text of a call that failed.
+    fn failed(caller: &str, tool: &str, a: &Value) -> String {
+        let r = act(caller, tool, a, &Call::new());
+        assert_eq!(r["isError"], true, "{a}: {r}");
+        r["content"][0]["text"].as_str().unwrap_or("").to_owned()
+    }
+
+    /// `luna_account_get`'s folder is held to a folder's shape, and kept out of
+    /// Luna's own, before anything is read: a refused one fails on its folder,
+    /// ahead of the account lookup (which would say the account is unknown).
+    /// A plain absolute folder gets through to it.
+    #[test]
+    fn an_account_s_folder_is_typed_before_anything_is_read() {
+        let get = |folder: &str| failed("ag-me", "luna_account_get", &json!({ "name": "ag-no-such-account", "folder": folder }));
+        let base = std::env::temp_dir().join("luna-ag-project");
+        let base = base.to_string_lossy();
+        for bad in refused_folders(&base) {
+            let why = get(&bad);
+            assert!(why.starts_with("folder: not a usable path"), "{bad:?}: {why}");
+        }
+        let luna = crate::paths::data_dir().join("sub");
+        assert!(get(&luna.to_string_lossy()).contains("Luna's own folder"), "inside the data folder");
+        assert!(get(&base).starts_with("no account \"ag-no-such-account\""), "a plain absolute folder is taken");
+        let none = failed("ag-me", "luna_account_get", &json!({ "name": "ag-no-such-account" }));
+        assert!(none.starts_with("no account"), "no folder: the caller's own");
+        for blank in ["", "  "] {
+            assert!(get(blank).starts_with("no account"), "a blank folder is none named: {blank:?}");
+        }
+    }
+
+    /// `luna_session_spawn`'s folder is held to the same shape, in the same
+    /// words, before the spawn reads its arguments or anything else: a caller
+    /// that is no session hears of its folder first. A plain absolute folder
+    /// gets through to the spawn, which then finds no such caller.
+    #[test]
+    fn a_spawn_s_folder_is_typed_before_anything_is_made() {
+        let spawn = |folder: &str| failed("sf-nobody", "luna_session_spawn", &json!({ "prompt": "Look.", "folder": folder }));
+        let base = std::env::temp_dir().join("luna-sf-project");
+        let base = base.to_string_lossy();
+        for bad in refused_folders(&base) {
+            let why = spawn(&bad);
+            assert!(why.starts_with("folder: not a usable path"), "{bad:?}: {why}");
+        }
+        assert_eq!(spawn(&base), "caller is not a registered session", "a plain absolute folder is taken");
+        let none = failed("sf-nobody", "luna_session_spawn", &json!({ "prompt": "Look." }));
+        assert_eq!(none, "caller is not a registered session", "no folder: the caller's own");
+        for blank in ["", "  "] {
+            assert_eq!(spawn(blank), "caller is not a registered session", "a blank folder is none named: {blank:?}");
+        }
+    }
+
+    /// A folder left out is the caller's own, held as a named one is, by a
+    /// caller that is a session: in Luna's folder, both tools refuse it before
+    /// the account is looked up or the spawn goes on. A caller whose shell is
+    /// on a share its folder is not on has its own folder taken, not the
+    /// share's worktree: the spawn goes on to the provider it names, which
+    /// it refuses as unknown before any account is used.
+    #[test]
+    fn an_omitted_folder_is_held_as_a_named_one() {
+        use crate::provider::Provider;
+        let in_luna = crate::paths::data_dir().join("of-sub").to_string_lossy().into_owned();
+        let local = std::env::temp_dir().join(format!("luna-of-{}", std::process::id()));
+        std::fs::create_dir_all(&local).unwrap();
+        let local = local.to_string_lossy().into_owned();
+        fn as_session(id: &'static str, folder: &str) -> impl Fn(&str, Value) -> String {
+            let token = agents::register(id, Provider::Claude, folder, "C:/acc/anthropic/one", None, true, json!({})).unwrap();
+            move |tool: &str, a: Value| {
+                let _presenting = agents::presenting(id, &token);
+                failed(id, tool, &a)
+            }
+        }
+        let call = as_session("of-in-luna", &in_luna);
+        for (tool, a) in [
+            ("luna_account_get", json!({ "name": "of-no-such-account" })),
+            ("luna_account_get", json!({ "name": "of-no-such-account", "folder": " " })),
+            ("luna_session_spawn", json!({ "prompt": "Look.", "provider": "luna-none" })),
+            ("luna_session_spawn", json!({ "prompt": "Look.", "provider": "luna-none", "folder": "" })),
+        ] {
+            let why = call(tool, a.clone());
+            assert!(why.contains("Luna's own folder"), "{tool} {a}: {why}");
+        }
+        let call = as_session("of-lead", &local);
+        // Where its shell is: Luna's own folder, and on Windows a share, the
+        // network through the object namespace, a device.
+        let mut shells =
+            vec![crate::paths::data_dir().join("of-shell").join(".claude").join("worktrees").join("w").to_string_lossy().into_owned()];
+        if cfg!(windows) {
+            shells.extend(
+                [
+                    r"\\luna-no-such-host\share\p\.claude\worktrees\w",
+                    r"\\?\GLOBALROOT\Device\Mup\luna-no-such-host\share\p\.claude\worktrees\w",
+                    r"\\.\UNC\luna-no-such-host\share\p\.claude\worktrees\w",
+                    r"\\.\C:\p\.claude\worktrees\w",
+                ]
+                .map(String::from),
+            );
+        }
+        for shell in shells {
+            crate::background::take_up_for_test("of-lead", &shell, 1, &[], None);
+            assert_eq!(agents::caller_worktree_for_test("of-lead"), None, "{shell}");
+            let why = call("luna_session_spawn", json!({ "prompt": "Look.", "provider": "luna-none" }));
+            assert!(why.starts_with("unknown provider luna-none"), "{shell}: {why}");
+        }
+        crate::background::remove("of-lead");
+        for id in ["of-in-luna", "of-lead"] {
+            agents::forget(id);
+        }
+        let _ = std::fs::remove_dir_all(&local);
+    }
+
+    /// Neither tool takes a folder on a network share, in any spelling of
+    /// one, and each says to map it to a drive letter, before anything is
+    /// looked at (the host named does not exist). A drive letter, a mapped
+    /// share's included, still gets through.
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_on_a_network_share_is_refused_by_both_tools() {
+        let get = |folder: &str| failed("ns-me", "luna_account_get", &json!({ "name": "ns-no-such-account", "folder": folder }));
+        let spawn = |folder: &str| failed("ns-nobody", "luna_session_spawn", &json!({ "prompt": "Look.", "folder": folder }));
+        let shares = [
+            r"\\luna-no-such-host\share\project",
+            r"\\luna-no-such-host\share",
+            "//luna-no-such-host/share/project",
+            r"\/luna-no-such-host/share\project",
+            r"\\?\UNC\luna-no-such-host\share\project",
+            r"\\?\unc\luna-no-such-host\share",
+            r"\\.\UNC\luna-no-such-host\share",
+            "//?/UNC/luna-no-such-host/share",
+        ];
+        for share in shares {
+            for why in [get(share), spawn(share)] {
+                assert!(why.starts_with("folder: a network share") && why.contains("map the share to a drive letter"), "{share}: {why}");
+            }
+        }
+        let mapped = r"Z:\luna-ns-mapped\project";
+        assert!(get(mapped).starts_with("no account \"ns-no-such-account\""), "a drive letter is taken");
+        assert_eq!(spawn(mapped), "caller is not a registered session", "a drive letter is taken");
     }
 
     /// A keyed call's result outlives its CLI started again with a new token,

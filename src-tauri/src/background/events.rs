@@ -839,6 +839,24 @@ mod tests {
         assert_eq!(home_of(&plain.spec, inside(&plain.spec.folder, &["src"])), plain.spec.folder, "the folder it was sent to");
         let elsewhere = s(&std::env::temp_dir().join("luna-elsewhere"));
         assert_eq!(home_of(&plain.spec, elsewhere.clone()), elsewhere, "nothing to go by");
+        // A saved cwd Luna would not look at: the folder it was sent to, and
+        // nothing there looked at (the host does not exist).
+        let mut unlooked = vec!["src".to_string(), format!("{elsewhere}{}..", std::path::MAIN_SEPARATOR)];
+        if cfg!(windows) {
+            unlooked.extend(
+                [
+                    r"\\?\GLOBALROOT\Device\Mup\luna-no-such-host\share\p",
+                    r"\\.\UNC\luna-no-such-host\share\p",
+                    r"\\?\C:\p",
+                    r"\\luna-no-such-host\share\p\.claude\worktrees\w",
+                    "//?/UNC/luna-no-such-host/share/p",
+                ]
+                .map(String::from),
+            );
+        }
+        for cwd in unlooked {
+            assert_eq!(home_of(&plain.spec, cwd.clone()), plain.spec.folder, "{cwd}");
+        }
         // Sent into a folder of a worktree, that folder is where it works.
         plain.spec.folder = inside(&wt, &["docs"]);
         assert_eq!(home_of(&plain.spec, inside(&wt, &["docs", "img"])), plain.spec.folder);

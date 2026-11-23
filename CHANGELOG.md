@@ -90,6 +90,32 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `luna_power_set`'s description no longer says sleep and hibernate close
   the CLIs; they leave them running.
 
+### Security
+
+- `luna_account_get` and `luna_session_spawn` hold the `folder` they are
+  given to the checks a window's folder gets, absolute with no `.` or `..`
+  part and no device or verbatim prefix, before anything there is read or
+  started; `luna_account_get` also refuses one in or above Luna's own
+  folder, as a spawn does, and so the caller's own where none is named. A
+  relative folder was taken from Luna's own folder. A blank `folder` is
+  now none named, the caller's own.
+- On Windows, neither tool takes a `folder` on a network share
+  (`\\server\share`, `//server/share`, `\\?\UNC\...`): Luna would connect
+  to the host an agent named and could hand it your NTLM credentials. Map
+  the share to a drive letter and pass that; the folders you pick in the
+  window are not affected. Nor does Luna look at a worktree's repository
+  that the worktree's `.git` file names, at the folder a caller's shell is
+  in when a helper is spawned with no folder named, or at a helper's
+  saved working folder after a restart, unless it is a plain absolute path
+  (no `\\?\`, `\\.\` or other device form) and on no share the folder it
+  came from is not on already; and a spawn started afresh after a restart
+  is held to the same checks as a new one. A helper spawned with no folder
+  named into a worktree on a network share is not started afresh after a
+  restart with `resumeOnRestart`; its caller is told why.
+- The Codex model `luna_account_get` reports, and a spawn takes, from a
+  config is passed on only where it reads as a model id (at most 256
+  letters, digits and `-._:/@+`), not as whatever text the file holds.
+
 ## [0.21.0] - 2026-11-23
 
 Luna's window no longer makes a G-SYNC monitor stutter: on Windows Luna is

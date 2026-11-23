@@ -45,7 +45,8 @@ pub fn absolute(s: &str) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return bad("not absolute");
     }
-    for part in s.split(['/', '\\']) {
+    // The platform's separators: on Unix `notes\..\draft` is one name.
+    for part in s.split(std::path::is_separator) {
         if part == "." || part == ".." {
             return bad("a . or .. part");
         }
@@ -57,9 +58,13 @@ pub fn absolute(s: &str) -> Result<PathBuf, String> {
             Component::Prefix(p) => {
                 use std::path::Prefix;
                 // `\\?\` skips the normalizing the checks here rely on, and
-                // `\\.\` names devices, not folders.
-                if !matches!(p.kind(), Prefix::Disk(_) | Prefix::UNC(..)) {
-                    return bad("a device or verbatim prefix");
+                // `\\.\` names devices, not folders. std reads `//?/…` and
+                // `//./…` as shares on a host `?` or `.`; Windows, as those.
+                let device_host = |server: &std::ffi::OsStr| matches!(server.to_str(), Some("?" | "."));
+                match p.kind() {
+                    Prefix::Disk(_) => {}
+                    Prefix::UNC(server, _) if !device_host(server) => {}
+                    _ => return bad("a device or verbatim prefix"),
                 }
             }
             _ => return bad("a . or .. part"),
@@ -71,6 +76,84 @@ pub fn absolute(s: &str) -> Result<PathBuf, String> {
         return bad("a stream name");
     }
     Ok(path.to_path_buf())
+}
+
+/// The host a path on a network share names, in lower case: `\\server\share`,
+/// `\\?\UNC\…` or `\\.\UNC\…`, with either slash. Looking at such a path,
+/// Luna connects to that host as the user, and Windows offers it the user's
+/// NTLM credentials. Read from the text alone, nothing looked at. Only Windows
+/// reads a path as a share.
+pub fn share_host(s: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut parts = Path::new(s).components();
+        let Some(Component::Prefix(p)) = parts.next() else { return None };
+        let unc = |name: &std::ffi::OsStr| name.eq_ignore_ascii_case("UNC");
+        let host = match p.kind() {
+            // std reads `//?/UNC/host/…` as a share on host `?`; Windows, as
+            // `\\?\UNC\host\…`. Either way a share, its host the next name.
+            Prefix::UNC(server, share) if matches!(server.to_str(), Some("?" | ".")) && unc(share) => None,
+            Prefix::UNC(server, _) | Prefix::VerbatimUNC(server, _) => Some(server.to_owned()),
+            // Windows' object names know no case: `\\?\unc\` is a share too,
+            // its host the next name.
+            Prefix::Verbatim(name) | Prefix::DeviceNS(name) if unc(name) => None,
+            _ => return None,
+        };
+        // One with no host named yet is a share all the same.
+        let host = host
+            .or_else(|| {
+                parts.find_map(|c| match c {
+                    Component::Normal(n) => Some(n.to_owned()),
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
+        Some(host.to_string_lossy().to_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = s;
+        None
+    }
+}
+
+/// `share_host` says it names one.
+pub fn on_a_share(s: &str) -> bool {
+    share_host(s).is_some()
+}
+
+/// A path Luna came to from `from` (a repository a worktree's `.git` file
+/// names, the folder a session's shell is in) that is on a share `from` is
+/// not on: looking at it would connect Luna to a host nobody chose, so it is
+/// taken for none before anything there is looked at. One on the host `from`
+/// is on already is taken.
+pub fn foreign_share(derived: &str, from: &str) -> bool {
+    share_host(derived).is_some_and(|host| share_host(from).as_ref() != Some(&host))
+}
+
+/// Whether Luna may look at a path it came to itself from `from` (the
+/// repository a worktree's `.git` file names, the folder a session's shell
+/// is or was in): its text is a plain absolute path (`absolute`, which
+/// refuses `\\?\GLOBALROOT\…`, `\\.\…`, `\??\…` and every other device or
+/// verbatim form, a relative path and a `.` or `..` part), on no share `from`
+/// is not on already (`foreign_share`). Asked before anything there is
+/// looked at; one that fails is taken for none.
+pub fn derived_ok(derived: &str, from: &str) -> bool {
+    absolute(derived).is_ok() && !foreign_share(derived, from)
+}
+
+/// A folder an agent names (`luna_session_spawn`'s and `luna_account_get`'s,
+/// a spawn started afresh after a restart): no network share (`on_a_share`),
+/// then `absolute`. The window's folders, which the person picks, are held to
+/// `absolute` alone.
+pub fn agent_folder(s: &str) -> Result<AbsPath, String> {
+    if on_a_share(s) {
+        return Err("a network share (\\\\server\\share) is not taken from an agent, as Luna would connect to the host it names; \
+                    map the share to a drive letter and pass that"
+            .into());
+    }
+    AbsPath::try_from(s.to_owned())
 }
 
 /// An account folder: `<root>/<provider dir>/<name>` with a valid account
@@ -303,6 +386,78 @@ mod tests {
         }
         #[cfg(windows)]
         assert!(absolute(r"\\server\share\p").is_ok());
+        // A backslash is no separator on Unix: these are names.
+        #[cfg(unix)]
+        for p in [r"/home/u/notes\..\draft", r"/home/u/a\.\b", r"/home/u/..\x"] {
+            assert!(absolute(p).is_ok(), "{p}");
+        }
+    }
+
+    /// A share is told by its text, in every spelling Windows reads as one,
+    /// and so is its host; a drive letter, a mapped share's too, is none.
+    #[test]
+    fn a_share_and_its_host_are_told_by_the_text() {
+        let shares = [
+            (r"\\Host\share\p", "host"),
+            ("//host/share/p", "host"),
+            (r"\/host/share\p", "host"),
+            (r"\\?\UNC\host\share", "host"),
+            (r"\\?\unc\Host\share", "host"),
+            (r"\\.\UNC\host\share", "host"),
+            ("//?/UNC/host/share", "host"),
+            ("//./unc/Host/share", "host"),
+            // No host named yet: a share all the same.
+            (r"\\?\UNC", ""),
+            ("//?/UNC", ""),
+        ];
+        for (s, host) in shares {
+            assert_eq!(share_host(s).as_deref(), if cfg!(windows) { Some(host) } else { None }, "{s}");
+            #[cfg(windows)]
+            assert!(agent_folder(s).is_err(), "{s}");
+        }
+        for s in [abs("p"), r"Z:\mapped".into(), r"\\?\C:\p".into(), r"\\.\pipe\x".into(), String::new()] {
+            assert_eq!(share_host(&s), None, "{s}");
+        }
+        assert!(agent_folder(&abs("p")).is_ok());
+        if cfg!(windows) {
+            let why = agent_folder(r"\\host\share").unwrap_err();
+            assert!(why.starts_with("a network share") && why.contains("drive letter"), "{why}");
+            assert!(foreign_share(r"\\other\share\repo", r"C:\p"), "from a local folder");
+            assert!(foreign_share(r"\\other\share\repo", r"\\host\share\p"), "from another host");
+            assert!(!foreign_share(r"\\HOST\share\repo", r"\\host\other\p"), "the host already reached");
+        }
+        assert!(!foreign_share(&abs("repo"), &abs("p")));
+    }
+
+    /// A path Luna came to itself is looked at only as a plain absolute path
+    /// on no host its origin is not on: every device and verbatim form, the
+    /// network through the object namespace among them, a relative path and a
+    /// `..` part are none.
+    #[test]
+    fn a_derived_path_is_looked_at_only_as_a_plain_one() {
+        let from = abs("p");
+        assert!(derived_ok(&abs("repo"), &from));
+        for bad in ["repo".to_string(), abs("p/../repo"), String::new()] {
+            assert!(!derived_ok(&bad, &from), "{bad:?}");
+        }
+        if cfg!(windows) {
+            for bad in [
+                r"\\?\GLOBALROOT\Device\Mup\host\share\repo",
+                r"\\?\GLOBALROOT\Device\HarddiskVolume1\repo",
+                r"\\.\UNC\host\share\repo",
+                r"\\.\C:\repo",
+                r"\\?\C:\repo",
+                r"\\?\UNC\host\share\repo",
+                r"\??\UNC\host\share\repo",
+                "//?/UNC/host/share/repo",
+                "//./pipe/repo",
+                r"\\other\share\repo",
+            ] {
+                assert!(!derived_ok(bad, &from), "{bad}");
+                assert!(!derived_ok(bad, r"\\host\share\p"), "{bad} from a share");
+            }
+            assert!(derived_ok(r"\\host\share\repo", r"\\host\share\p"), "the host already reached");
+        }
     }
 
     #[test]
@@ -320,6 +475,14 @@ mod tests {
         ];
         if cfg!(windows) {
             bad.extend([r"\\?\C:\p".into(), r"\\.\PhysicalDrive0".into(), r"C:\p\x:stream".into(), r"C:p".into(), r"\p".into()]);
+            // std reads these as shares on a host `?` or `.`; Windows, as
+            // verbatim and device paths.
+            bad.extend([
+                "//?/UNC/host/share".into(),
+                "//./pipe/x".into(),
+                r"\\?\GLOBALROOT\Device\Mup\host\share".into(),
+                r"\??\C:\p".into(),
+            ]);
         }
         for p in bad {
             assert!(absolute(&p).is_err(), "{p:?} was let through");

@@ -8,7 +8,7 @@ pub(super) mod folder;
 mod role;
 pub(super) mod settle;
 
-use crate::agents::admission::{plain_text, reaches_luna};
+use crate::agents::admission::{plain_text, refuse_luna};
 use crate::agents::registry::{depth_of, is_dev, reg, stands, top_of, Registry, TOKEN_GONE};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
@@ -430,6 +430,8 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     if params.budget_pct.is_some_and(|pct| pct > 100) {
         return Err("budgetPct is a share of the context window: 0 (never) to 100".into());
     }
+    // A blank folder is none named, as `luna_account_get` has it.
+    params.folder = params.folder.take().filter(|f| !f.trim().is_empty());
     // Off the registry lock: this reads the CLI's registry from disk. A
     // helper works where its caller does, in the worktree its CLI made for it
     // as well.
@@ -464,19 +466,20 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     if params.folder.is_none() {
         params.folder = Some(worktree.unwrap_or_else(|| me.folder.clone()));
     }
+    // Luna's own folder is refused before anything in it, its `.git` among
+    // them, is read. A blank one (a caller registered with none) holds all.
+    if let Some(dir) = params.folder.as_deref().filter(|d| !d.trim().is_empty()) {
+        refuse_luna(dir)?;
+    }
     // A folder inside a CLI-made worktree files the helper under the
     // worktree's project, like the chat it came from; it runs in that
-    // worktree.
+    // worktree. The project its `.git` file leads to is never a share the
+    // worktree is not on (`checkout::repo_of_linked`), and is refused in
+    // Luna's folder in turn.
     let mut in_worktree = None;
     if let Some(project) = params.folder.as_deref().and_then(crate::checkout::project_of) {
+        refuse_luna(&project)?;
         in_worktree = params.folder.replace(project);
-    }
-    for dir in params.folder.iter().chain(in_worktree.iter()).filter(|d| !d.trim().is_empty()) {
-        if reaches_luna(dir) {
-            return Err(format!(
-                "{dir} holds or is inside Luna's own folder (its settings, logs and the CLIs it runs): no helper works there"
-            ));
-        }
     }
     let allowed = allowed_account_dirs();
     let (one, list) = match params.account.take() {
