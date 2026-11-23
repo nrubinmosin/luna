@@ -181,7 +181,12 @@ can type into it and answer its model's questions with `scope: "all"`
   folder. For isolation create a worktree yourself with `git worktree add`, pass
   it as `folder`, and remove it when you are done. A helper spawned without a
   `folder` from a chat that runs in a worktree works in that worktree.
-- A `folder` that does not exist is refused at the spawn.
+- A `folder` that does not exist is refused at the spawn, and so is one that is not an
+  absolute path with no `.` or `..` part, or that is in or above Luna's own folder.
+  On Windows a folder on a network share (`\\server\share`) is refused too, as Luna
+  would connect to the host an agent named: map the share to a drive letter and pass
+  that. The folders you pick in the window are not affected. A blank `folder` is none
+  named: the helper works where its caller does, which is refused in Luna's folder too.
 - The spawn reports what settings cannot: other live sessions in the same
   directory (`sameFolder`), whose files and git it shares. `luna_session_list` names the
   model a turn ran on, where the organization swapped the one asked for.
@@ -385,7 +390,9 @@ context is after its last turn and the version of the CLI its process last start
 `luna_account_list` names the accounts agents may use (the account alone is enough: it brings
 its own CLI) with their usage as the Accounts window shows it; `luna_account_get` adds the
 settings a helper would get there (read from the account's and the project's settings the way
-the new-chat dialog reads them) and its models.
+the new-chat dialog reads them) and its models. A `folder` it is asked about is held to
+the same rules as a spawn's; left out or blank, it is the caller's. A model a Codex config names
+that does not read as a model id (up to 256 letters, digits and `-._:/@+`) is given as none.
 
 ## Lifetime
 
