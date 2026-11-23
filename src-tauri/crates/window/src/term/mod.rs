@@ -1505,8 +1505,8 @@ impl Render for TermPane {
             .children(for_cli);
         let overflow = match (self.phase, self.skills_unhidden) {
             (Phase::Live(_), 0) => None,
-            (Phase::Live(_), 1) => Some("1 library skill is still visible (command-line limit)".into()),
-            (Phase::Live(_), count) => Some(format!("{count} library skills are still visible (command-line limit)")),
+            (Phase::Live(_), 1) => Some("1 library skill visible (launch cap)".into()),
+            (Phase::Live(_), count) => Some(format!("{count} library skills visible (launch cap)")),
             _ => None,
         };
         let notice = overflow.map(|text| {
@@ -1520,7 +1520,12 @@ impl Render for TermPane {
                 .text_color(shell.on_status)
                 .child(text)
         });
-        div().size_full().flex().flex_col().children(notice).child(div().flex_1().min_h_0().child(terminal))
+        match notice {
+            Some(notice) => {
+                div().size_full().flex().flex_col().child(notice).child(div().flex_1().min_h_0().child(terminal)).into_any_element()
+            }
+            None => terminal.into_any_element(),
+        }
     }
 }
 
