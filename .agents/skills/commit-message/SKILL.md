@@ -99,8 +99,9 @@ list shows which account each helper runs on`.
 
 ## Before the merge: fixups and rewording
 
-CI runs `--range` over every commit of the pull request, so each one must pass
-on its own, not just the last.
+CI runs `--range` over every commit a push or a pull request brings, leaving
+out, off master, the ones master already holds, so each one must pass on its
+own, not just the last.
 
 - **Review follow-ups**: `git commit --fixup <sha>` makes a `fixup!` commit.
 - **Rewording an older commit**: an `amend!` commit. With an editor,

@@ -1,15 +1,16 @@
 ---
 name: live-test
-description: Run Luna's live suite (scripts/live-tests.ps1, src-tauri/src/live.rs) against the real Claude Code and Codex CLIs on throwaway accounts cloned into test-build/accounts, and prove the source account came through untouched. Use it whenever someone asks to run the live tests or a live check, to test against the real CLIs or with a signed-in account, to confirm a CLI update or a launch/hub/MCP change works for real, before a release, or asks to clone a test account, even if they only say "check it live" or "smoke it on real Claude/Codex".
+description: Run Luna's live suite (scripts/live-tests.ps1, src-tauri/src/live.rs) against the real Claude Code and Codex CLIs on throwaway accounts cloned into test-build/accounts, and compare the source account's credential file before and after. Use it whenever someone asks to run the live tests or a live check, to test against the real CLIs or with a signed-in account, to confirm a CLI update or a launch/hub/MCP change works for real, before a release, or asks to clone a test account, even if they only say "check it live" or "smoke it on real Claude/Codex".
 ---
 
 # Live test
 
 The live suite spends real quota and runs real CLIs that write into their
 account folder, so the work around it matters as much as the run: a throwaway
-account, proof that the real account was not touched, cleanup, and a report
-that separates Luna's failures from a model's. The levels and the reasons are
-in `docs/testing.md` ("3. Live"); read it once if it is new to you.
+account, a before-and-after hash of the real account's credential file,
+cleanup, and a report that separates Luna's failures from a model's. The
+levels and the reasons are in `docs/testing.md` ("3. Live"); read it once if
+it is new to you.
 
 ## 1. Accounts
 
@@ -59,14 +60,23 @@ $beforeTime = if (Test-Path $cred) { (Get-Item $cred).LastWriteTimeUtc.ToString(
 Name only the providers the change touches; each extra one costs quota. The
 script refuses an account that is missing, linked or signed out, builds the
 Windows test executables (Docker) into `test-build/live-tests`, and runs only
-the live tests, one at a time. It takes minutes; run it in the background and
-wait for it rather than polling.
+the live tests of the providers named, one at a time. It leaves out the
+Windows peer check,
+`live::the_core_endpoint_refuses_a_sandboxed_codex_and_welcomes_a_plain_process`,
+which needs only the Codex CLI and `LUNA_LIVE=1`, no account, and
+runs on its own with `--ignored --exact`, `LUNA_LIVE_CODEX_CLI` set to the
+Codex executable's full path (the script sets it for its own runs): run it
+when the change touches the core's endpoint or its peer check. Claude's
+token-renewal test runs only with `-Renew`, and never on a clone made
+`-WithCredentials`: it signs that clone's source out. It takes minutes; run it
+in the background and wait for it rather than polling.
 
 ## 4. Compare after
 
-Hash the same file again. Same hash: the source was not touched. Different:
-say so first in the report, because it means the source's login may have been
-rotated and the person should check that account still works. With
+Hash the same file again. Same hash: the file held the same bytes at both
+reads, no more; it does not prove nothing wrote into the source folder.
+Different: say so first in the report, because it means the source's login may
+have been rotated and the person should check that account still works. With
 `-WithCredentials` a rotation is the known risk; without it, any change points
 at something writing outside `test-build/accounts` and is a finding in itself.
 

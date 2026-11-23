@@ -1,6 +1,6 @@
 ---
 name: luna-security-review
-description: Security checklist for a Luna change, built from docs/security/threat-model.md — which of Luna's own trust boundaries it crosses, which STRIDE rows and MCP authorization rows it touches, which negative test it needs, when the threat model itself must change — plus an independent adversarial review. Luna answers for its own surfaces only (the hub's token and admission, a session's reach over its subtree, its files and their ACLs, the window–core link, the updater and CLI downloads), not for the CLIs' modes, sandboxes or network. Use it whenever a change touches the hub (hub.rs, admit.rs), the core's endpoint or its peer check (endpoint/, peer/, coreproc.rs, corelink.rs, corecmd.rs, ipc.rs), MCP tools or who may call them (mcp/, agents/admission.rs, agents/registry.rs, agents/answer.rs, agents/handover.rs, agents/reparent.rs, agents/spawn/), the native window's commands (native.rs and native/, the window's own and those it passes to the core), how a CLI process is launched (argv, environment, files handed to it), private files and ACLs (secret.rs, paths.rs, boundary.rs), account-folder or library writes, the updater or the installer (installer.nsi, hooks.nsh) — before calling such a change done, or when someone asks "is this safe?" or for a security review of Luna code.
+description: Security checklist for a Luna change, built from docs/security/threat-model.md — which of Luna's own trust boundaries it crosses, which STRIDE rows and MCP authorization rows it touches, which negative test it needs, when the threat model itself must change — plus an independent adversarial review. Luna answers for its own surfaces only (the hub's token and admission, a session's reach over its subtree, its files and their ACLs, the window–core link, the updater and CLI downloads), not for the CLIs' modes, sandboxes or network. Use it whenever a change touches the hub (hub.rs, admit.rs), the core's endpoint or its peer check (endpoint/, peer/, coreproc.rs, corelink.rs, corecmd.rs, ipc.rs), MCP tools or who may call them (mcp/, agents/admission.rs, agents/registry.rs, agents/answer.rs, agents/handover.rs, agents/spawn/), the native window's commands (native.rs and native/, the window's own and those it passes to the core), how a CLI process is launched (argv, environment, files handed to it), private files and ACLs (secret.rs, paths.rs, boundary.rs), account-folder or library writes, the updater or the installer (installer.nsi, hooks.nsh) — before calling such a change done, or when someone asks "is this safe?" or for a security review of Luna code.
 ---
 
 # Security review
@@ -53,7 +53,7 @@ numbers over this table's):
 |---|---|
 | B1 (retired) the WebView page; the native window has no page: text from a CLI is drawn, and its terminal only answers a program's queries back into that session (`crates/window/src/term/mod.rs`, `UiMsg::Reply`; `docs/adr/0030-scope-of-0-20.md`) | nothing: a change that brings back a page, a web view or markup rendered from a CLI's text is a new boundary, for the person to decide |
 | B2 window → core (the core's endpoint: a named pipe on Windows, a Unix socket elsewhere; no token, the OS-attested peer is the key), and the window's own commands, run in the window process | `endpoint/`, `peer/`, `ipc.rs`, `coreproc.rs`, `corecmd.rs` (`COMMANDS`, dispatch), `corelink.rs` (`passes`) and `corelink/v1.rs`, `native.rs` (`dispatch`, `OWN`, `OWN_SENT`) and `native/` (`panels.rs`, `dialogs.rs`, `desktop.rs`), `boundary.rs` (account and folder path arguments) |
-| B3 sessions → hub (hooks, MCP): who is admitted to which tool, and how far | `hub.rs`, `admit.rs`, `mcp/` (`dispatch.rs`, `args.rs`), `agents/registry.rs`, `agents/admission.rs`, `agents/answer.rs`, `agents/handover.rs`, `agents/reparent.rs`, `agents/spawn/` |
+| B3 sessions → hub (hooks, MCP): who is admitted to which tool, and how far | `hub.rs`, `admit.rs`, `mcp/` (`dispatch.rs`, `args.rs`), `agents/registry.rs`, `agents/admission.rs`, `agents/answer.rs`, `agents/handover.rs`, `agents/spawn/` |
 | B4 core → CLI processes: how they are started, not what their mode allows | `pty/spawn.rs`, `pty/start.rs`, `background/command.rs`, `claude/launch.rs`, `codex/launch.rs`, text Luna types into a session |
 | B5 core → account and project folders | `library/`, `accounts.rs`, `account_settings/`, `claude/trust.rs`, `codex/trust.rs`, `codex/config.rs`, `claude/oauth.rs` |
 | B6 updater | `desktop/updater.rs` (its key in `src-tauri/updater.json`), `windows/installer.nsi`, release signing |
@@ -65,7 +65,8 @@ hand-over (`desktop/single.rs`, R9), the import of 0.19's WebView state
 (`native/import.rs`, `native.rs` `window_state`) and the terminal's answers to
 a program's queries (`crates/window/src/term/`). If none applies, say so and
 stop. Grep every path above against the tree before relying on it:
-code is still moving, and a path that is gone means a row that is too.
+code is still moving, and a path that is gone means the row naming it is
+stale too.
 
 ## 2. Check each row it lands on
 
