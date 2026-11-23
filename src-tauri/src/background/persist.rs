@@ -609,6 +609,12 @@ pub(super) fn promoting_at(since: Option<u64>) -> std::time::Instant {
 }
 
 pub(super) fn home_of(spec: &Spec, cwd: String) -> String {
+    // The saved cwd is what the CLI last said its shell was in: one that is no
+    // plain absolute path, or on a share its folder is not on, is not looked
+    // at, and the helper is taken back in its folder.
+    if !crate::boundary::derived_ok(&cwd, &spec.folder) {
+        return spec.folder.clone();
+    }
     if let Some((root, _)) = crate::checkout::root_of(&cwd).filter(|_| crate::checkout::project_of(&spec.folder).is_none()) {
         return root;
     }

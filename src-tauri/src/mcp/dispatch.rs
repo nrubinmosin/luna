@@ -796,10 +796,27 @@ mod tests {
             assert!(why.contains("Luna's own folder"), "{tool} {a}: {why}");
         }
         let call = as_session("of-lead", &local);
-        #[cfg(windows)]
-        crate::background::take_up_for_test("of-lead", r"\\luna-no-such-host\share\p\.claude\worktrees\w", 1, &[], None);
-        let why = call("luna_session_spawn", json!({ "prompt": "Look.", "provider": "luna-none" }));
-        assert!(why.starts_with("unknown provider luna-none"), "{why}");
+        // Where its shell is: Luna's own folder, and on Windows a share, the
+        // network through the object namespace, a device.
+        let mut shells =
+            vec![crate::paths::data_dir().join("of-shell").join(".claude").join("worktrees").join("w").to_string_lossy().into_owned()];
+        if cfg!(windows) {
+            shells.extend(
+                [
+                    r"\\luna-no-such-host\share\p\.claude\worktrees\w",
+                    r"\\?\GLOBALROOT\Device\Mup\luna-no-such-host\share\p\.claude\worktrees\w",
+                    r"\\.\UNC\luna-no-such-host\share\p\.claude\worktrees\w",
+                    r"\\.\C:\p\.claude\worktrees\w",
+                ]
+                .map(String::from),
+            );
+        }
+        for shell in shells {
+            crate::background::take_up_for_test("of-lead", &shell, 1, &[], None);
+            assert_eq!(agents::caller_worktree_for_test("of-lead"), None, "{shell}");
+            let why = call("luna_session_spawn", json!({ "prompt": "Look.", "provider": "luna-none" }));
+            assert!(why.starts_with("unknown provider luna-none"), "{shell}: {why}");
+        }
         crate::background::remove("of-lead");
         for id in ["of-in-luna", "of-lead"] {
             agents::forget(id);

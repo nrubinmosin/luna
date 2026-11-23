@@ -7,7 +7,7 @@
 //! the project it was made from.
 
 use crate::paths::{path_key as norm, KEY_SEP};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 fn git(folder: &str) -> Command {
@@ -106,16 +106,36 @@ pub(crate) fn repo_of_linked(worktree: &str) -> Option<String> {
 /// `repo_of_linked` off the `.git` file's text: the text alone, nothing looked at.
 fn repo_of_linked_text(worktree: &str, text: &str) -> Option<String> {
     let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
-    let gitdir = if gitdir.is_absolute() { gitdir } else { Path::new(worktree).join(gitdir) };
+    // A relative one (`git worktree add --relative-paths`) from the worktree,
+    // its `..` parts taken as written.
+    let gitdir = if gitdir.is_absolute() { gitdir } else { lexical(&Path::new(worktree).join(gitdir)) };
     // <repo>/.git/worktrees/<id> → <repo>. A submodule's points at `.git/modules`.
     let worktrees = gitdir.parent()?;
     let dot_git = worktrees.parent()?;
     if worktrees.file_name()? != "worktrees" || dot_git.file_name()? != ".git" {
         return None;
     }
-    // The file is the checkout writer's: a repository it names on a share the
-    // worktree is not on is none, before anything there is looked at.
-    dot_git.parent().map(|r| r.to_string_lossy().into_owned()).filter(|r| !crate::boundary::foreign_share(r, worktree))
+    // The file is the checkout writer's: a repository it names that is no
+    // plain absolute path (a device or verbatim form such as
+    // `\\?\GLOBALROOT\…`), or on a share the worktree is not on, is none,
+    // before anything there is looked at.
+    dot_git.parent().map(|r| r.to_string_lossy().into_owned()).filter(|r| crate::boundary::derived_ok(r, worktree))
+}
+
+/// `path` with its `.` parts dropped and each `..` taking the name before it
+/// off, by the text, as Windows reads them.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// True when `candidate` is a worktree a CLI made for this folder: under its
@@ -237,6 +257,48 @@ pub(crate) fn short_spelling(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `.git` file naming its repository in a device or verbatim form, the
+    /// network reached through the object namespace among them, leads to
+    /// none, on disk as by its text; a relative one is taken from the
+    /// worktree, its `..` parts as written.
+    #[test]
+    fn a_worktree_s_repository_is_taken_only_as_a_plain_path() {
+        let root = std::env::temp_dir().join(format!("luna-wt-device-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let wt = root.join("p").join(".claude").join("worktrees").join("w");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let named = |at: &str| format!("gitdir: {at}{}", ["", ".git", "worktrees", "w"].join(std::path::MAIN_SEPARATOR_STR));
+        let mut refused = Vec::new();
+        if cfg!(windows) {
+            refused.extend([
+                r"\\?\GLOBALROOT\Device\Mup\luna-no-such-host\share\repo",
+                r"\\?\GLOBALROOT\Device\HarddiskVolume1\repo",
+                r"\\.\UNC\luna-no-such-host\share\repo",
+                r"\\.\C:\repo",
+                r"\\?\C:\repo",
+                "//?/UNC/luna-no-such-host/share/repo",
+                "//./pipe/repo",
+            ]);
+        }
+        for at in refused {
+            assert_eq!(repo_of_linked_text(&s(&wt), &named(at)), None, "{at}");
+            std::fs::write(wt.join(".git"), named(at)).unwrap();
+            assert_eq!(repo_of_linked(&s(&wt)), None, "{at}");
+            assert_eq!(project_of(&s(&wt.join("src"))), None, "{at}");
+        }
+        // NT's own `\??\` is no absolute path on Windows: from the worktree, a
+        // name on its own drive.
+        #[cfg(windows)]
+        {
+            let local = repo_of_linked_text(&s(&wt), &named(r"\??\UNC\luna-no-such-host\share\repo"));
+            assert!(local.as_deref().is_some_and(|r| crate::boundary::share_host(r).is_none() && r.starts_with(&s(&wt)[..2])), "{local:?}");
+        }
+        let relative = format!("gitdir: {}", ["..", "..", "..", "..", "repo", ".git", "worktrees", "w"].join("/"));
+        assert_eq!(repo_of_linked_text(&s(&wt), &relative).map(PathBuf::from), Some(root.join("repo")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// A local worktree whose `.git` file names a repository on a share leads
     /// to none, Claude Code's shape and Codex's alike, so nothing on that host

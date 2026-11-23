@@ -58,9 +58,13 @@ pub fn absolute(s: &str) -> Result<PathBuf, String> {
             Component::Prefix(p) => {
                 use std::path::Prefix;
                 // `\\?\` skips the normalizing the checks here rely on, and
-                // `\\.\` names devices, not folders.
-                if !matches!(p.kind(), Prefix::Disk(_) | Prefix::UNC(..)) {
-                    return bad("a device or verbatim prefix");
+                // `\\.\` names devices, not folders. std reads `//?/…` and
+                // `//./…` as shares on a host `?` or `.`; Windows, as those.
+                let device_host = |server: &std::ffi::OsStr| matches!(server.to_str(), Some("?" | "."));
+                match p.kind() {
+                    Prefix::Disk(_) => {}
+                    Prefix::UNC(server, _) if !device_host(server) => {}
+                    _ => return bad("a device or verbatim prefix"),
                 }
             }
             _ => return bad("a . or .. part"),
@@ -126,6 +130,17 @@ pub fn on_a_share(s: &str) -> bool {
 /// is on already is taken.
 pub fn foreign_share(derived: &str, from: &str) -> bool {
     share_host(derived).is_some_and(|host| share_host(from).as_ref() != Some(&host))
+}
+
+/// Whether Luna may look at a path it came to itself from `from` (the
+/// repository a worktree's `.git` file names, the folder a session's shell
+/// is or was in): its text is a plain absolute path (`absolute`, which
+/// refuses `\\?\GLOBALROOT\…`, `\\.\…`, `\??\…` and every other device or
+/// verbatim form, a relative path and a `.` or `..` part), on no share `from`
+/// is not on already (`foreign_share`). Asked before anything there is
+/// looked at; one that fails is taken for none.
+pub fn derived_ok(derived: &str, from: &str) -> bool {
+    absolute(derived).is_ok() && !foreign_share(derived, from)
 }
 
 /// A folder an agent names (`luna_session_spawn`'s and `luna_account_get`'s,
@@ -414,6 +429,37 @@ mod tests {
         assert!(!foreign_share(&abs("repo"), &abs("p")));
     }
 
+    /// A path Luna came to itself is looked at only as a plain absolute path
+    /// on no host its origin is not on: every device and verbatim form, the
+    /// network through the object namespace among them, a relative path and a
+    /// `..` part are none.
+    #[test]
+    fn a_derived_path_is_looked_at_only_as_a_plain_one() {
+        let from = abs("p");
+        assert!(derived_ok(&abs("repo"), &from));
+        for bad in ["repo".to_string(), abs("p/../repo"), String::new()] {
+            assert!(!derived_ok(&bad, &from), "{bad:?}");
+        }
+        if cfg!(windows) {
+            for bad in [
+                r"\\?\GLOBALROOT\Device\Mup\host\share\repo",
+                r"\\?\GLOBALROOT\Device\HarddiskVolume1\repo",
+                r"\\.\UNC\host\share\repo",
+                r"\\.\C:\repo",
+                r"\\?\C:\repo",
+                r"\\?\UNC\host\share\repo",
+                r"\??\UNC\host\share\repo",
+                "//?/UNC/host/share/repo",
+                "//./pipe/repo",
+                r"\\other\share\repo",
+            ] {
+                assert!(!derived_ok(bad, &from), "{bad}");
+                assert!(!derived_ok(bad, r"\\host\share\p"), "{bad} from a share");
+            }
+            assert!(derived_ok(r"\\host\share\repo", r"\\host\share\p"), "the host already reached");
+        }
+    }
+
     #[test]
     fn traversal_relative_and_odd_paths_are_refused() {
         let mut bad = vec![
@@ -429,6 +475,14 @@ mod tests {
         ];
         if cfg!(windows) {
             bad.extend([r"\\?\C:\p".into(), r"\\.\PhysicalDrive0".into(), r"C:\p\x:stream".into(), r"C:p".into(), r"\p".into()]);
+            // std reads these as shares on a host `?` or `.`; Windows, as
+            // verbatim and device paths.
+            bad.extend([
+                "//?/UNC/host/share".into(),
+                "//./pipe/x".into(),
+                r"\\?\GLOBALROOT\Device\Mup\host\share".into(),
+                r"\??\C:\p".into(),
+            ]);
         }
         for p in bad {
             assert!(absolute(&p).is_err(), "{p:?} was let through");

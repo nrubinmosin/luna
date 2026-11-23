@@ -215,7 +215,9 @@ pub fn release(chat_id: &str) {
 /// the folder may be in 8.3 short ones, so the two are compared by place.
 fn in_folder(cwd: &str, folder: &str) -> bool {
     use crate::checkout::{codex_shaped, project_of, same_place};
-    norm_path(cwd) == norm_path(folder) || (codex_shaped(cwd) && project_of(cwd).is_some_and(|p| same_place(&p, folder)))
+    // The cwd is the rollout's text: looked up from only as a plain path.
+    norm_path(cwd) == norm_path(folder)
+        || (codex_shaped(cwd) && crate::boundary::derived_ok(cwd, folder) && project_of(cwd).is_some_and(|p| same_place(&p, folder)))
 }
 
 /// The rollout of a thread a live session's TUI says it is on, by the start of

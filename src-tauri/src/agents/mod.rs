@@ -51,6 +51,12 @@ pub use held::held_count;
 /// The sessions under a caller, for the live suite to find a lead's helpers.
 #[cfg(test)]
 pub(crate) use list::list as list_for_test;
+/// The worktree a spawn naming no folder would take from where the caller's
+/// shell is, for the MCP edge's tests.
+#[cfg(test)]
+pub(crate) fn caller_worktree_for_test(caller: &str) -> Option<String> {
+    spawn::folder::caller_worktree(caller)
+}
 pub use list::{account_get, account_list, session_get, session_list, SessionQuery};
 pub use lost::undelivered_left;
 #[cfg(test)]

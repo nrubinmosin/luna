@@ -50,9 +50,11 @@ pub(in crate::agents) fn caller_worktree(caller: &str) -> Option<String> {
         Some(dir) => dir,
         None => crate::pty::manager().probe(caller)?.working_dir()?,
     };
-    // Where the CLI says its shell is, which a `cd` sets: on a share its own
-    // folder is not on, it is none, before anything there is looked at.
-    if crate::boundary::foreign_share(&cwd, &folder) {
+    // Where the CLI says its shell is, which a `cd` sets: no plain absolute
+    // path, or on a share its own folder is not on, it is none, before
+    // anything there is looked at; in Luna's own folder, it is none before
+    // its `.git` is read.
+    if !crate::boundary::derived_ok(&cwd, &folder) || crate::agents::admission::reaches_luna(&cwd) {
         return None;
     }
     // Its root: the caller's shell may be in a folder of it.
