@@ -404,10 +404,11 @@ impl Board {
             .children(roomy.then(|| detail(chat.model_effort())))
             .children(roomy.then(|| detail(format!("{}: {}", provider_label(chat.provider), chat.account))))
             .children(context.filter(|_| roomy).map(|c| {
-                let key = key.clone();
+                // The hover test needs its bounds even though this detail can
+                // give way entirely to the bar's buttons.
                 detail(c)
                     .id(SharedString::from(format!("{key}-ctx")))
-                    .selector(move || format!("{key}-ctx"))
+                    .debug_selector(|| format!("{key}-ctx"))
                     .when_some(context_tip, |d, lines| d.tip(tips, p, lines))
             }));
         // A bar with no room leaves what the chat's details say out, and ID
