@@ -31,6 +31,20 @@ fn never_completed(s: &SpawnTaken, why: Option<&str>) -> String {
     )
 }
 
+/// A spawn's folder as it was kept, held to what an agent may name
+/// (boundary.rs `agent_folder`, as `luna_session_spawn` holds it at the MCP
+/// edge), unless it is the caller's own, which a spawn naming none takes: one
+/// kept by an older Luna that took a share, or any path, is refused here with
+/// why, before anything there is looked at.
+fn named_folder_holds(caller: &str, folder: Option<&str>) -> Result<(), String> {
+    let Some(dir) = folder.filter(|d| !d.trim().is_empty()) else { return Ok(()) };
+    let own = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.folder.clone());
+    if own.is_some_and(|own| crate::pty::same_dir(&own, dir)) {
+        return Ok(());
+    }
+    crate::boundary::agent_folder(dir).map(drop).map_err(|e| format!("folder: {e}"))
+}
+
 /// Asks for it again as it was asked (`resumeOnRestart`), as `spawn` would have it
 /// had it not settled anything yet, and leaves what its caller is to hear. Blocks
 /// as a spawn does.
@@ -44,7 +58,7 @@ fn spawn_afresh(s: SpawnTaken) {
     if let Some(worktree) = &s.in_worktree {
         params.folder = Some(worktree.clone());
     }
-    let made = spawn_with(&s.caller, params, Some(s.request));
+    let made = named_folder_holds(&s.caller, params.folder.as_deref()).and_then(|()| spawn_with(&s.caller, params, Some(s.request)));
     let told = match &made {
         Ok(made) => {
             crate::log::warn(
@@ -205,5 +219,35 @@ mod tests {
         assert!(news.contains("never completed") && news.contains("started afresh, it failed too"), "{news}");
         drop(r);
         reg().lock().unwrap().spawns.remove(&9_000_300);
+    }
+
+    /// A spawn kept with a folder an agent could not name now (one an older
+    /// Luna took) is not started afresh: its caller is told why, in the
+    /// words of the MCP edge, before anything there is looked at. The
+    /// caller's own folder, which a spawn naming none takes, is not held to
+    /// it.
+    #[test]
+    fn a_kept_folder_no_agent_may_name_is_refused_on_the_restart() {
+        let _one = spawns_to_myself();
+        let own = std::env::temp_dir().join(format!("luna-kf-{}", std::process::id())).to_string_lossy().into_owned();
+        register("kf-caller", Provider::Claude, &own, "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        let mut kept = vec![("project".to_string(), "folder: not a usable path")];
+        if cfg!(windows) {
+            kept.push((r"\\luna-no-such-host\share\p".to_string(), "folder: a network share"));
+        }
+        let news_of = |request: u64, folder: &str| {
+            let mut s = SpawnTaken { left_by_core: true, ..spawn_taken(request, "kf-caller", None, true) };
+            s.params.folder = Some(folder.to_string());
+            s.params.provider = Some("luna-none".into());
+            spawn_afresh(s);
+            reg().lock().unwrap().spawns.remove(&request).and_then(|s| s.news).unwrap()
+        };
+        for (i, (folder, why)) in kept.iter().enumerate() {
+            let news = news_of(9_000_400 + i as u64, folder);
+            assert!(news.contains("never completed") && news.contains(&format!("it failed too: {why}")), "{folder}: {news}");
+        }
+        let news = news_of(9_000_410, &own);
+        assert!(news.contains("it failed too") && !news.contains("it failed too: folder:"), "its own folder: {news}");
+        forget("kf-caller");
     }
 }
