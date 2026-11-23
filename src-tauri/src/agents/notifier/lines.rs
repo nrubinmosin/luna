@@ -2334,14 +2334,7 @@ mod tests {
         fresh();
         assert!(runs_nothing(pty, id, top, idle));
         // What the registry holds for it.
-        reg().lock().unwrap().held.push(Held {
-            caller: other.into(),
-            id: id.into(),
-            text: "x".into(),
-            since: 0,
-            told: false,
-            going_in: None,
-        });
+        reg().lock().unwrap().held.push(Held { caller: other.into(), id: id.into(), text: "x".into(), since: 0, going_in: None });
         stops("text held back for a draft");
         reg().lock().unwrap().held.retain(|h| h.id != id);
         reg().lock().unwrap().waits.insert(key(other), 0);

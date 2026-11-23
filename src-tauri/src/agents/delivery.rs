@@ -587,9 +587,9 @@ pub(super) fn type_text(
 /// the draft itself for after the running turn; Ctrl+S is the next match of
 /// the history search), and a draft that leaves the composer by other keys (a
 /// line cut, a whole buffer selected) does not come back with its pastes and
-/// images. So a Codex chat's draft is never typed over: the text is held, the
-/// person told after `DRAFT_ALERT_MS`, and it goes in once the composer is
-/// empty (held.rs `deliver_held`, notifier/mod.rs).
+/// images. So a Codex chat's draft is never typed over: the text is held until
+/// the composer is empty (held.rs `deliver_held`, notifier/mod.rs
+/// `drawn_for_notice`).
 fn puts_draft_aside(provider: Option<Provider>) -> bool {
     provider == Some(Provider::Claude)
 }

@@ -20,6 +20,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   where it differs, under the CLI's own lock on the file; no other key's
   value changes, though the file is written out again, pretty-printed. As
   the account has it leaves the file alone.
+- Luna no longer raises a desktop notification when an unsent draft holds
+  back a message or helper notice; the draft tag and balloon still show
+  what waits.
 
 ### Removed
 
