@@ -27,10 +27,11 @@
 //! request each turn. Codex's `project_doc_max_bytes` caps project AGENTS.md
 //! files.
 //!
-//! The note after a task from another agent (`RoleTexts::note`) is a system
-//! text too; every note Luna has served stays known to the readers that take
-//! it off a prompt (pty/start.rs `without_note`), its override's by its hash
-//! (`note_served`).
+//! The note after a task from another agent (`RoleTexts::note`), one for a
+//! lead and a helper, is a system text too; every note Luna has served stays
+//! known to the readers that take it off a prompt (pty/start.rs
+//! `without_note`): its own of earlier versions (`NOTES_BEFORE`) and its
+//! overrides' by their hash (`note_served`).
 
 use super::*;
 
@@ -90,13 +91,13 @@ pub struct RoleTexts {
     pub said: Vec<String>,
 }
 
-/// The system texts of `role`'s default and of its note; None for a chat,
-/// which has neither.
-pub fn role_text_names(role: Role) -> Option<(&'static str, &'static str)> {
+/// The system text of `role`'s default; None for a chat, which has none, nor
+/// a note.
+pub fn role_text_name(role: Role) -> Option<&'static str> {
     match role {
         Role::Chat => None,
-        Role::Lead => Some((ROLE_LEAD, NOTE_LEAD)),
-        Role::Helper => Some((ROLE_HELPER, NOTE_HELPER)),
+        Role::Lead => Some(ROLE_LEAD),
+        Role::Helper => Some(ROLE_HELPER),
     }
 }
 
@@ -107,7 +108,7 @@ pub fn role_texts(role: Role) -> RoleTexts {
 }
 
 pub(super) fn role_texts_in(dirs: &Dirs, role: Role) -> RoleTexts {
-    let Some((default, note)) = role_text_names(role) else { return RoleTexts::default() };
+    let Some(default) = role_text_name(role) else { return RoleTexts::default() };
     let mut said = Vec::new();
     let mut read = |name: &str| {
         let r = resolve_text(dirs, name)?;
@@ -119,7 +120,7 @@ pub(super) fn role_texts_in(dirs: &Dirs, role: Role) -> RoleTexts {
         Some(r)
     };
     let default = read(default).map(|r| r.body().to_string()).unwrap_or_default();
-    let note = read(note).map(|r| {
+    let note = read(NOTE).map(|r| {
         if r.source == Source::Library {
             note_served(&dirs.data, r.body());
         }
@@ -172,7 +173,7 @@ pub fn role_layers(texts: &RoleTexts, skills: &SessionSkills, constraints: &[Str
 pub fn layers_applied(texts: &RoleTexts, skills: &SessionSkills, constraints: &[String], how: &str) -> Vec<crate::applied::Applied> {
     use crate::applied::Item;
     let mut parts = vec![how.to_string()];
-    parts.extend(texts.said.iter().filter(|s| !s.starts_with(NOTE_LEAD) && !s.starts_with(NOTE_HELPER)).cloned());
+    parts.extend(texts.said.iter().filter(|s| !s.starts_with(&format!("{NOTE}:"))).cloned());
     if let Some(f) = &skills.instructions {
         parts.push(format!("the folder's instructions {}", f.file_stem().unwrap_or_default().to_string_lossy()));
     }
@@ -351,8 +352,7 @@ pub(super) fn codex_overflows(dirs: &Dirs, lib: &LibrarySettings, accounts: &[Ac
             if entries.is_empty() {
                 continue;
             }
-            let default =
-                role_text_names(role).and_then(|(name, _)| resolve_text(dirs, name)).map(|r| r.body().to_string()).unwrap_or_default();
+            let default = role_text_name(role).and_then(|name| resolve_text(dirs, name)).map(|r| r.body().to_string()).unwrap_or_default();
             let Some(layers) = compose_layers(None, &default, &entries, &[]) else { continue };
             if codex_developer_instructions(stack.as_deref(), &layers, &[], &dirs.data).is_ok() {
                 continue;
@@ -387,6 +387,12 @@ const NOTES_SERVED: &str = "notes-served.json";
 
 /// How many of them: the oldest go first.
 const NOTES_SERVED_MAX: usize = 64;
+
+/// Luna's own notes before this one, still after the tasks in conversations
+/// they began: 0.21's, the same for a lead and a helper.
+const NOTES_BEFORE: [&str; 1] = ["This task comes from another agent, not a person: reply to that agent, in the language and \
+                                  form its task asks for. Rules written for a chat with a person (its language, its reply \
+                                  format, questions to that person) do not apply here."];
 
 fn sha_of(text: &str) -> String {
     Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
@@ -430,12 +436,13 @@ fn served_cache() -> &'static ServedCache {
     C.get_or_init(Default::default)
 }
 
-/// Whether `note` is one Luna served: its default for a lead or a helper,
-/// or an override of either served at some point (`note_served`). Read for
-/// every message a reader takes a note off, so held in memory while the
-/// file's time stays the same: the core serves, the window reads too.
+/// Whether `note` is one Luna served: its default, of this version or an
+/// earlier one (`NOTES_BEFORE`), or an override served at some point
+/// (`note_served`). Read for every message a reader takes a note off, so held
+/// in memory while the file's time stays the same: the core serves, the window
+/// reads too.
 pub fn was_served(note: &str) -> bool {
-    if [NOTE_LEAD, NOTE_HELPER].iter().filter_map(|n| luna_text(n).ok()).any(|t| t.trim() == note) {
+    if luna_text(NOTE).ok().into_iter().chain(NOTES_BEFORE).any(|t| t.trim() == note) {
         return true;
     }
     let data = crate::paths::data_dir();
@@ -461,7 +468,7 @@ pub(crate) fn context_texts() -> Vec<(String, String)> {
         ("role-lead", layer(ROLE_LEAD)),
         ("role-helper", layer(ROLE_HELPER)),
         ("constraints-heading", heading.trim_end_matches("x\n").to_string()),
-        ("note", crate::pty::helper_prompt(luna(NOTE_HELPER).trim(), "")),
+        ("note", crate::pty::helper_prompt(luna(NOTE).trim(), "")),
     ]
     .into_iter()
     .map(|(name, text)| (name.to_string(), text))
@@ -484,28 +491,28 @@ mod tests {
         assert_eq!(role_texts_in(&f.dirs, Role::Chat), RoleTexts::default(), "a chat is told nothing");
         let helper = role_texts_in(&f.dirs, Role::Helper);
         assert!(helper.default.starts_with("Your task comes from another agent"));
-        assert!(helper.note.as_deref().unwrap().starts_with("This task comes from another agent, not a person"));
+        assert!(helper.note.as_deref().unwrap().starts_with("The task is from an agent, not a person"));
         let lead = role_texts_in(&f.dirs, Role::Lead);
         assert!(lead.default.contains("constraints") && lead.default.contains("helpers"));
-        assert_eq!(lead.said, ["role-lead: Luna's own", "note-lead: Luna's own"]);
-        // Neither note names a person's operator, Luna or other sessions.
-        for n in [NOTE_LEAD, NOTE_HELPER] {
-            let t = luna_text(n).unwrap();
-            for word in ["operator", "Luna", "session", "[", "]"] {
-                assert!(!t.contains(word), "{n}: {word}");
-            }
-            assert_eq!(check_override(n, t), Ok(()), "Luna's own passes its own check");
+        assert_eq!(lead.said, ["role-lead: Luna's own", "note: Luna's own"]);
+        assert_eq!(lead.note, helper.note, "one note for both");
+        // The note names neither a person's operator, Luna nor other sessions.
+        let t = luna_text(NOTE).unwrap();
+        for word in ["operator", "Luna", "session", "[", "]"] {
+            assert!(!t.contains(word), "{word}");
         }
+        assert_eq!(check_override(NOTE, t), Ok(()), "Luna's own passes its own check");
         write_text(&f, ROLE_HELPER, "Be terse.\n");
-        write_text(&f, NOTE_HELPER, "From an agent: answer it.\n");
+        write_text(&f, NOTE, "From an agent: answer it.\n");
         let helper = role_texts_in(&f.dirs, Role::Helper);
         assert_eq!((helper.default.as_str(), helper.note.as_deref()), ("Be terse.", Some("From an agent: answer it.")));
+        assert_eq!(role_texts_in(&f.dirs, Role::Lead).note.as_deref(), Some("From an agent: answer it."), "a lead's too");
         assert!(helper.said[0].starts_with("role-helper: yours, sha "));
         assert!(served_in(&f.dirs.data).contains(&sha_of("From an agent: answer it.")), "its note is kept known");
         // An override that will not do is not served, and says why.
-        write_text(&f, NOTE_HELPER, "Two\nlines.\n");
+        write_text(&f, NOTE, "Two\nlines.\n");
         let helper = role_texts_in(&f.dirs, Role::Helper);
-        assert!(helper.note.unwrap().starts_with("This task comes from another agent"));
+        assert!(helper.note.unwrap().starts_with("The task is from an agent"));
         assert!(helper.said[1].contains("more than one line"), "{:?}", helper.said);
         // An empty role says nothing.
         write_text(&f, ROLE_HELPER, "");
@@ -516,7 +523,7 @@ mod tests {
     fn a_chat_has_no_role_text_and_an_override_left_for_one_is_ignored() {
         let f = Fixture::new("role-chat-none");
         let names: Vec<&str> = SYSTEM_TEXTS.iter().map(|t| t.name).collect();
-        assert_eq!(names, [ROLE_LEAD, ROLE_HELPER, NOTE_LEAD, NOTE_HELPER], "what the System texts list");
+        assert_eq!(names, [ROLE_LEAD, ROLE_HELPER, NOTE], "what the System texts list");
         // What an earlier Luna served as a chat's role: read by nothing,
         // served to no chat, listed nowhere, and left where it is.
         write_text(&f, "role-chat", "Plan with me first.\n");
@@ -550,7 +557,7 @@ mod tests {
 
     #[test]
     fn a_note_s_override_is_one_plain_line() {
-        assert_eq!(check_override(NOTE_LEAD, "Answer the agent.\n"), Ok(()));
+        assert_eq!(check_override(NOTE, "Answer the agent.\n"), Ok(()));
         for (text, why) in [
             ("", "empty"),
             ("  \n", "empty"),
@@ -558,10 +565,10 @@ mod tests {
             ("See [this]", "bracket"),
             ("Bell\u{7}", "control character"),
         ] {
-            assert!(check_override(NOTE_LEAD, text).unwrap_err().contains(why), "{text:?}");
+            assert!(check_override(NOTE, text).unwrap_err().contains(why), "{text:?}");
         }
-        assert!(check_override(NOTE_LEAD, &"a".repeat(NOTE_MAX_CHARS + 1)).unwrap_err().contains("characters"));
-        assert_eq!(check_override(NOTE_LEAD, &"é".repeat(NOTE_MAX_CHARS)), Ok(()), "characters, not bytes");
+        assert!(check_override(NOTE, &"a".repeat(NOTE_MAX_CHARS + 1)).unwrap_err().contains("characters"));
+        assert_eq!(check_override(NOTE, &"é".repeat(NOTE_MAX_CHARS)), Ok(()), "characters, not bytes");
         assert!(check_override(ROLE_LEAD, &"a".repeat(ROLE_MAX_BYTES + 1)).unwrap_err().contains("KB"));
         assert_eq!(check_override(ROLE_LEAD, ""), Ok(()), "a role may say nothing");
         assert!(check_override("role-nobody", "x").is_err());
@@ -755,5 +762,15 @@ mod tests {
         assert!(!served.contains(&sha_of("note 0")) && served.contains(&sha_of(&format!("note {}", NOTES_SERVED_MAX + 2))));
         note_served(&f.dirs.data, "note 3");
         assert_eq!(served_in(&f.dirs.data).len(), NOTES_SERVED_MAX, "once each");
+    }
+
+    #[test]
+    fn luna_s_own_notes_are_known_this_version_s_and_the_old_ones() {
+        assert!(was_served(luna_text(NOTE).unwrap().trim()));
+        // 0.21's note-lead and note-helper, word for word, in conversations
+        // they began.
+        assert_eq!(sha_of(NOTES_BEFORE[0]), "6f65b031b71acbd8f054b57eacf138a25a75f767b388d2391c7a90f6b2304d88");
+        assert!(was_served(NOTES_BEFORE[0]));
+        assert!(!was_served("Do something else."));
     }
 }

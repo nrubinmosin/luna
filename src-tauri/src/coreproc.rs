@@ -230,6 +230,7 @@ fn run() {
         crate::background::restore();
         crate::agents::take_up_spawns();
         crate::library::note_retired_system();
+        crate::library::merge_old_notes_now();
         // The hook listener before any session can be spawned with hooks
         // pointing at it; the records' reads feed power/ from then on.
         crate::hub::start();

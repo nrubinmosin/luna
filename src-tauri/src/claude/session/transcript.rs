@@ -541,17 +541,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The note Luna 0.21 put after a lead's or a helper's task.
+    const OLD_NOTE: &str = "This task comes from another agent, not a person: reply to that agent, in the language and form its task \
+                            asks for. Rules written for a chat with a person (its language, its reply format, questions to that \
+                            person) do not apply here.";
+
     #[test]
     fn a_helpers_prompt_reads_without_lunas_note() {
         let path = std::env::temp_dir().join(format!("luna-claude-note-{}.jsonl", std::process::id()));
         let prompt = crate::pty::helper_prompt(&crate::library::role_texts(crate::library::Role::Helper).note.unwrap(), "Fix the build.");
         let line = serde_json::json!({ "type": "user", "message": { "role": "user", "content": prompt } });
-        std::fs::write(&path, format!("{line}\n")).unwrap();
+        // 0.21's note, word for word, in a conversation it began.
+        let old = crate::pty::helper_prompt(OLD_NOTE, "Carry on.");
+        let old = serde_json::json!({ "type": "user", "message": { "role": "user", "content": old } });
+        std::fs::write(&path, format!("{line}\n{old}\n")).unwrap();
         let (msgs, _) = messages_from(&path, 0, false);
-        assert_eq!(
-            msgs,
-            vec![crate::agents::Message { role: "user".into(), text: "Fix the build.".into(), after_cli: false, final_answer: false }]
-        );
+        let user = |text: &str| crate::agents::Message { role: "user".into(), text: text.into(), after_cli: false, final_answer: false };
+        assert_eq!(msgs, vec![user("Fix the build."), user("Carry on.")]);
         let _ = std::fs::remove_file(&path);
     }
 

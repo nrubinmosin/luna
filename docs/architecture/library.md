@@ -31,7 +31,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
-| `library/system.rs` | the system texts (the roles' defaults and notes): each resolved, Luna's own or the override in `system/`; the override read, written, compared and sent to the backups |
+| `library/system.rs` | the system texts (the roles' defaults and the note): each resolved, Luna's own or the override in `system/`; the override read, written, compared and sent to the backups; 0.21's overrides of `note-lead` and `note-helper` made `note`'s as a core starts (`merge_old_notes`) |
 | `src-tauri/crates/window/src/library/` | the Skills & instructions panel, reach and role controls, folder overrides, system texts and editor |
 
 ## Reaches
@@ -149,7 +149,7 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
 
 What a session is told of its role (ADR-0026, `library/role.rs`), after its
 account's file, in this order: Luna's default for its role (the system texts
-`role-lead`, `role-helper`; a chat has none, `role_text_names`), the library's
+`role-lead`, `role-helper`; a chat has none, `role_text_name`), the library's
 entries for its role (`role_entries`; a Claude Code folder's instructions
 first, in the account's place), then its constraints (agents/spawn
 `Constraint`), each under a heading of its own (`compose_layers`). Nothing at
@@ -449,8 +449,14 @@ and on Sync, one at a time under a lock file beside the
 ledger shared by window and core. Whatever writes takes it or is refused
 (`lock`, `Nothing laid out: no lock on ...`), a settings change before it writes
 the settings; only the overview reads without it (`lock_to_read`, said once a
-run), the ledger being written whole. The overview a pass answers says what it
-did (`Pass` in pass.rs): the copies it wrote, those it took out, and those it
+run), the ledger being written whole. At core startup, the old note migration
+also holds `<library>/.luna-note-merge.lock` from recovery through backup.
+Cores with different data folders take that same source lock when they use
+one library. If the lock cannot be taken, the old notes stay for the next
+start.
+
+The overview a pass answers says what it did (`Pass` in pass.rs): the copies
+it wrote, those it took out, and those it
 could not take out with why (`written`, `removed`, `notRemoved`; empty on a
 look), which the native window's Sync reports. Where `lay_out` runs in a
 start:

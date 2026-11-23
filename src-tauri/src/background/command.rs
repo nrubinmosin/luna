@@ -642,7 +642,7 @@ mod tests {
         e.spec.parent = Some("p-1".into());
         let first = stdin_text(&e, "the prompt");
         assert!(first.starts_with("the prompt\n\n") && notes(first.clone()) == 1, "{first}");
-        assert!(first.contains("comes from another agent, not a person"), "{first}");
+        assert!(first.contains("is from an agent, not a person"), "{first}");
         for word in ["operator", "Luna", "session p-1"] {
             assert!(!first.contains(word), "the note names nobody: {word}");
         }

@@ -244,11 +244,16 @@ which you may override, each with one file for every session it is served to:
   chats, but a conversation keeps what it was already given: a Claude Code
   chat drops it at its next start or resume, while a Codex conversation begun
   with it keeps it on a resume, until a compaction or a new chat.
-- **`note-lead`**, **`note-helper`**: the note after a task another agent gives
-  a lead or a helper. Your override is `system/<name>/TEXT.md`: one line of
-  plain text, at most 1,000 characters, with no brackets (the note goes inside
+- **`note`**: the note after a task another agent gives a lead or a helper,
+  one for both. Your override is `system/note/TEXT.md`: one line of plain
+  text, at most 1,000 characters, with no brackets (the note goes inside
   brackets of its own). Luna remembers every note it has served, so none ever
   shows in what a session was asked, after an update or a change of yours.
+  Up to 0.21 there were two, `note-lead` and `note-helper`. As a core starts,
+  an override of `note` you already have stays, and your old ones go into
+  Luna's backups; with none, your `note-helper` override becomes `note`'s,
+  else your `note-lead` one, and the other goes into the backups. Only a
+  folder with a `TEXT.md` counts as an override: one without is left as it is.
 
 What stays Luna's own and is not a text you can change: its tools' schemas and
 refusals, the facts of its guide, the tag a note opens on.

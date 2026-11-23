@@ -138,8 +138,9 @@ fn the_library_reads_its_overview_and_shows_it(cx: &mut TestAppContext) {
         let o = v.library.read(cx).overview.clone().unwrap();
         (o.instructions.len(), o.skills.len(), crate::library::shown_system(&o).count())
     });
-    // The handoff's skill, which ADR-0030 cut, is not shown.
-    assert_eq!(names, (3, 3, 2));
+    // The roles' two and the note; the handoff's skill, which ADR-0030 cut,
+    // is not shown.
+    assert_eq!(names, (3, 3, 3));
 }
 
 #[gpui::test]

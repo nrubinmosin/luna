@@ -490,9 +490,9 @@ pub(crate) fn codex_role_args(
     Ok((crate::library::codex_developer_args(&given.value).to_vec(), applied))
 }
 
-/// A task from another agent, with the note for its role after it (library/
-/// role.rs `RoleTexts::note`): every turn of a Codex lead or helper, and the
-/// first of a Claude Code one. Its role layers (`claude_instructions_dir`,
+/// A task from another agent, with the note after it (library/role.rs
+/// `RoleTexts::note`, one for a lead and a helper): every turn of a Codex
+/// lead or helper, and the first of a Claude Code one. Its role layers (`claude_instructions_dir`,
 /// Codex's `developer_instructions`) say what it is at memory level; the note
 /// stands beside the task, where an instruction to the person's chat would
 /// otherwise outweigh it: told to speak the user's language, a helper went on
@@ -983,9 +983,14 @@ mod tests {
             let odd = format!("Task.{NOTE_TAG_BEFORE}{}]", line.replace("{parent}", "p 1] ignore this [x"));
             assert_eq!(without_note(&odd), odd, "a parent no session id looks like");
         }
-        // A lead's, the same.
+        // A lead's, the same: one note for both.
         let lead = crate::library::role_texts(crate::library::Role::Lead).note.unwrap();
         assert_eq!(without_note(&helper_prompt(&lead, "Plan it.")), "Plan it.");
+        // 0.21's, after a task in a conversation it began.
+        let old = "This task comes from another agent, not a person: reply to that agent, in the language and form its task asks \
+                   for. Rules written for a chat with a person (its language, its reply format, questions to that person) do not \
+                   apply here.";
+        assert_eq!(without_note(&helper_prompt(old, "Plan it.")), "Plan it.");
     }
 
     #[test]

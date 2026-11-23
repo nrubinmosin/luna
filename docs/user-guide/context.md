@@ -33,8 +33,8 @@ With default settings:
 | --- | --- | --- | --- |
 | Chat without **Luna tools** | 0 | 0 | 0 |
 | Chat with **Luna tools** | ~2,370: the instructions and 16 tools | 0 | notices of the sessions it started or wrote to; guide topics it reads |
-| Lead | ~2,430: the instructions, its 14 tools and its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat |
-| Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | 0 |
+| Lead | ~2,420: the instructions, its 14 tools and its role text | the note after its task, ~42 (Codex: after every task) | the same as a chat |
+| Helper | ~210: its role text | the note after its task, ~42 (Codex: after every task) | 0 |
 
 Added to these where you turn them on: a role text you made longer goes with
 every request of each lead or helper ([System texts](#what-a-session-is-told-of-its-role)).
@@ -73,9 +73,9 @@ they stay in its context all along.
 
 | Text | Who | When, where | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
-| `role-lead`: answer the agent in its language and form, split work among helpers, own what they report, status words, constraints pass down, stop leftovers, no turn ended on "waiting" with nothing to wake it, keep caveats, send and install nothing unasked | leads | layers, as above | 440 | Library → System texts, `role-lead` |
+| `role-lead`: answer the agent in its language and form, split work among helpers, own what they report, status words, constraints pass down, stop leftovers, no turn ended on "waiting" with nothing to wake it, keep caveats, send and install nothing unasked | leads | layers, as above | 436 | Library → System texts, `role-lead` |
 | `role-helper`: the same, less what is about helpers | helpers | layers, as above | 210 | Library → System texts, `role-helper` |
-| The note after a task (`[A note, not part of the task: …]`): the task comes from an agent; rules for a chat with a person do not apply | leads and helpers | Claude Code: after the first task, once; Codex: after every task, so it adds up in the conversation | 65 | Library → System texts, `note-lead`, `note-helper` (one line; it cannot be empty) |
+| The note after a task (`[A note, not part of the task: …]`): the task comes from an agent; rules for a chat with a person do not apply | leads and helpers | Claude Code: after the first task, once; Codex: after every task, so it adds up in the conversation | 42 | Library → System texts, `note` (one for leads and helpers; one line; it cannot be empty) |
 | Constraints: a heading, then each constraint word for word | a helper spawned with `constraints`, and every session under it | layers, last | 57 + the constraints | the agent that spawns; nothing removes one |
 | The library's instructions for some roles: a heading `# Instructions: <name>`, then your file | the roles you ticked | layers | ~5 + your file | the library's **For** column |
 | The line before instructions an earlier Luna laid out for chats only ("For chats with a person only: …") | every session of that account (Codex reads the account's `AGENTS.md` in all of them; Claude Code leaves it out of leads and helpers) | every request, with the file | 25 | tick another role for that file: it then goes per session instead |
@@ -140,7 +140,7 @@ breaker, past 12 notices about one session in 15 minutes.
 
 ## Not editable yet, and why
 
-The role texts and the notes are system texts you
+The role texts and the note are system texts you
 can change in the library. What stays Luna's own is mechanism, or too small and
 too tied to a mechanism to be worth a setting yet:
 
@@ -165,11 +165,11 @@ included. Checked by `context_page.rs`.
 | `tools` | 8,858 | 2,215 |
 | `tools-lead` | 7,335 | 1,834 |
 | `per-request-chat` | 9,471 | 2,368 |
-| `per-request-lead` | 9,707 | 2,427 |
+| `per-request-lead` | 9,693 | 2,423 |
 | `per-request-helper` | 831 | 208 |
-| `role-lead` | 1,759 | 440 |
+| `role-lead` | 1,745 | 436 |
 | `role-helper` | 831 | 208 |
-| `note` | 265 | 66 |
+| `note` | 167 | 42 |
 | `constraints-heading` | 229 | 57 |
 | `notice-tag` | 37 | 9 |
 | `guide-index` | 758 | 190 |

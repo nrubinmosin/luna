@@ -82,12 +82,13 @@ ranks none of the CLIs' modes.
   (a helper), after its config stack's own value.
   The library can keep the person's chat's rules from it altogether (an
   entry's audience, [library](library.md#audiences)). Beside the task, a
-  one-line note (`note-lead`, `note-helper`, `pty::helper_prompt`) says it
+  one-line note (`note`, one for leads and helpers, `pty::helper_prompt`) says it
   comes from another agent, not a person, after a Claude Code helper's first
   prompt and every Codex one's: a Codex thread may have compacted its task far
   from its developer message. Its tag is `[A note, not part of the task: …]`,
   naming neither Luna nor any session. The transcript readers drop the note
-  (`without_note`): Luna's defaults, every override note ever served (by
+  (`without_note`): Luna's defaults, this version's and 0.21's
+  (`NOTES_BEFORE`), every override note ever served (by
   hash, `<data>/notes-served.json`, the last 64) and the lines earlier Lunas
   wrote under their tag. Slash-command prompts go without.
 - **Constraints** (`SpawnParams::constraints`, `spawn::Constraint`): text a
