@@ -78,6 +78,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   three.
 - Enter in New Chat with its account or model list open closes the list, as
   Esc does, instead of making the chat on what was chosen before.
+- Off Windows the power chip no longer offers Hibernate and Sleep, which
+  always failed there with an error naming a Windows call; it offers
+  Shutdown alone, and `luna_power_set` refuses restart, hibernate and sleep
+  with "... on Windows only" before arming anything.
+- The power panel said Shutdown and Restart close every session first. It
+  now says what Luna does: it asks the system first, so that a refusal
+  closes nothing, then closes every session in the time the system gives
+  before the PC powers off or restarts. Restart's note no longer promises
+  Luna starts again at sign-in: it is set to, or `luna.log` says why not.
+  `luna_power_set`'s description no longer says sleep and hibernate close
+  the CLIs; they leave them running.
 
 ## [0.21.0] - 2026-11-23
 

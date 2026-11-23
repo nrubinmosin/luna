@@ -121,9 +121,18 @@ pub(super) fn settle<'a>(mut st: MutexGuard<'a, State>, ended: &Condvar, wait: s
 }
 
 /// Why this machine cannot do `action`, for a rule to be refused before anything
-/// is closed for it.
+/// is closed for it: a restart needs RunOnce to bring Luna back, and a sleep or
+/// hibernate `SetSuspendState`, which only Windows has here (`machine::os`).
 pub(super) fn unsupported(action: Action, windows: bool) -> Option<String> {
-    (action == Action::Restart && !windows).then(|| "Luna can restart the PC on Windows only".to_string())
+    if windows {
+        return None;
+    }
+    match action {
+        Action::Restart => Some("Luna can restart the PC on Windows only".to_string()),
+        Action::Hibernate => Some("Luna can hibernate the PC on Windows only".to_string()),
+        Action::Sleep => Some("Luna can put the PC to sleep on Windows only".to_string()),
+        Action::Shutdown | Action::Log => None,
+    }
 }
 
 #[cfg(test)]
@@ -151,13 +160,19 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn restart_is_refused_before_anything_where_the_os_cannot() {
-        assert!(unsupported(Action::Restart, false).unwrap().contains("Windows only"));
-        assert_eq!(unsupported(Action::Restart, true), None);
+    fn what_the_os_cannot_do_is_refused_before_anything() {
+        for action in [Action::Restart, Action::Hibernate, Action::Sleep] {
+            assert!(unsupported(action, false).unwrap().contains("Windows only"), "{action:?}");
+            assert_eq!(unsupported(action, true), None, "{action:?}");
+        }
         assert_eq!(unsupported(Action::Shutdown, false), None);
+        assert_eq!(unsupported(Action::Log, false), None, "logs only, anywhere");
         if !cfg!(windows) {
-            let e = arm_for_agent("me", "restart", Some(60), Some(true)).unwrap_err();
-            assert!(e.contains("Windows only"), "{e}");
+            for action in ["restart", "hibernate", "sleep"] {
+                let e = arm_for_agent("me", action, Some(60), Some(true)).unwrap_err();
+                assert!(e.contains("Windows only"), "{e}");
+            }
+            assert!(state().lock().unwrap().armed.is_none(), "nothing armed on a refusal");
         }
     }
 

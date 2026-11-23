@@ -44,8 +44,14 @@ impl PowerAction {
     /// What the popover tells of each.
     pub fn note(self) -> &'static str {
         match self {
-            PowerAction::Shutdown => "closes every session first, then powers off",
-            PowerAction::Restart => "closes every session first, then restarts; Luna starts again when you sign in",
+            // The system is asked first (power/machine.rs, `power_off`): a refusal
+            // then closes nothing, and on a yes the sessions close in the time it
+            // gives, which differs by OS. A RunOnce value that cannot be set does
+            // not stop a restart; only the log says so.
+            PowerAction::Shutdown => "asks the system first, then closes every session in the time it gives before the PC powers off",
+            PowerAction::Restart => {
+                "asks the system first, then closes every session in the time it gives before the PC restarts; Luna is set to start again when you sign in, or luna.log says why not"
+            }
             PowerAction::Hibernate | PowerAction::Sleep => "sessions stay; the rule applies again after the wake",
             PowerAction::Log => "only writes a line to the log",
         }

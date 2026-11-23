@@ -352,15 +352,18 @@ another program's and is left alone.
   program's request, whose cancellation the 1075 may be), a 1075 only before the
   mark, or no reading at all undoes nothing: the RunOnce value stays, the chats
   stay closed, and a notification says how to bring them back by hand. Restart
-  (Windows only, refused elsewhere at arming) sets the RunOnce value with the
+  (Windows only: refused elsewhere at arming, `admission::unsupported`) sets the RunOnce value with the
   window's exe (`--window-exe`) before asking. Off Windows the ask is
   `shutdown -h|-r +1` run to its end with stderr in a private file of a fresh name
   in the data dir (`secret::create_private_rw`, never a planted link followed;
   not `.output()`: macOS's `shutdown` forks a child that keeps the pipe open for
   the whole delay), read back through its own handle, its exit status and what it
   said logged; nothing there tells a canceled shutdown from a slow one, so
-  recovery is by hand. Sleep / hibernate is `SetSuspendState`; sessions live on,
-  and the clock jump on wake resets the window and countdown.
+  recovery is by hand. Sleep / hibernate is `SetSuspendState`, Windows only like
+  restart: off Windows the panel offers neither (`vitals::actions`) and arming
+  refuses both, the window's and `luna_power_set`'s alike, as the core has no
+  suspend call there. Sessions live on, and the clock jump on wake resets the
+  window and countdown.
 - **Drain** (`Armed::drain`, "start nothing new") refuses agents' `luna_session_spawn`
   and `luna_session_send` in `mcp::run` and narrows `luna_session_answer` to structured answers;
   a person is never refused. Calls are counted under the lock that arms

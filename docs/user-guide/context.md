@@ -177,4 +177,4 @@ included. Checked by `context_page.rs`.
 | `guide-getting` | 5,042 | 1,261 |
 | `guide-answering` | 2,583 | 646 |
 | `guide-restart` | 1,073 | 268 |
-| `guide-working` | 2,129 | 532 |
+| `guide-working` | 2,246 | 562 |

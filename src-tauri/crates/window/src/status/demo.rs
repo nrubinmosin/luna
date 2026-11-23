@@ -160,7 +160,8 @@ pub fn scenes(theme: ThemePref) -> Vec<Scene> {
         event::POWER_STATE,
         power(
             true,
-            Some(("sleep", 300, true)),
+            // What every OS can do, and the note the panel shows for it.
+            Some(("shutdown", 300, true)),
             None,
             1,
             &[("c-codex", "busy", true), ("c-site", "busy", true), ("c-parser", "waiting", false)],
