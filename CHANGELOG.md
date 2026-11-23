@@ -159,6 +159,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The Codex model `luna_account_get` reports, and a spawn takes, from a
   config is passed on only where it reads as a model id (at most 256
   letters, digits and `-._:/@+`), not as whatever text the file holds.
+- Starting a helper follows Claude Code's current permission mode or the
+  spawn approval setting chosen at Codex launch. A chat's prompt is
+  answered in its pane, and a lead's permission request is answered by its
+  parent using the ask ID.
 
 ## [0.21.0] - 2026-11-23
 

@@ -227,9 +227,11 @@ can type into it and answer its model's questions with `scope: "all"`
   cannot be read or its `defaultMode` is not a string, the mode stays
   with Claude Code (`modeFrom: "cli"`).
 - A Codex helper's approval is `never`, `on-request` (`on-failure` is read as
-  it) or `auto-review`. What an `on-request` helper asks comes to its agent as
-  a question ([Questions and permissions](#questions-and-permissions)); `auto-review` has a reviewer model answer instead,
-  in `workspace-write`, and refuses any other sandbox named.
+  it) or `auto-review`. An `on-request` helper's parent receives a permission
+  ask and answers a spawn with `allow` and the current `askId`
+  ([Approving a helper spawn](#approving-a-helper-spawn)). With `auto-review`,
+  a reviewer model answers in `workspace-write`, and any other sandbox is
+  refused.
 - `constraints` is text the helper and every session
   it starts in turn are told, last among their instructions, at every start,
   and resume. A spawn adds its own to the ones its caller carries, word
@@ -319,6 +321,40 @@ answers instead.
 In
 one of your own chats an agent may answer only a question its model asked
 (`scope: "all"`); a permission there is yours.
+
+### Approving a helper spawn
+
+When your CLI asks to run `luna_session_spawn`, its approval box appears in
+the chat pane with the tool name and arguments. Luna shows a **WAITING**
+badge, turns the chat's row yellow, counts it in **N waiting**, and sends
+an “is waiting” toast. Choose **Yes** or **Allow** in the pane to start the
+helper.
+
+When a lead or helper asks, its parent sees `state: "waiting"` and a
+`permission` ask naming `luna_session_spawn` (with the MCP prefix in Claude
+Code). Its `ask.detail` contains the call's arguments, with the usual 8 KB
+limit and a visible cut marker. The parent answers with
+`luna_session_answer {id, askId, allow, note}`. The spawn answer requires
+the current `askId`. Set `allow` to `true` to let the call proceed or
+`false` to decline. Claude Code can receive the optional reason in
+`note`. Codex's spawn approval form takes the decision alone.
+
+- **Claude Code** in `default` asks. In `auto`, the classifier checks the call.
+  In `bypassPermissions`, the mode allows the call. Settings rules still apply.
+  Changing modes in the pane takes effect for the next call.
+- **Codex** in `on-request` asks. In `auto-review`, a reviewer model decides.
+  Luna pre-approves spawn at launch when it passes `never` and can rule
+  out managed approval overrides. A helper can use the policy Codex reports
+  on its first turn when it resumes. If the saved thread is gone, the new
+  thread uses its own policy. A `never` policy supplied only by
+  config can reject spawn with a requires-approval error without full disk
+  write, including on a helper's first turn. Managed policy uncertainty
+  can cause the same error.
+
+  A Codex chat keeps its launch-time spawn setting when you change modes in
+  `/permissions`. A chat launched with spawn pre-approved keeps it
+  pre-approved after you switch to **Ask for approval**. Start a chat in
+  the new mode to apply that mode to spawn.
 
 ## Getting the answer
 
