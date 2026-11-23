@@ -181,8 +181,6 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "luna", "version": env!("CARGO_PKG_VERSION") },
             });
-            // A helper given only the permission handler gets no word of
-            // tools it does not have.
             if agents::has_tools(caller) {
                 r["instructions"] = json!(INSTRUCTIONS);
             }

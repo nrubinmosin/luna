@@ -1,7 +1,5 @@
-//! What a session is told of its role, at memory level
-//! (docs/adr/0026-session-roles-at-memory-level.md). Memory files outweigh an
-//! appended system prompt and a note on a prompt, and survive a compaction;
-//! so a session's role goes where its instructions files do.
+//! The instruction layers for each session role
+//! (docs/adr/0026-session-roles-at-memory-level.md).
 //!
 //! A session gets four layers, in this order:
 //! 1. its account's file, `CLAUDE.md` or `AGENTS.md`, as the library lays it
@@ -15,18 +13,19 @@
 //!    them, word for word (agents/spawn `Constraint`). Last, under a heading
 //!    that lets them narrow the rest and never loosen it (`CONSTRAINTS_HEADING`).
 //!
-//! Layers 2-4 go to Claude Code as the `CLAUDE.md` of a folder of the
-//! session's own, read as memory (`--add-dir` with
-//! `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`), written at every start
-//! and turn: an edit reaches it at its next turn. To Codex they go as
-//! `-c developer_instructions`, after the value its own config stack sets
-//! (codex/config.rs `developer_instructions_in`), which the `-c` would
-//! otherwise replace; Codex sends that at a thread's start and after a
-//! compaction, never on a resume, so an edit reaches a running Codex session
-//! only then (docs/cli-compatibility.md). A command line holds 32,767 units
-//! on Windows, so layers too long for it go whole in a file of Luna's
-//! (`Spill`) that the value points at; Codex's own cap on instructions
-//! (`project_doc_max_bytes`) is for the project's AGENTS.md files only.
+//! Claude Code reads layers 2-4 from a session-specific `CLAUDE.md`. A chat
+//! gets `--append-system-prompt-file` at each start to avoid the trust prompt
+//! for an added folder. A lead or helper reads it as memory at each turn
+//! via `--add-dir` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`.
+//!
+//! Codex gets the layers after any `developer_instructions` from its config
+//! stack (codex/config.rs `developer_instructions_in`). A chat gets
+//! `-c developer_instructions`, which Codex sends at thread start and after
+//! compaction. If the layers would overflow the command line (32,767 units
+//! on Windows), the value points to a file (`Spill`). A lead or helper gets
+//! the complete text as `developerInstructions` in its app-server thread
+//! request each turn. Codex's `project_doc_max_bytes` caps project AGENTS.md
+//! files.
 //!
 //! The note after a task from another agent (`RoleTexts::note`) is a system
 //! text too; every note Luna has served stays known to the readers that take

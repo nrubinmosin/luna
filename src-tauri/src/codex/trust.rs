@@ -220,11 +220,9 @@ pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String
     Ok(roots)
 }
 
-/// Marks the folder trusted for this account — the same entry Codex's own
-/// trust screen writes — when the person ticked that in the new-chat dialog.
-/// Leaves every other key in the config untouched, and notes the write in
-/// Luna's ledger of what it applied (applied.rs). With a Codex running on the
-/// account, for its sessions instead (see the top), which their starts show.
+/// Marks the folder trusted for this account when the person asks in the
+/// new-chat dialog, using the same entry as Codex's own trust screen. While
+/// the account is in use, remember the trust for matching starts in this core.
 pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), String> {
     let path = config::account_file(&account_path)?;
     let Ok(_held) = crate::account_use::hold(std::slice::from_ref(&account_path)) else {

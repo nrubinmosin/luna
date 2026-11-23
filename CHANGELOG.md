@@ -18,6 +18,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- The accounts guides list more of the options Luna passes at launch. The
+  helper guide clarifies that both CLIs' helper memories stay off when
+  connectors are enabled.
 - Claude Code chats no longer copy a selection to the clipboard as it is
   made, as Codex chats and Luna's terminal already do not, and Settings ›
   Chats › Copy on select sets it for both CLIs: Off by default, On, or As the

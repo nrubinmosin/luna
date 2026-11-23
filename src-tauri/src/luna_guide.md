@@ -126,12 +126,11 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   apart from the main folder's, but the repository's objects, refs and config are shared, so a
   branch a helper pushes or deletes is gone for all. `sameFolder` lists live sessions working in
   the same directory (from a helper, only those under it).
-- A helper has Luna's MCP server alone: none of its account's servers or connectors (claude.ai's
-  Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
-  auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper's run
-  turns off its account's, the system's and the project's `.codex/` servers, and every plugin but
-  the library's, skills and all; one whose config Luna cannot read, or whose managed config sets
-  servers, plugins or apps (no run can turn those off), is not started.
+- `connectors: true` keeps the helper's MCP servers and connectors. By default, helpers get only
+  Luna's server if tools are enabled. Codex apps and non-library plugins (skills included) are off.
+  With connectors off, Luna refuses Codex starts if it cannot read the config or managed settings
+  set servers, plugins or apps. Claude Code auto-memory and Codex memories are off for helpers
+  regardless of `connectors`.
 - `requestKey` (spawn, send, delete): a retry with the same key and arguments within an hour gets
   the first call's result, not a second helper or message; one that failed is made anew. A key
   stands for one call: other arguments under it are refused. Keys are kept in the core's memory:
