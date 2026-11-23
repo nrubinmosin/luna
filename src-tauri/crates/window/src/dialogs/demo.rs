@@ -44,6 +44,19 @@ pub fn codex_defaults() -> Value {
     })
 }
 
+pub fn claude_luna_defaults() -> Value {
+    let mut defaults = claude_defaults();
+    defaults["permissionMode"] = json!({ "value": "auto", "source": "luna" });
+    defaults
+}
+
+pub fn codex_luna_defaults() -> Value {
+    let mut defaults = codex_defaults();
+    defaults["approval"] = json!({ "value": "auto-review", "source": "luna" });
+    defaults["sandbox"] = json!({ "value": "workspace-write", "source": "luna" });
+    defaults
+}
+
 /// The helpers `background_helpers` lists: two under the chat `c-parser`, one
 /// of them with a helper of its own and one the chat `c-notes` waits on, and
 /// one under a chat that is gone.

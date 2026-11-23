@@ -78,16 +78,18 @@ account, since whether to trust it is yours to say.
   Claude Code; a project's or a managed one counts for every model. Picking a
   model moves to its level unless you picked one by hand; one that does not
   take the level shown moves it to that model's own default.
-- Permission mode, passed as `--permission-mode`: **Ask** (`default`, confirm
+- Permission mode: **Ask** (`default`, confirm
   every action), **Edits** (`acceptEdits`), **Plan only** (`plan`), **Auto**
   (`auto`) and **Bypass** (`bypassPermissions`). In Auto Claude Code decides
   for itself, with its own review of risky actions. Where that review cannot
   run at all, it starts in its Manual mode, which asks first; where it cannot
   judge one action later on, it refuses that action ("Auto mode could not
-  evaluate this action and is blocking it for safety"). A settings file's `defaultMode` of one of
-  these opens the dialog on it; its `dontAsk`, or a mode Luna does not know,
-  opens it on Ask; no `defaultMode` at all, on Bypass. Create waits until the
-  files have answered.
+  evaluate this action and is blocking it for safety"). The dialog opens on
+  the configured `permissions.defaultMode`. Luna leaves that selection to
+  Claude Code. With no configured mode, the dialog opens on Auto and Luna
+  passes `--permission-mode auto`. Unreadable settings or a non-string mode
+  leave the choice to Claude Code. Picking a mode passes it explicitly.
+  Create waits until the files have answered.
 
 Isolation runs `claude --worktree` (Claude Code 2.1.325's `-w, --worktree
 [name]`), which makes `<folder>/.claude/worktrees/<name>` on a
@@ -108,11 +110,12 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
   picked by hand.
 - Approval policy (`Codex's own/on-request/never/auto-review`) and sandbox
   mode (`Codex's own/read-only/read-only-net/workspace-write/danger-full-access`).
-  **Codex's own**, where both open whenever Luna can read the config files,
-  passes nothing: Codex runs as its own `config.toml` says (a granular
-  approval table, a permission profile, its own defaults), and Luna does not
-  say what that is. A chat keeps it, so a resumed one passes nothing either;
-  a chat made with explicit modes keeps those. 0.20.0 started every new
+  Both open on **Codex's own** when a config layer sets `approval_policy`,
+  `sandbox_mode`, `approvals_reviewer` or `default_permissions`, including
+  in managed config or a project layer Codex may distrust. Luna
+  passes no mode flags for that choice. When no layer sets a mode, both
+  open on Luna's default, Auto-review in `workspace-write`.
+  0.20.0 started every new
   Codex chat in `never` + `danger-full-access` whatever `config.toml` said,
   so on its first start 0.20.1 moves each Codex chat saved with that pair
   to Codex's own, once, and names each in Luna's log. Luna cannot tell
@@ -144,18 +147,25 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
   would started by hand, and a background helper, which cannot ask, goes without
   them.
 
-**Defaults come from the CLI's own files** for that account in that folder.
+**Luna reads defaults from the CLI's files** for that account in that folder.
 Claude Code: the account's `settings.json`, the project's
 `.claude/settings.json` and `.claude/settings.local.json`, then the machine-wide
-managed file. Codex: its machine-wide `config.toml`, the account's, then the
-project's `.codex/config.toml` (read only for a trusted folder). The line under each
+managed file and its `managed-settings.d` drop-ins for permission mode.
+Luna reads files for this choice. Claude Code also has registry and
+server-managed settings that Luna does not read.
+Codex: its machine-wide `config.toml`, the account's, then the
+project's `.codex/config.toml`, which Codex applies according to its trust
+decisions. The line under each
 control names the file it came from; changing one says so and offers the way
 back. An override belongs to that chat and is never remembered as a default.
+The first successful start saves Luna's default mode or its Codex fallback
+with the chat for restarts and resumes. A chat on the CLI's own mode saves
+that choice, so the CLI reads its own settings at each start and picks up
+later edits.
 
 **Ctrl+Shift+N** skips the dialog: same folder and account as the chat on
 screen, with the folder's saved choices for worktree and Luna tools, and the
-settings the dialog would open on (Codex's own approval and sandbox
-included). A new
+settings the dialog would open on. A new
 chat opens in a free pane or grows the board when **Auto-tile** is on. If
 there is no room to add a pane, the chat opens full size over the board.
 

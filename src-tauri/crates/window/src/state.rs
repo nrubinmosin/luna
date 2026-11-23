@@ -19,6 +19,8 @@ pub const BOARDS: usize = 5;
 /// what this one knows of it (`WindowState::read`), and the host keeps the
 /// file aside as it was.
 pub const VERSION: u32 = 1;
+
+pub(crate) type CriticalKey = Vec<(String, String, Option<String>, String, usize, Option<String>, bool)>;
 /// The sidebar's width, and the bounds a kept one is held to.
 pub const SIDEBAR_WIDTH: f32 = 300.;
 pub const SIDEBAR_MIN: f32 = 220.;
@@ -141,6 +143,12 @@ pub struct Chat {
     pub approval: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
+    /// Resolve the permission mode on the first successful start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default_mode: bool,
+    /// The mode and source returned by that start, in the CLI's spelling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_permission: Option<crate::dto::ResolvedPermission>,
     /// A helper's asks of a Claude chat: no edit tools, an agent to run as.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
@@ -1349,13 +1357,21 @@ impl WindowState {
     /// What a write must not wait for: the chats and where they live, their
     /// sessions and accounts. Two states with the same key differ only in
     /// what can wait for the next write (`Saver`, workspace.rs).
-    pub fn critical_key(&self) -> Vec<(String, String, Option<String>, String, usize, Option<String>)> {
+    pub(crate) fn critical_key(&self) -> CriticalKey {
         self.folders
             .iter()
             .flat_map(|f| {
-                f.chats
-                    .iter()
-                    .map(|c| (f.path.clone(), c.id.clone(), c.session_id.clone(), c.account.clone(), c.board, c.worktree_path.clone()))
+                f.chats.iter().map(|c| {
+                    (
+                        f.path.clone(),
+                        c.id.clone(),
+                        c.session_id.clone(),
+                        c.account.clone(),
+                        c.board,
+                        c.worktree_path.clone(),
+                        c.resolved_permission.is_some(),
+                    )
+                })
             })
             .collect()
     }
@@ -1383,6 +1399,8 @@ mod tests {
             perm: Some("Ask".into()),
             approval: None,
             sandbox: None,
+            default_mode: false,
+            resolved_permission: None,
             read_only: false,
             agent: None,
             model_seen: None,

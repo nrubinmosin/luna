@@ -44,9 +44,8 @@ pub struct Draft<S> {
     pub resolved: S,
     pub origins: Origins,
     pub touched: HashSet<&'static str>,
-    /// The account and folder the files' answer is for. Until it is in,
-    /// `settings` holds the stock values, which may go further than the files
-    /// say (Bypass, no sandbox), so no chat is made from them.
+    /// The account and folder the files' answer is for. A chat cannot be made
+    /// before that answer arrives.
     pub ready_for: Option<String>,
 }
 
@@ -347,11 +346,27 @@ impl NewChat {
                 let before = d.settings.clone();
                 d.resolved = values.clone();
                 d.origins = origins;
+                let approval = if d.touched.contains("approval") {
+                    before.approval
+                } else if d.touched.contains("sandbox") && values.approval == "auto-review" {
+                    choice::CODEX_OWN.to_owned()
+                } else {
+                    values.approval
+                };
+                let sandbox = if approval == "auto-review" {
+                    AUTO_REVIEW_SANDBOX.to_owned()
+                } else if d.touched.contains("sandbox") {
+                    before.sandbox
+                } else if d.resolved.approval == "auto-review" {
+                    choice::CODEX_OWN.to_owned()
+                } else {
+                    values.sandbox
+                };
                 d.settings = CodexSettings {
                     model: if d.touched.contains("model") { before.model } else { values.model },
                     effort: if d.touched.contains("effort") { before.effort } else { values.effort },
-                    approval: if d.touched.contains("approval") { before.approval } else { values.approval },
-                    sandbox: if d.touched.contains("sandbox") { before.sandbox } else { values.sandbox },
+                    approval,
+                    sandbox,
                 };
                 d.ready_for = Some(draft);
             }
@@ -484,7 +499,8 @@ impl NewChat {
             match self.sandbox_before_auto.take().flatten() {
                 Some(picked) => d.settings.sandbox = picked,
                 None => {
-                    d.settings.sandbox = d.resolved.sandbox.clone();
+                    d.settings.sandbox =
+                        if d.resolved.approval == "auto-review" { choice::CODEX_OWN.to_owned() } else { d.resolved.sandbox.clone() };
                     d.touched.remove("sandbox");
                 }
             }
@@ -658,6 +674,13 @@ impl NewChat {
         }
     }
 
+    fn uses_default_mode(&self) -> bool {
+        match self.provider() {
+            Provider::Claude => !self.claude.touched.contains("perm"),
+            Provider::Codex => !self.codex.touched.contains("approval") && !self.codex.touched.contains("sandbox"),
+        }
+    }
+
     /// Esc: the open list goes first; nothing closes while a chat is made.
     pub fn may_close(&mut self, cx: &mut Context<Self>) -> bool {
         if self.menu.take().is_some() {
@@ -683,6 +706,7 @@ impl NewChat {
         }
         let Some(account) = self.account.clone() else { return };
         let mut make = Make::new(&self.folder, account, self.settings());
+        make.default_mode = self.uses_default_mode();
         make.worktree = self.worktree_on();
         make.tools = self.tools;
         make.trust = self.trust_it();
@@ -1024,7 +1048,7 @@ impl NewChat {
                     match field {
                         "model" => s.model != r.model,
                         "effort" => s.effort != r.effort,
-                        _ => s.perm != r.perm,
+                        _ => !self.uses_default_mode(),
                     },
                 )
             }
@@ -1036,7 +1060,7 @@ impl NewChat {
                         "model" => s.model != r.model,
                         "effort" => s.effort != r.effort,
                         // One line under both modes.
-                        _ => s.approval != r.approval || s.sandbox != r.sandbox,
+                        _ => !self.uses_default_mode(),
                     },
                 )
             }
@@ -1067,6 +1091,7 @@ impl NewChat {
                     "model" => r.model.clone(),
                     "effort" if r.effort.is_empty() => "no effort".to_owned(),
                     "effort" => r.effort.clone(),
+                    _ if r.perm.is_empty() => choice::CLAUDE_OWN_LABEL.to_owned(),
                     _ => r.perm.clone(),
                 }
             }

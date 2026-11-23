@@ -227,6 +227,8 @@ pub struct SessionSummary {
     pub provider: Provider,
     pub account: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     /// See `state_of`.
     pub state: &'static str,
@@ -381,6 +383,7 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
             name,
             provider: k.provider,
             account: k.account,
+            mode_from: k.settings["modeFrom"].as_str().map(str::to_owned),
             parent: k.parent,
             state,
             task,
@@ -477,12 +480,16 @@ pub fn account_get(caller: &str, name: &str, provider: Option<&str>, folder: Opt
     let Some(a) = found.into_iter().next() else {
         return Err(format!("no account {name:?} agents may use; luna_account_list lists them"));
     };
+    Ok(account_row(a, &folder))
+}
+
+fn account_row(a: crate::accounts::AccountInfo, folder: &str) -> AccountRow {
     let defaults = match a.provider {
-        Provider::Claude => crate::claude::defaults::flags(&a.path, &folder),
-        Provider::Codex => crate::codex::defaults::flags(&a.path, &folder),
+        Provider::Claude => crate::claude::defaults::flags(&a.path, folder),
+        Provider::Codex => crate::codex::defaults::helper_defaults(&a.path, folder).0,
     };
     let usage = reg().lock().unwrap_or_else(|e| e.into_inner()).usage.get(&format!("{}/{}", a.provider.as_str(), a.name)).cloned();
-    Ok(AccountRow { models: Some(models_of(a.provider, &a.path)), provider: a.provider, name: a.name, defaults, usage })
+    AccountRow { models: Some(models_of(a.provider, &a.path)), provider: a.provider, name: a.name, defaults, usage }
 }
 
 /// What the CLI has on disk about a live session: its cwd, ids and title.
@@ -511,6 +518,36 @@ mod tests {
         assert_eq!(serde_json::to_value(row(None)).unwrap(), serde_json::json!({ "provider": "codex", "name": "one", "defaults": {} }));
         let with = serde_json::to_value(row(Some(vec![serde_json::json!({ "id": "gpt-5.5" })]))).unwrap();
         assert_eq!(with["models"], serde_json::json!([{ "id": "gpt-5.5" }]));
+    }
+
+    #[test]
+    fn account_get_reports_which_default_a_helper_would_get() {
+        crate::codex::config::use_empty_machine_layers_for_test();
+        let root = std::env::temp_dir().join(format!("luna-account-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let defaults = |provider| {
+            account_row(crate::accounts::AccountInfo { provider, name: "one".into(), path: root.to_string_lossy().into_owned() }, "")
+                .defaults
+        };
+        let codex = defaults(Provider::Codex);
+        assert_eq!(codex["modeFrom"], "luna");
+        assert_eq!(codex["approval"], "auto-review");
+        assert_eq!(codex["sandbox"], "workspace-write");
+        std::fs::write(root.join("config.toml"), "default_permissions = \":workspace\"\n").unwrap();
+        let codex = defaults(Provider::Codex);
+        assert_eq!(codex["modeFrom"], "cli");
+        assert_eq!(codex["approval"], "codex");
+        assert_eq!(codex["sandbox"], "codex");
+        if !crate::claude::defaults::managed_mode_for_test() {
+            let claude = defaults(Provider::Claude);
+            assert_eq!(claude["modeFrom"], "luna");
+            assert_eq!(claude["permissionMode"], "auto");
+            std::fs::write(root.join("settings.json"), r#"{ "permissions": { "defaultMode": "plan" } }"#).unwrap();
+            let claude = defaults(Provider::Claude);
+            assert_eq!(claude["modeFrom"], "cli");
+            assert_eq!(claude["permissionMode"], "plan");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -592,11 +629,14 @@ mod tests {
             "C:\\acc\\anthropic\\one",
             Some("sg-me"),
             false,
-            serde_json::json!({ "model": "m" }),
+            serde_json::json!({ "model": "m", "modeFrom": "luna" }),
         );
         let got = serde_json::to_value(session_get("sg-me", "sg-kid", false).unwrap()).unwrap();
         assert_eq!((got["id"].as_str(), got["folder"].as_str()), (Some("sg-kid"), Some("C:\\work\\luna")));
         assert_eq!(got["settings"]["model"], "m");
+        assert_eq!(got["settings"]["modeFrom"], "luna");
+        let listed = session_list("sg-me", &SessionQuery::default()).unwrap();
+        assert_eq!(listed.sessions[0].mode_from.as_deref(), Some("luna"));
         assert!(session_get("sg-me", "sg-nobody", false).err().unwrap().contains("luna_session_list"));
         crate::agents::teardown::forget("sg-kid");
         crate::agents::teardown::forget("sg-me");

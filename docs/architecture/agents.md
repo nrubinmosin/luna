@@ -133,7 +133,7 @@ ranks none of the CLIs' modes.
 | `luna_session_stop`, `luna_session_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
 | `luna_session_answer` to a model's question | its descendants; from a person's chat with `scope: "all"` the person's other chats too, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`), never another's helper (`write_reach`) |
 | `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, whatever mode either runs in |
-| `luna_session_spawn` | a background helper in the mode it names, or with none passed, never in, below or above the data dir (links resolved, a worktree's project folder checked too: `agents/admission.rs`); what a Codex one asks comes to its caller |
+| `luna_session_spawn` | a background helper in the mode it names or the effective default, never in, below or above the data dir (links resolved, a worktree's project folder checked too: `agents/admission.rs`); what a Codex one asks comes to its caller |
 | `luna_notification_send`, `luna_power_set` | a person's chat only (`persons_chat_only`): a helper's word reaches the person through the chat above it |
 
 Every descendant is a background helper: a chat the window runs has no parent,
@@ -323,25 +323,16 @@ number of helpers a line keeps between turns is not capped: each is a
 registry entry and its files, with no CLI process (but what its turns left
 running, which `luna_session_stop` ends).
 
-**Mode when not given.** A spawn that names no mode (Claude: no
-`permissionMode`; Codex: no `sandbox`) is started with none
-(`background_spec`, `Spec::own_mode`): no `--permission-mode` for Claude Code,
-which runs in what its settings say (shown as Luna read them,
-`claude/defaults.rs`). A Codex helper gets no sandbox override and its
-`settings` say `sandbox: "codex"`: Codex's own, from its config, a value Luna
-does not resolve or claim (`codex/defaults.rs` `OWN`), and it gets no deny of
-Luna's `core/` either. The exception is a config Luna cannot read: any layer
-Codex might read, trusted or not, that will not parse or names an approval,
-sandbox or profile Luna does not know makes it `read-only`, passed
-explicitly. Both carry `modeFrom: "cli"`. A mode named is spelled exactly as
-the CLI takes it, and is not compared with the caller's: Luna ranks no modes
-(ADR-0030, amendment of 2026-11-20). Claude Code helpers start in `auto` and
-`dontAsk` too (`CLAUDE_MODES`: `claude -p --permission-mode` takes both,
-2.1.322). A Codex helper's approval is the one named, `never`, `on-request`
-(`on-failure` as it) or `auto-review`, passed as `-c approval_policy`; none
-named, none passed, and its config decides, closed `on-request` where Luna
-cannot read it (`settings` say `approval: "codex"` or the value). What it asks
-comes to its caller as a held ask ([background helpers](background-helpers.md#asks)).
+**Mode when omitted.** With no `permissionMode` for Claude Code or neither
+`approval` nor `sandbox` for Codex, a mode in the CLI's config gets no mode
+override (`background_spec`, `Spec::own_mode`, `settings.modeFrom: "cli"`).
+Otherwise Luna passes Claude Code `--permission-mode auto` or Codex's three
+Auto-review overrides (`modeFrom: "luna"`). An unreadable or unsupported
+Codex layer still takes precedence and gets `on-request` and `read-only`
+(`modeFrom: "closed"`). A mode named is validated and applied without
+comparing it with the caller's. Codex approval requests come to the caller
+as held asks, except when a reviewer model answers them
+([background helpers](background-helpers.md#asks)).
 
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.
@@ -466,7 +457,7 @@ person's. `send` into a session on a blocking dialog refuses.
   `Context::of`), `leftRunning`, `deletesInMin`, `settings`. Codex's model is
   the rollout's `turn_context` of a turn its model actually answered.
   `defaults` per account come from `claude::defaults::flags` /
-  `codex::defaults::flags`; `usage` is what the window last sent
+  `codex::defaults::helper_defaults`; `usage` is what the window last sent
   (`account_usage`): the core never calls the limits endpoints for agents.
   Each send is numbered by its window's run (`sender`, `seq`), as the
   window's calls may reach the core out of order; one older than the last

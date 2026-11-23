@@ -38,6 +38,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Claude Code helper runs without auto-memory: it neither reads what the
   account saved nor saves anything for its later sessions, even where the
   account turns memories on.
+- New chats and helpers default to Claude Code Auto or Codex Auto-review
+  in `workspace-write` when their CLI config sets no permission mode.
+  Explicit choices and managed modes take precedence. Chats save the
+  choice from their first successful start for later launches. Unreadable
+  or unsupported Codex settings still fall back to `on-request` with
+  `read-only`. Unreadable Claude settings leave the mode to Claude Code.
 
 ### Removed
 

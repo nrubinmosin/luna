@@ -98,13 +98,12 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                     Some(m) => crate::claude::defaults::effort_of(account_path, folder, m),
                     None => d["effort"].as_str().unwrap_or("high").to_owned(),
                 })?;
-            // Named, spelled exactly as the CLI takes it; not named, none is
-            // passed and the account's and project's settings decide, which
-            // `mode` says for show.
+            // Leave a configured mode to the CLI, and pass Luna's Auto when
+            // no settings file chose a mode.
             let (mode, own_mode) = match asked(&params.permission_mode) {
                 Some(p) if CLAUDE_MODES.contains(&p) => (p.to_string(), false),
                 Some(p) => return Err(format!("unknown permission mode \"{p}\"; use {}", CLAUDE_MODES.join(", "))),
-                None => (d["permissionMode"].as_str().unwrap_or("default").to_string(), true),
+                None => (d["permissionMode"].as_str().unwrap_or(crate::claude::defaults::LUNA_MODE).to_string(), d["modeFrom"] == "cli"),
             };
             Ok(crate::background::Spec {
                 provider,
@@ -126,29 +125,26 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
             })
         }
         Provider::Codex => {
+            use crate::codex::defaults::Mode;
             use crate::codex::launch::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
             if asked(&params.permission_mode).is_some() {
                 return Err("permissionMode is a Claude setting; Codex takes approval and sandbox".into());
             }
-            let d = crate::codex::defaults::flags(account_path, folder);
-            // What Codex asks comes to the caller (background/appserver.rs),
-            // or with auto-review goes to a reviewer model. Not named: Codex's
-            // own from its config, none passed; closed (`on-request`) where a
-            // layer Luna cannot read, as for a chat (codex/defaults.rs).
-            let (approval, auto_review) = match asked(&params.approval) {
+            let (d, mode) = crate::codex::defaults::helper_defaults(account_path, folder);
+            let (approval_asked, sandbox_asked) = (asked(&params.approval), asked(&params.sandbox));
+            // Luna defaults the pair only when the spawn leaves both unset.
+            let (approval, auto_review) = match approval_asked {
                 Some(AUTO_REVIEW) => (None, true),
                 Some("never") => (Some("never".to_string()), false),
                 Some("on-request" | "on-failure") => (Some("on-request".to_string()), false),
                 Some(a) => return Err(format!("unknown approval \"{a}\"; use never, on-request or {AUTO_REVIEW}")),
-                None => match d["approval"].as_str() {
-                    Some(crate::codex::defaults::OWN) => (None, false),
-                    _ => (Some(crate::codex::defaults::CLOSED_APPROVAL.to_string()), false),
+                None => match mode {
+                    Mode::AutoReview if sandbox_asked.is_none() => (None, true),
+                    Mode::Closed => (Some(crate::codex::defaults::CLOSED_APPROVAL.to_string()), false),
+                    _ => (None, false),
                 },
             };
-            // Not named: Codex's own from its config (`OWN`), none passed and
-            // no value claimed; closed where a layer Luna cannot read, passed
-            // as read-only, on Windows too (codex/defaults.rs).
-            let (sandbox, own_mode) = match asked(&params.sandbox) {
+            let (sandbox, own_mode) = match sandbox_asked {
                 Some(s) if auto_review && s != AUTO_REVIEW_SANDBOX => {
                     return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"))
                 }
@@ -159,9 +155,9 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                     return Err(format!("unknown sandbox \"{s}\"; use read-only, read-only-net, workspace-write, danger-full-access"))
                 }
                 None if auto_review => (AUTO_REVIEW_SANDBOX.to_string(), false),
-                None => match d["sandbox"].as_str() {
-                    Some(crate::codex::defaults::OWN) => (crate::codex::defaults::OWN.to_string(), true),
-                    _ => (crate::codex::defaults::CLOSED_SANDBOX.to_string(), false),
+                None => match mode {
+                    Mode::Closed => (crate::codex::defaults::CLOSED_SANDBOX.to_string(), false),
+                    _ => (crate::codex::defaults::OWN.to_string(), true),
                 },
             };
             let models = crate::codex::models::models_known(account_path);
@@ -217,12 +213,22 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
     }
 }
 
-/// `background_spec` for a spawn that names nothing: the mode it settles on,
-/// whether it is the CLI's own (no flag passed), and Codex's approval.
+/// `background_spec` for a spawn that names nothing.
 #[cfg(test)]
-pub(crate) fn background_spec_for_test(provider: Provider, account_path: &str, folder: &str) -> (String, bool, Option<String>) {
-    let s = background_spec(&SpawnParams::default(), provider, account_path, folder).unwrap();
-    (s.mode, s.own_mode, s.approval)
+pub(crate) fn background_spec_for_test(provider: Provider, account_path: &str, folder: &str) -> crate::background::Spec {
+    background_spec(&SpawnParams::default(), provider, account_path, folder).unwrap()
+}
+
+fn mode_source(params: &SpawnParams, spec: &crate::background::Spec) -> Option<&'static str> {
+    if asked(&params.permission_mode).or(asked(&params.approval)).or(asked(&params.sandbox)).is_some() {
+        None
+    } else if spec.own_mode {
+        Some("cli")
+    } else if spec.provider == Provider::Claude || spec.auto_review {
+        Some("luna")
+    } else {
+        Some("closed")
+    }
 }
 
 /// `spawn` for a helper with no row: started here, in the core, on the
@@ -273,10 +279,8 @@ pub(in crate::agents) fn spawn_background(
     if spec.connectors {
         settings["connectors"] = serde_json::json!(true);
     }
-    // The spawn named no mode: the CLI's own settings decide it, and the
-    // mode shown is what Luna read of them.
-    if spec.own_mode {
-        settings["modeFrom"] = serde_json::json!("cli");
+    if let Some(source) = mode_source(&params, &spec) {
+        settings["modeFrom"] = serde_json::json!(source);
     }
     // Kept in the registry too, where `luna_session_get` shows them and every
     // spawn of its own reads them to pass on (`constraints_for`).
@@ -376,11 +380,9 @@ mod tests {
         assert!(spec("untrusted").err().unwrap().contains("unknown approval"), "0.169.0 refuses to start with it");
     }
 
-    /// A Codex helper whose spawn names no sandbox runs in Codex's own, from
-    /// its config, and Luna claims no value for it; where a layer is one Luna
-    /// cannot read, closed, passed as read-only.
     #[test]
-    fn a_codex_helper_left_to_its_config_is_codexs_own_or_closed() {
+    fn codex_helper_modes_follow_the_spawn_then_config_then_luna() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         let root = std::env::temp_dir().join(format!("luna-spawn-own-mode-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (account, repo) = (root.join("account"), root.join("repo"));
@@ -388,25 +390,64 @@ mod tests {
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
         let (acc, dir) = (account.to_string_lossy().into_owned(), repo.to_string_lossy().into_owned());
-        let spec = || background_spec(&SpawnParams::default(), Provider::Codex, &acc, &dir).unwrap();
-        for config in ["", "sandbox_mode = \"danger-full-access\"\n", "default_permissions = \"mine\"\n"] {
+        let omitted = SpawnParams::default();
+        let spec = || background_spec(&omitted, Provider::Codex, &acc, &dir).unwrap();
+        let s = spec();
+        assert_eq!((s.mode.as_str(), s.own_mode, s.approval, s.auto_review), ("workspace-write", false, None, true));
+        assert_eq!(mode_source(&omitted, &spec()), Some("luna"));
+        for config in
+            ["sandbox_mode = \"danger-full-access\"\n", "default_permissions = \"mine\"\n", "approvals_reviewer = \"auto_review\"\n"]
+        {
             std::fs::write(account.join("config.toml"), config).unwrap();
             let s = spec();
-            assert_eq!((s.mode.as_str(), s.own_mode, s.approval), ("codex", true, None), "{config}");
+            assert_eq!((s.mode.as_str(), s.own_mode, s.approval.as_deref(), s.auto_review), ("codex", true, None, false), "{config}");
+            assert_eq!(mode_source(&omitted, &s), Some("cli"));
         }
         // A value Luna does not know, in the account's or the repository's layer.
         std::fs::write(account.join("config.toml"), "approval_policy = \"sometimes\"\n").unwrap();
         let s = spec();
         assert_eq!((s.mode.as_str(), s.own_mode, s.approval.as_deref()), ("read-only", false, Some("on-request")));
+        assert_eq!(mode_source(&omitted, &s), Some("closed"));
         std::fs::write(account.join("config.toml"), "").unwrap();
         std::fs::create_dir_all(repo.join(".codex")).unwrap();
         std::fs::write(repo.join(".codex").join("config.toml"), "sandbox_mode = [broken\n").unwrap();
         let s = spec();
-        assert_eq!((s.mode.as_str(), s.own_mode), ("read-only", false));
+        assert_eq!((s.mode.as_str(), s.own_mode, s.approval.as_deref()), ("read-only", false, Some("on-request")));
         // Named, it is passed as named.
         let p = SpawnParams { sandbox: Some("workspace-write".into()), ..Default::default() };
         let s = background_spec(&p, Provider::Codex, &acc, &dir).unwrap();
         assert_eq!((s.mode.as_str(), s.own_mode), ("workspace-write", false));
+        assert_eq!(mode_source(&p, &s), None);
+        std::fs::remove_file(repo.join(".codex").join("config.toml")).unwrap();
+        let s = background_spec(&p, Provider::Codex, &acc, &dir).unwrap();
+        assert_eq!((s.mode.as_str(), s.approval, s.auto_review), ("workspace-write", None, false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn claude_helper_modes_follow_the_spawn_then_config_then_luna() {
+        if crate::claude::defaults::managed_mode_for_test() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("luna-spawn-claude-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let account = root.to_string_lossy();
+        let spec = |p| background_spec(p, Provider::Claude, &account, "").unwrap();
+        let omitted = SpawnParams::default();
+        assert_eq!(mode_source(&omitted, &spec(&omitted)), Some("luna"));
+        let s = spec(&omitted);
+        assert_eq!((s.mode.as_str(), s.own_mode), ("auto", false));
+        std::fs::write(root.join("settings.json"), r#"{ "permissions": { "defaultMode": "dontAsk" } }"#).unwrap();
+        let s = spec(&omitted);
+        assert_eq!((s.mode.as_str(), s.own_mode, mode_source(&omitted, &s)), ("dontAsk", true, Some("cli")));
+        let explicit = SpawnParams { permission_mode: Some("plan".into()), ..Default::default() };
+        let s = spec(&explicit);
+        assert_eq!((s.mode.as_str(), s.own_mode, mode_source(&explicit, &s)), ("plan", false, None));
+        for body in ["{broken", r#"{ "permissions": { "defaultMode": 0 } }"#] {
+            std::fs::write(root.join("settings.json"), body).unwrap();
+            let s = spec(&omitted);
+            assert_eq!((s.mode.as_str(), s.own_mode, mode_source(&omitted, &s)), ("claude", true, Some("cli")));
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
     fn model(slug: &str, efforts: &[&str], default: Option<&str>) -> crate::claude::models::ClaudeModel {

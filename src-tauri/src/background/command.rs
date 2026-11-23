@@ -1299,9 +1299,11 @@ mod tests {
     /// A helper whose spawn names no mode, as the spawn settles it
     /// (agents/spawn `background_spec`): Codex's own from its config gets no
     /// sandbox or approval flag; an account Luna cannot read, the closed
-    /// read-only and on-request, passed; Claude Code no `--permission-mode`.
+    /// read-only and on-request, passed. With no configured mode, both CLIs
+    /// get their review mode.
     #[test]
     fn golden_headless_turns_whose_spawn_named_no_mode() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         let account = std::env::temp_dir().join(format!("luna-golden-bg-own-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
         let acc = account.to_string_lossy().into_owned();
@@ -1312,15 +1314,29 @@ mod tests {
         let closed =
             [strings(&["-c", "approval_policy=\"on-request\""]), golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""])].concat();
         for (config, held) in [
-            ("", codex_held(Vec::new(), true)),
+            (
+                "",
+                codex_held(
+                    strings(&[
+                        "-c",
+                        "approvals_reviewer=\"auto_review\"",
+                        "-c",
+                        "approval_policy=\"on-request\"",
+                        "-c",
+                        "sandbox_mode=\"workspace-write\"",
+                    ]),
+                    true,
+                ),
+            ),
             ("sandbox_mode = \"danger-full-access\"\n", codex_held(Vec::new(), true)),
             ("approval_policy = \"sometimes\"\n", codex_held(closed, true)),
         ] {
             let id = "golden-bg-codex-own";
             let r = Redact::for_chat(id);
             let mut e = entry(Provider::Codex);
-            let (mode, own_mode, approval) = settled(config, Provider::Codex);
-            (e.spec.mode, e.spec.own_mode, e.spec.approval) = (mode, own_mode, approval);
+            let spec = settled(config, Provider::Codex);
+            (e.spec.mode, e.spec.own_mode, e.spec.approval, e.spec.auto_review) =
+                (spec.mode, spec.own_mode, spec.approval, spec.auto_review);
             let t = turn(&e, id, &r);
             let mut want = codex_turn("C:\\p", &r);
             want.extend(held);
@@ -1328,12 +1344,22 @@ mod tests {
             assert_eq!(t.args, want, "{config}");
             assert_eq!(t.envs, codex_turn_envs(id, true), "{config}");
         }
+        if crate::claude::defaults::managed_mode_for_test() {
+            let _ = std::fs::remove_dir_all(&account);
+            return;
+        }
         let id = "golden-bg-claude-own";
         let r = Redact::for_chat(id);
         let mut e = entry(Provider::Claude);
-        let (mode, own_mode, _) = settled("", Provider::Claude);
-        (e.spec.mode, e.spec.own_mode) = (mode, own_mode);
-        assert!(e.spec.own_mode);
+        let spec = settled("", Provider::Claude);
+        (e.spec.mode, e.spec.own_mode) = (spec.mode, spec.own_mode);
+        let t = turn(&e, id, &r);
+        assert!(t.args.windows(2).any(|a| a == ["--permission-mode", "auto"]), "{:?}", t.args);
+        assert_eq!(t.value("permission-mode"), Some("--permission-mode auto"));
+
+        std::fs::write(account.join("settings.json"), r#"{ "permissions": { "defaultMode": "plan" } }"#).unwrap();
+        let spec = settled("", Provider::Claude);
+        (e.spec.mode, e.spec.own_mode) = (spec.mode, spec.own_mode);
         let t = turn(&e, id, &r);
         assert!(!t.args.iter().any(|a| a == "--permission-mode"), "{:?}", t.args);
         assert!(!t.keys().contains(&"permission-mode"), "{:?}", t.keys());

@@ -437,8 +437,6 @@ pub fn promoted_settings(provider: Provider, flags: &serde_json::Map<String, Val
         (Provider::Claude, Settings::Claude(d)) => Settings::Claude(ClaudeSettings {
             model: model_from_setting(&word("model")).unwrap_or(d.model),
             effort: effort_from_setting(&word("effort")).unwrap_or(d.effort),
-            // A mode no chat runs in (`dontAsk`) opens on Ask, its rung, never
-            // on the account's default, which may go further.
             perm: match word("permissionMode") {
                 m if m.is_empty() => d.perm,
                 m => perm_from_setting(&m).unwrap_or("Ask").to_owned(),

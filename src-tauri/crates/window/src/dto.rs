@@ -4,6 +4,33 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Claude Code reads the mode from its own settings on each start.
+pub const CLAUDE_OWN_MODE: &str = "claude";
+
+/// The source and flags resolved by a chat's first successful start.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedPermission {
+    pub mode_from: ModeSource,
+    #[serde(flatten)]
+    pub flags: PermissionFlags,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ModeSource {
+    Cli,
+    Luna,
+    Closed,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+pub enum PermissionFlags {
+    Claude { permission_mode: String },
+    Codex { approval: String, sandbox: String },
+}
+
 /// The window's line to the core (corelink.rs `LinkState`; `CoreStateDto` in
 /// src/ipc/coreProcess.ts).
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]

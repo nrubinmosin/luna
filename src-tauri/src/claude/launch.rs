@@ -15,7 +15,7 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) account_path: &'a str,
     pub(crate) model: &'a str,
     pub(crate) effort: &'a str,
-    pub(crate) permission_mode: &'a str,
+    pub(crate) permission_mode: Option<&'a str>,
     pub(crate) resume: Option<&'a str>,
     /// `--worktree`, by this name if it has one.
     pub(crate) worktree: Option<Option<&'a str>>,
@@ -51,8 +51,10 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.extend(["--effort".to_string(), s.effort.to_string()]);
         applied.push(Item::Effort.with(format!("--effort {}", s.effort)));
     }
-    args.extend(["--permission-mode".to_string(), s.permission_mode.to_string()]);
-    applied.push(Item::PermissionMode.with(format!("--permission-mode {}", s.permission_mode)));
+    if let Some(mode) = s.permission_mode {
+        args.extend(["--permission-mode".to_string(), mode.to_string()]);
+        applied.push(Item::PermissionMode.with(format!("--permission-mode {mode}")));
+    }
     if let Some(session_id) = s.resume {
         args.push("--resume".into());
         args.push(session_id.to_string());

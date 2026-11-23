@@ -499,7 +499,46 @@ fn a_codex_chat_left_to_codex_starts_on_codexs_own(cx: &mut TestAppContext) {
     let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
     assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
     let started = d.calls(crate::cmd::ENSURE_CODEX_SESSION).into_iter().find(|a| a["id"] == json!(chat.id)).expect("started");
-    assert_eq!((&started["approval"], &started["sandbox"]), (&json!("codex"), &json!("codex")));
+    assert!(chat.default_mode);
+    assert_eq!((&started["approval"], &started["sandbox"]), (&json!(""), &json!("")));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn new_chat_preselects_lunas_modes_and_keeps_an_explicit_pick(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::CLAUDE_DEFAULTS, demo::claude_luna_defaults());
+        host.answer(cmd::CODEX_DEFAULTS, demo::codex_luna_defaults());
+    });
+    let v = d.new_chat();
+    assert_eq!(v.read_with(d.cx, |v, _| v.claude.settings.perm.clone()), "Auto");
+    d.click("newchat-perm-Auto");
+    assert!(d.drawn("newchat-back-perm"), "picking the preselection is still explicit");
+    d.click("newchat-back-perm");
+    assert!(!d.drawn("newchat-back-perm"));
+    d.drive("newchat", "account 2");
+    let (approval, sandbox) = v.read_with(d.cx, |v, _| (v.codex.settings.approval.clone(), v.codex.settings.sandbox.clone()));
+    assert_eq!((approval.as_str(), sandbox.as_str()), ("auto-review", "workspace-write"));
+    d.click("newchat-approval-never");
+    let (approval, sandbox) = v.read_with(d.cx, |v, _| (v.codex.settings.approval.clone(), v.codex.settings.sandbox.clone()));
+    assert_eq!((approval.as_str(), sandbox.as_str()), ("never", "codex"));
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
+    assert!(!chat.default_mode);
+    let started = d.calls(crate::cmd::ENSURE_CODEX_SESSION).into_iter().find(|a| a["id"] == json!(chat.id)).expect("started");
+    assert_eq!((&started["approval"], &started["sandbox"]), (&json!("never"), &json!("codex")));
+}
+
+#[gpui::test]
+fn a_sandbox_pick_wins_over_a_late_auto_review_default(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(cmd::CODEX_DEFAULTS));
+    let v = d.new_chat();
+    d.drive("newchat", "account 2");
+    v.update(d.cx, |v, cx| v.pick_sandbox("read-only", cx));
+    assert!(d.host.resolve(cmd::CODEX_DEFAULTS, Ok(demo::codex_luna_defaults())));
+    d.settle();
+    let (approval, sandbox) = v.read_with(d.cx, |v, _| (v.codex.settings.approval.clone(), v.codex.settings.sandbox.clone()));
+    assert_eq!((approval.as_str(), sandbox.as_str()), ("codex", "read-only"));
 }
 
 /// Where the core could not read the files it says so, and the dialog opens
@@ -560,7 +599,11 @@ fn leaving_auto_review_gives_the_sandbox_back(cx: &mut TestAppContext) {
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_codex_chat_started_again_in_another_core_keeps_codexs_own(cx: &mut TestAppContext) {
-    let mut d = open(cx);
+    let mut d = open_as(cx, |host| {
+        let mut attached = crate::demo::attached("", 1);
+        attached["permission"] = json!({ "modeFrom": "cli", "approval": "codex", "sandbox": "codex" });
+        host.answer(crate::cmd::ENSURE_CODEX_SESSION, attached);
+    });
     d.new_chat();
     d.drive("newchat", "account 2");
     d.click("newchat-create");
@@ -576,7 +619,68 @@ fn a_codex_chat_started_again_in_another_core_keeps_codexs_own(cx: &mut TestAppC
     let again = starts(&d);
     assert!(again.len() > before, "started over in the new core");
     let last = again.last().unwrap();
-    assert_eq!((&last["approval"], &last["sandbox"]), (&json!("codex"), &json!("codex")));
+    assert_eq!((&last["approval"], &last["sandbox"], &last["modeFrom"]), (&json!("codex"), &json!("codex"), &json!("cli")));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_claude_chat_saves_the_cli_owned_mode(cx: &mut TestAppContext) {
+    use crate::dto::CLAUDE_OWN_MODE;
+    use crate::host::cmd as host_cmd;
+
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::CLAUDE_DEFAULTS, json!({ "permissionMode": { "value": "dontAsk", "source": "account" } }));
+        let mut attached = crate::demo::attached("", 1);
+        attached["permission"] = json!({ "modeFrom": "cli", "permissionMode": CLAUDE_OWN_MODE });
+        host.answer(host_cmd::ENSURE_CLAUDE_SESSION, attached);
+    });
+    let dialog = d.new_chat();
+    assert_eq!(dialog.read_with(d.cx, |v, _| v.claude.origins["perm"].clone()), super::choice::CLAUDE_OWN_LABEL);
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Claude && c.name.starts_with("chat ")).cloned().unwrap();
+    assert!(!chat.default_mode);
+    assert_eq!(chat.perm, None);
+    let restart = crate::workspace::spec(&chat, r"C:\work\parser", r"C:\acc\anthropic\one");
+    assert_eq!(restart.args["permissionMode"], CLAUDE_OWN_MODE);
+    assert_eq!(restart.args["modeFrom"], "cli");
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_default_chat_saves_the_first_start_mode_for_resume_after_reload(cx: &mut TestAppContext) {
+    use crate::host::cmd as host_cmd;
+
+    let (id, text) = {
+        let mut d = open_as(cx, |host| {
+            host.answer(cmd::CODEX_DEFAULTS, demo::codex_luna_defaults());
+            let mut attached = crate::demo::attached("", 1);
+            // The account changed after the dialog opened, before the first
+            // start. Save the core's narrower choice, not the preview.
+            attached["permission"] = json!({ "modeFrom": "closed", "approval": "on-request", "sandbox": "read-only" });
+            host.answer(host_cmd::ENSURE_CODEX_SESSION, attached);
+        });
+        d.new_chat();
+        d.drive("newchat", "account 2");
+        d.click("newchat-create");
+        let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().unwrap();
+        assert!(!chat.default_mode);
+        assert_eq!(chat.sandbox.as_deref(), Some("read-only"));
+        let saved = d.host.sends_of(host_cmd::SAVE_WINDOW_STATE);
+        let text: Value = serde_json::from_str(saved.last().unwrap()["text"].as_str().unwrap()).unwrap();
+        (chat.id, text)
+    };
+    let (mut state, _) = WindowState::read(&text).expect("saved window state");
+    let sid = "019a0000-0000-7000-8000-00000000abed";
+    state.find_mut(&id).unwrap().session_id = Some(sid.into());
+    let d = open_as(cx, |host| {
+        host.answer(host_cmd::WINDOW_STATE, crate::demo::kept(&state));
+        host.answer(cmd::CODEX_DEFAULTS, demo::codex_defaults());
+    });
+    let resumed = d.calls(host_cmd::ENSURE_CODEX_SESSION).into_iter().find(|a| a["id"] == id).expect("the reloaded chat resumes");
+    assert_eq!(resumed["resume"], sid);
+    assert_eq!(resumed["modeFrom"], "closed");
+    assert_eq!(resumed["approval"], "on-request");
+    assert_eq!(resumed["sandbox"], "read-only");
 }
 
 /// A folder is one folder by any spelling of its path the system folds

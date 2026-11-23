@@ -338,15 +338,19 @@ down to the path (`link_free_below`), and a folder with one on the way goes by
 
 ## Defaults
 
-`claude/defaults.rs` and `codex/defaults.rs` read the files themselves and
-the dialog opens on what they say, so the flags match them. Claude Code gets
-`--effort` only where the model takes a level; Codex gets `--model` only when
-a model is known (none in the files or the catalog, and Codex picks its own),
-and its approval and sandbox only where they are not Codex's own:
+`claude/defaults.rs` and `codex/defaults.rs` read what the files say for the
+new-chat dialog and for launches that leave the permission mode to defaults.
+Claude Code gets `--effort` only where the model takes a level; Codex gets
+`--model` only when a model is known (none in the files or the catalog, and
+Codex picks its own). The files, in order:
 
 - **Claude Code**, in its order: the account's `settings.json` → the project's
   `.claude/settings.json` → `.claude/settings.local.json` → the machine-wide
-  managed file.
+  managed file. Permission mode also reads the managed JSON drop-ins in
+  filename order. Registry and server-managed policy are outside this file
+  read. A configured mode takes effect without an override on first start.
+  An unreadable file or non-string mode leaves the choice to Claude Code.
+  With no mode set, Luna passes `--permission-mode auto`.
 - **Codex**: its system layer (`codex/config.rs` `system_layer`), the
   account's `config.toml`, then the project's `.codex/config.toml` layers
   from its root down to the folder, found as Codex finds them. The model and
@@ -355,9 +359,11 @@ and its approval and sandbox only where they are not Codex's own:
   counted, `codex/trust.rs` `Decisions`). No model there: the first model of
   the catalog (sorted by `priority`; source `codex`); no effort: that model's
   `default_reasoning_level`. Codex always gets `--model`. The approval and
-  the sandbox Luna does not resolve: they open on `codex`, Codex's own from
-  its config, for which a chat gets no `--ask-for-approval` or `--sandbox`
-  and Luna claims no value (no deny of its `core/` either). Only where a
+  the sandbox open on `codex` if a layer sets `approval_policy`,
+  `sandbox_mode`, `approvals_reviewer` or `default_permissions`. Managed
+  layers and project layers of either trust state count for this check. Codex
+  resolves those. With no configured mode, Luna passes Auto-review and uses
+  `workspace-write`. Where a
   layer Codex might read, trusted or not, will not read or parse, or names
   an approval, a sandbox or a permission profile Luna does not know, do they
   open closed, `on-request` and `read-only` (source `closed`), passed

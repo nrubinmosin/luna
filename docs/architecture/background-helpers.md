@@ -398,9 +398,10 @@ itself (`serverRequest/resolved`: an interrupt, its own timeout) closes its
 ask at once, and a late answer to it is refused, saying so. An MCP server's elicitation is
 declined and any other request (a dynamic tool, a token refresh) refused at
 once, as a Claude Code helper refuses its CLI's own requests. What it asks
-follows its approval: the one its parent named (`never`, `on-request`), or,
-none named, its config's (closed `on-request` where Luna cannot read it); with
-`approval: auto-review` a reviewer model answers instead (the three settings
+follows the named approval or the config. Where neither approval nor sandbox
+is named and the config sets no mode, Luna starts it in Auto-review. The
+`on-request` and `read-only` fallback still applies to unreadable or
+unsupported config. In Auto-review a reviewer model answers (the three settings
 `--approve-for-me` stands for, as `-c`, `AUTO_REVIEW_OVERRIDES`). Helpers do
 not run in plan mode, the only one where 0.169.0's model has its question
 tool, so its questions come only should Codex give the tool elsewhere.

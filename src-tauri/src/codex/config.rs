@@ -23,6 +23,10 @@ pub fn account_file(account_path: &str) -> Result<PathBuf, String> {
 /// holds no sync, trust mark or start that reads it. A parse error says
 /// where (`not_toml`), never what is there.
 pub fn read(path: &Path) -> Result<DocumentMut, String> {
+    #[cfg(test)]
+    if EMPTY_MACHINE_LAYERS.get() && (path == system_layer() || (cfg!(unix) && path == Path::new(SYSTEM_MANAGED_LAYER))) {
+        return Ok(DocumentMut::new());
+    }
     let mut looks = 0;
     loop {
         let read = crate::boundary::read_settings_file(path, crate::boundary::SETTINGS_MAX)
@@ -63,6 +67,18 @@ pub(crate) fn toml_unparsed(text: &str, e: &toml_edit::TomlError) -> String {
     let line = before.matches('\n').count() + 1;
     let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
     format!("does not parse as TOML (line {line}, column {column})")
+}
+
+#[cfg(test)]
+thread_local! {
+    static EMPTY_MACHINE_LAYERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Isolate a test's launch from machine policy while keeping its account
+/// and project fixtures. Each test runs on its own thread.
+#[cfg(test)]
+pub(crate) fn use_empty_machine_layers_for_test() {
+    EMPTY_MACHINE_LAYERS.set(true);
 }
 
 /// What a helper started without connectors turns off for its run
@@ -316,6 +332,8 @@ pub struct StackInstructions {
     pub unsure: Vec<String>,
 }
 
+const SYSTEM_MANAGED_LAYER: &str = "/etc/codex/managed_config.toml";
+
 /// The managed layer Codex reads from a file above the command line's `-c`,
 /// for every reader of Luna's: `/etc/codex/managed_config.toml` on Unix, and
 /// none on Windows, where `CODEX_HOME/managed_config.toml` is skipped by
@@ -328,7 +346,7 @@ pub(crate) fn managed_layers() -> Vec<PathBuf> {
         return vec![file];
     }
     if cfg!(unix) {
-        vec![PathBuf::from("/etc/codex/managed_config.toml")]
+        vec![PathBuf::from(SYSTEM_MANAGED_LAYER)]
     } else {
         Vec::new()
     }

@@ -245,7 +245,7 @@ struct Saver {
     /// What it wrote, and the chats it had: a write of the same text is
     /// skipped, one of other chats never waits.
     last_text: Option<String>,
-    last_key: Option<Vec<(String, String, Option<String>, String, usize, Option<String>)>>,
+    last_key: Option<crate::state::CriticalKey>,
     /// A write waits for the gap, or to be sent again.
     waiting: Option<Task<()>>,
     /// The number of the last state sent; the host says of each whether it
@@ -1015,8 +1015,27 @@ impl Workspace {
 
     /// A start of `id`'s pane has answered, attached or started: an adopted
     /// orphan's next start is any chat's (`Chat::adopt`).
-    pub(crate) fn start_answered(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.state.find_mut(id).and_then(|c| c.adopt.take()).is_some() {
+    pub(crate) fn start_answered(&mut self, id: &str, permission: Option<crate::dto::ResolvedPermission>, cx: &mut Context<Self>) {
+        use crate::dto::PermissionFlags;
+
+        let Some(chat) = self.state.find_mut(id) else { return };
+        let mut changed = chat.adopt.take().is_some();
+        if let Some(permission) = permission.filter(|_| chat.default_mode) {
+            match (chat.provider, &permission.flags) {
+                (Provider::Claude, PermissionFlags::Claude { permission_mode }) => {
+                    chat.perm = perm_label(permission_mode).map(str::to_owned);
+                }
+                (Provider::Codex, PermissionFlags::Codex { approval, sandbox }) => {
+                    chat.approval = Some(approval.clone());
+                    chat.sandbox = Some(sandbox.clone());
+                }
+                _ => return,
+            }
+            chat.default_mode = false;
+            chat.resolved_permission = Some(permission);
+            changed = true;
+        }
+        if changed {
             self.changed(cx);
         }
     }
@@ -2431,8 +2450,10 @@ fn perm_cli(perm: Option<&str>) -> &'static str {
 /// The session spec of a chat in `folder` on the account at `account`: the
 /// page's `startSession`, without the handoff 0.20 cut.
 pub fn spec(chat: &Chat, folder: &str, account: &str) -> SessionSpec {
+    use crate::dto::PermissionFlags;
+
     let wt_path = chat.worktree_path.as_deref().filter(|p| !p.is_empty());
-    match chat.provider {
+    let mut spec = match chat.provider {
         Provider::Claude => {
             let name = if chat.worktree { claude_worktree_name(folder, wt_path) } else { None };
             let model = chat.model.as_deref().unwrap_or("").to_lowercase().split(' ').next().unwrap_or("").to_owned();
@@ -2446,7 +2467,7 @@ pub fn spec(chat: &Chat, folder: &str, account: &str) -> SessionSpec {
                     "accountPath": account,
                     "model": model,
                     "effort": chat.effort,
-                    "permissionMode": perm_cli(chat.perm.as_deref()),
+                    "permissionMode": if chat.default_mode { "" } else { perm_cli(chat.perm.as_deref()) },
                     "worktree": chat.worktree && (wt_path.is_none() || name.is_some()),
                     "worktreeName": name,
                     "resume": chat.session_id,
@@ -2467,14 +2488,26 @@ pub fn spec(chat: &Chat, folder: &str, account: &str) -> SessionSpec {
                 "accountPath": account,
                 "model": chat.model,
                 "effort": chat.effort,
-                "approval": chat.approval.as_deref().unwrap_or("on-request"),
-                "sandbox": chat.sandbox.as_deref().unwrap_or("read-only"),
+                "approval": if chat.default_mode { "" } else { chat.approval.as_deref().unwrap_or("on-request") },
+                "sandbox": if chat.default_mode { "" } else { chat.sandbox.as_deref().unwrap_or("read-only") },
                 "resume": chat.session_id,
                 "login": false,
                 "tools": chat.tools,
             }),
         },
+    };
+    if let Some(permission) = &chat.resolved_permission {
+        match (chat.provider, &permission.flags) {
+            (Provider::Claude, PermissionFlags::Claude { permission_mode }) => spec.args["permissionMode"] = json!(permission_mode),
+            (Provider::Codex, PermissionFlags::Codex { approval, sandbox }) => {
+                spec.args["approval"] = json!(approval);
+                spec.args["sandbox"] = json!(sandbox);
+            }
+            _ => return spec,
+        }
+        spec.args["modeFrom"] = json!(permission.mode_from);
     }
+    spec
 }
 
 #[cfg(test)]
