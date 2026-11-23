@@ -118,9 +118,12 @@ them. Each costs the session a turn as well as its tokens.
 | Stopped on a prompt Luna cannot read, with how to see it | 45 |
 | A lead's delegates have finished (to the lead itself) | 85 |
 | An account at 90% or 95% of a usage window | 35 |
-| A helper past 85% of its context | 45 to 70 |
+| A helper past 85% of its context | 45 to 75 |
 | The breaker: Luna stops telling of a session's turns (added once) | 40 |
-| Context share past the level, added to each line about a helper: "(context N%)" | 4 |
+| Context share past the level, added to each line about a helper: "(context N%)", with ", ~Nk to auto-compaction" where Luna can tell | 4 to 10 |
+
+Use `luna_session_get` for the estimate in `context.toCompact`.
+`luna_session_list` gives compact rows with status and task information.
 
 None of the text can be changed: a notice is status, and its words are what a
 model acts on. What arrives can be shaped: `expectReply: false` on a send, a

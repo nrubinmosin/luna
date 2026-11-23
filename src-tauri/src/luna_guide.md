@@ -27,10 +27,13 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   session used a default mode. Filters: `state` (a list),
   `provider`, `account`, `group` (a window group, I = 1, or `"mine"`), `q` (text in name, folder,
   account or id). `limit` rows a page (50); a `nextCursor` goes in `cursor` for the next.
+  Use `luna_session_get` for a session's context.
 - `luna_session_get` gives one session whole: `settings`, `folder`, `cwd` (where its CLI works,
   when not the folder: a worktree), `transcript`, `sessionId` (the CLI's own), `turnStartedAt` (null between turns), `lastActivityAt` (a long command shows nothing
   until it ends: quiet is not stuck), `resolvedModel` (the model that answered), `context`
-  (`tokens` in its window against the model's `window`, `pct`, after its last step) and
+  (`tokens` in its window against the model's `window`, `pct`, after its last step; `toCompact`:
+  `tokens` it can still take in before its CLI compacts on its own, an estimate, absent where
+  auto-compaction is off or not known) and
   `leftRunning`: what its turns left running between turns, by name and pid (`"tail.exe (pid 22104)"`) or as a
   count (`"2 shells"`), which keeps the PC awake for as long as it is there.
   Times are UTC ISO.
@@ -138,8 +141,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   a core restart forgets them. A key is at most 128 characters; Luna keeps 64 of yours, the
   oldest finished making way. A result too large to keep comes back as what it made (`id`).
 - `budgetPct`: past that share of its context window (its own, not its subagents' or
-  helpers'), every notice about it ends "(context N%)"; past 85% a notice says so once by
-  itself. Default: the user's setting (50 unless changed); 0: never. Nothing stops.
+  helpers'), every notice about it ends "(context N%)", with ", ~Nk to auto-compaction" where
+  known; past 85% a notice says so once by itself. Default: the user's setting (50 unless
+  changed); 0: never. Nothing stops.
   `budgetTokens` (deprecated) counts as the share of the window it is. `settings` shows
   `budgetBreach`, `budgetTold`.
 
