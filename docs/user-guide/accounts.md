@@ -96,7 +96,8 @@ pass: Claude Code's copy-on-select (below).
   `--settings`, and `CLAUDE_CODE_NO_FLICKER=1`. The renderer draws on the
   alternate screen with its own scrollback, and the variable holds it even after
   the CLI gave up on it once (`fullscreenAutoDisabled` in `.claude.json`, which
-  the variable outranks).
+  the variable outranks). `--system-prompt-snapshot off` renders the system
+  prompt fresh so a resumed chat uses the instructions Luna passes at that start.
 - **Copy on select**, in both CLIs: whether selecting text in a chat copies
   it at once. Settings › Chats › Copy on select: **Off** (the default, as
   Luna's terminal has it), **On**, or **As the account has it**. A Codex chat
@@ -119,11 +120,16 @@ pass: Claude Code's copy-on-select (below).
   are left alone.
 - **Codex chats:** `-c check_for_update_on_startup=false` (Luna updates the CLI
   itself) and `-c tui.notifications=false` (Luna says when a chat is waiting),
-  besides copy on select (above).
-- **Helpers:** they have no screen, so nothing of the above but Codex's update
-  check, which every start has. Luna also takes `CLAUDE_CODE_NO_FLICKER` out of
-  what a helper inherits, so a Luna started from a fullscreen chat's shell does
-  not pass it on.
+  plus `--no-daemon` to run the chat in its own process and
+  `-c tui.terminal_title=["thread-id"]` so Luna can pick up the thread ID.
+  When the local listener and curl are available, Luna passes `-c hooks.<event>`
+  for its status hooks and `-c hooks.state` to trust those hooks for that run.
+- **Codex on Windows:** chats and helpers in `read-only`, `read-only-net`,
+  `workspace-write`, or Codex's own mode get `-c windows.sandbox="unelevated"`
+  when their account config leaves `windows.sandbox` unset.
+- **Helpers:** Codex's app-server gets the update-check override as well.
+  Claude Code helpers have no fullscreen UI. Luna strips any inherited
+  `CLAUDE_CODE_NO_FLICKER` from their environment.
 
 Luna's earlier versions could write such settings into an account from a
 Recommendations window. What they wrote stays where it is: delete a key from the

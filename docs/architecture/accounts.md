@@ -215,19 +215,27 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
 
 - Claude Code chat or login: `tui: "fullscreen"` in the `--settings` file or inline
   JSON (`claude_settings`), and `CLAUDE_CODE_NO_FLICKER=1`
-  (`claude/launch.rs` `FULLSCREEN`, `NO_FLICKER_ENV`). Its copy-on-select is read
+  (`claude/launch.rs` `FULLSCREEN`, `NO_FLICKER_ENV`). A chat also gets
+  `--system-prompt-snapshot off` (`FRESH_PROMPT`) so resumed chats use the
+  launch's current instructions. Its copy-on-select is read
   from the global config (`.claude.json`) only, which no start can reach: written
   there, as the person chose (below).
 - Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`
   (`codex/launch.rs` `NO_UPDATE_CHECK`, `TUI_NOTIFICATIONS`), and its
   copy-on-select as Settings has it: `-c tui.copy_on_select="never"` for off,
   `"always"` for on, nothing for "as the account has it"
-  (`copy_on_select_override`). A helper's `app-server` has no TUI: of these it
-  keeps the update check alone. On Windows a chat or helper in `read-only`, `read-only-net`,
-  `workspace-write` or Codex's own mode, whose account's `config.toml` names no
-  `windows.sandbox`, also gets `-c windows.sandbox="unelevated"` (not under
-  `danger-full-access`)
-  (`codex/launch.rs`, `codex/config.rs` `windows_sandbox_set`).
+  (`copy_on_select_override`). `--no-daemon` keeps the chat in its own
+  process, and `-c tui.terminal_title=["thread-id"]` lets the core track the
+  active thread through the terminal title. With the listener and curl
+  available, `codex/hooks.rs` `status_hook_args` adds Luna's status hooks and
+  their trust hashes through `-c hooks.<event>` and `-c hooks.state`.
+  The URL goes in `LUNA_HOOK_URL`.
+- Codex helper: `background/command.rs` passes
+  `-c check_for_update_on_startup=false` to `codex app-server`.
+- Codex on Windows: chats and helpers in `read-only`, `read-only-net`,
+  `workspace-write`, or Codex's own mode get `-c windows.sandbox="unelevated"`
+  when their account config leaves `windows.sandbox` unset
+  (`codex/launch.rs` `codex_windows_sandbox`, `codex/config.rs` `windows_sandbox_set`).
 
 ### Copy-on-select, the one setting written
 
