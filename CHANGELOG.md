@@ -15,6 +15,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Claude Code's and Codex's settings for the session's model. The estimate
   appears only in the tooltip and only when Luna has the inputs to calculate it
   and auto-compaction is enabled.
+- A pane's title bar has a **×** button, after **...** and **_**, and its
+  menu a Delete row: both open the same Delete dialog as the sidebar's row,
+  helpers listed, and nothing is deleted until it is confirmed. A bar too
+  narrow for it leaves the **×** out, as it does **ID**.
 
 ### Changed
 

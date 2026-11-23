@@ -338,10 +338,12 @@ Auto-tile become rows of its Menu's list (same selectors, drawn once it is
 open); the status bar says its counts as "work", "wait" and "bg", and puts
 the update's and the CLIs' chips in a list over a "..." button (`more_menu`;
 `status-more`), keeping the accounts a field and Settings in reach. A pane's
-title bar shows its ID and Take off the board buttons and its details (model,
-account, context) only where the pane is `ROOMY_BAR` wide (`pane_width`
-estimates it from the window, the sidebar and the layout's columns); the
-pane's menu has both actions at any width. The peek's strip cuts its first
+title bar shows its ID, Take off the board and Delete (`×`) buttons and its
+details (model, account, context) only where the pane is `ROOMY_BAR` wide
+(`pane_width` estimates it from the window, the sidebar and the layout's
+columns); the pane's menu has all three actions at any width. Its Delete,
+like the `×` and the sidebar row's, only opens the delete dialog
+(`seams.delete_chat`), whose question comes before anything goes. The peek's strip cuts its first
 words short with an ellipsis and has no hint under 900 px, so To board and
 Close stay in the window. The status bar's panels are no taller than the
 window above the bar, their body scrolling under the title, and the

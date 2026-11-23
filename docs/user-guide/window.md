@@ -180,8 +180,12 @@ helpers (how many work, are idle and ask, as "2 working · 1 idle · !1 asks";
 a click lists them), its name, model and effort, account, how much of its
 context is used and **ID** (copies the session id). A chat whose own turn is
 over while a helper still works on an answer for it is in the background. **...** opens its menu: Rename, Copy session id, Move to
-pane N, Swap with pane N and Take off the board; **_** takes the chat off the
-board. Chats and panes are not dragged: they move only through these. The
+pane N, Swap with pane N, Take off the board and Delete; **_** takes the chat off the
+board, and **×** asks to delete it, in the same dialog as the sidebar's
+**Delete** (its helpers listed, nothing deleted until you confirm). Chats
+and panes are not dragged: they move only through these. A pane too narrow
+for them all leaves **ID**, **_**, **×** and the details out; its menu still
+has every action. The
 panes sit on the board, teal in the light theme and a darker, muted teal in
 the dark one, which shows in the gaps between them as their separator. The
 dividers between panes are: drag one to give the panes on either side more or

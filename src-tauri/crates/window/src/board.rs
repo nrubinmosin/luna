@@ -49,11 +49,11 @@ use std::rc::Rc;
 /// How many terminals stay alive with no pane showing them.
 const WARM: usize = 3;
 
-/// The width a pane's title bar needs to show ID and Take off the board as
-/// buttons: its status, a stretch of the name and the menu's button take the
-/// rest. Narrower, they are the menu's alone, so every control stays in reach
-/// whatever the window or the sidebar leaves the panes.
-const ROOMY_BAR: f32 = 240.;
+/// The width a pane's title bar needs to show ID, Take off the board and
+/// Delete as buttons: its status, a stretch of the name and the menu's button
+/// take the rest. Narrower, they are the menu's alone, so every control stays
+/// in reach whatever the window or the sidebar leaves the panes.
+const ROOMY_BAR: f32 = 310.;
 
 /// The window's width from which the peek's strip has room for its hint.
 const HINT_FROM: f32 = 900.;
@@ -340,6 +340,16 @@ impl Board {
         .detach();
     }
 
+    /// The delete dialog's question for chat `id`, the one gate a Delete
+    /// goes through: nothing goes before it is answered.
+    fn ask_delete(&self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let seam = self.workspace().read(cx).seams.delete_chat.clone();
+        match seam {
+            Some(seam) => seam(id.to_owned(), window, cx),
+            None => log::warn!("delete chat: the delete dialog is not in this build"),
+        }
+    }
+
     /// A pane's (or the peek's) title bar for chat `id`.
     fn title_bar(&self, p: &Palette, state: &WindowState, at: MenuAt, id: &str, look: BarLook, cx: &mut Context<Self>) -> AnyElement {
         let BarLook { active, roomy } = look;
@@ -469,6 +479,17 @@ impl Board {
                     }))
                     .child(button(p, "_")),
             );
+            let delete = chat_id.clone();
+            bar = bar.child(
+                div()
+                    .id(SharedString::from(format!("{key}-delete")))
+                    .selector({
+                        let key = key.clone();
+                        move || format!("{key}-delete")
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| this.ask_delete(&delete, window, cx)))
+                    .child(button(p, "×")),
+            );
         }
         if menu_open {
             bar = bar.child(deferred(self.menu_el(p, state, at, &chat_id, cx)).with_priority(1));
@@ -519,6 +540,10 @@ impl Board {
                 }
             }
         }
+        // Last, as the bar's × is: the question first, as from the × or the
+        // sidebar's row.
+        let delete_id = id.to_owned();
+        items.push(("delete".into(), "Delete".into(), Box::new(move |b, window, cx| b.ask_delete(&delete_id, window, cx))));
         let rows: Vec<AnyElement> = items
             .into_iter()
             .map(|(key, label, run)| {

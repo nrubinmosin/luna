@@ -1814,6 +1814,23 @@ mod clicks {
         assert_eq!(*asked.lock().unwrap(), ["c-notes"]);
     }
 
+    /// A pane's × and its menu's Delete only ask, through the delete
+    /// dialog's seam, as the sidebar's row does: the chat stays put until
+    /// the dialog's question is answered.
+    #[gpui::test]
+    fn a_panes_delete_asks_first(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let a = asked.clone();
+        w.ws(move |w, _| w.seams.delete_chat = Some(std::rc::Rc::new(move |id, _, _| a.lock().unwrap().push(id))));
+        click(&mut w, "pane-2-delete");
+        click(&mut w, "pane-1-menu");
+        click(&mut w, "menu-delete");
+        assert_eq!(*asked.lock().unwrap(), ["c-codex", "c-parser"]);
+        assert_eq!(w.seats(), [s("c-parser"), s("c-codex")]);
+        assert!(w.state().find("c-codex").is_some() && w.state().find("c-parser").is_some());
+    }
+
     #[gpui::test]
     fn the_import_notices_ok_dismisses_it(cx: &mut TestAppContext) {
         let mut w = open(cx, json!({ "saved": null, "oldError": "x" }));
