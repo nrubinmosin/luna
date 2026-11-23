@@ -8,7 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
-### Breaking: 0.21.0
+## [0.21.0] - 2026-11-23
+
+Luna's window no longer makes a G-SYNC monitor stutter: on Windows Luna is
+now `rm-luna.exe` and turns G-SYNC off for itself in its own NVIDIA
+profile, as the driver does for browsers. 0.21 is installed fresh, not
+over 0.20: see Switching from 0.20 in the user guide.
+
+### Breaking
 
 - 0.21 must be installed fresh: it does not update 0.20 in place. On
   Windows its exe is `rm-luna.exe` (was `luna.exe`), so that Luna can have
