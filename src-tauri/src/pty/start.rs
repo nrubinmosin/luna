@@ -902,8 +902,7 @@ pub async fn ensure_codex_session(
             sandbox_path: modes.sandbox_path.as_deref(),
             git_envs: &modes.git_envs,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
-            prompt_for_spawn: mcp.is_some()
-                && crate::codex::defaults::prompt_for_spawn(Some(approval), &account_path, &folder, false, resume.is_some()),
+            prompt_for_spawn: mcp.is_some() && crate::codex::defaults::prompt_for_spawn(Some(approval), &account_path, &folder),
             // Its status hooks post where a Claude Code chat's do.
             hooks: hook_url.as_deref().zip(hook_curl.as_deref()),
             skill_args: &skills.args,
@@ -1996,9 +1995,10 @@ mod tests {
     /// start in background/command.rs).
     #[test]
     fn golden_codex_chat_with_tools_gets_luna_mcp_as_the_persons() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         const ID: &str = "golden-codex-tooled";
         let r = Redact::for_chat(ID);
-        for (approval, prompt) in [("never", false), ("on-request", true), (AUTO_REVIEW, true), ("codex", true)] {
+        for (approval, prompt) in [("never", cfg!(target_os = "macos")), ("on-request", true), (AUTO_REVIEW, true), ("codex", true)] {
             let s = CodexAsk { model: None, effort: "high", approval, tools: Some(true), ..CodexAsk::chat() }.start(ID, &r);
             let flags = if approval == AUTO_REVIEW {
                 let mut args = strings(&["-c", "model_reasoning_effort=\"high\"", "--approve-for-me"]);

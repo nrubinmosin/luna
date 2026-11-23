@@ -86,7 +86,7 @@ fn read_auth_json(account_path: &str) -> Option<Value> {
 
 /// The claims of a JWT, unverified — this is our own token, read for the
 /// email and plan it carries, not for trust.
-fn jwt_claims(token: &str) -> Option<Value> {
+pub(super) fn jwt_claims(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
     serde_json::from_slice(&bytes).ok()

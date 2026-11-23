@@ -64,6 +64,8 @@ pub(super) struct Rpc {
     /// `turn/start` is answered, as Codex writes a thread at its first turn
     /// ("no rollout found" for one never given a turn).
     pub(super) thread: Option<String>,
+    /// The policy in the thread's OPEN result, saved once TURN names it.
+    approval: Option<Value>,
     /// The turn's id, once `turn/start` has answered: what a steer and an
     /// interrupt name.
     pub(super) turn: Option<String>,
@@ -91,6 +93,7 @@ impl Rpc {
             client_id,
             pending: None,
             thread: None,
+            approval: None,
             turn: None,
             open_items: Vec::new(),
             interrupting: false,
@@ -293,9 +296,9 @@ fn no_such_thread(message: &str) -> bool {
 /// thread's saved settings win over `-c`, not over these). The turn is not
 /// started then: fail closed.
 fn settings_differ(asked: &Value, opened: &Value) -> Option<String> {
-    if let Some(want) = asked["approvalPolicy"].as_str() {
+    if let Some(want) = asked.get("approvalPolicy") {
         let got = &opened["approvalPolicy"];
-        if got.as_str() != Some(want) {
+        if got != want {
             return Some(format!("its thread runs with approval {got}, not the {want} it was started with"));
         }
     }
@@ -369,6 +372,7 @@ fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
             }
             if let Some(rpc) = rpc_mut(e) {
                 rpc.thread = Some(thread.clone());
+                rpc.approval = r.get("approvalPolicy").filter(|policy| !policy.is_null()).cloned();
             }
             let Some(rpc) = rpc_mut(e) else { return };
             let mut params = json!({ "threadId": thread, "clientUserMessageId": rpc.client_id, "input": input(&rpc.input) });
@@ -383,16 +387,21 @@ fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
             let Some(turn) = v["result"]["turn"]["id"].as_str().map(str::to_owned) else {
                 return broke(e, "the turn started with no id".into(), heard);
             };
-            let thread = rpc_mut(e).and_then(|rpc| {
+            let opened = rpc_mut(e).and_then(|rpc| {
                 rpc.turn = Some(turn);
-                rpc.thread.clone()
+                Some((rpc.thread.clone()?, rpc.approval.clone()))
             });
             // From here the thread is written: it is the helper's
             // conversation, and the server has the turn's text, not to be
             // handed back.
-            if let Some(thread) = thread.filter(|t| e.session.as_ref() != Some(t)) {
-                e.session = Some(thread);
-                mark_by_thread(e);
+            if let Some((thread, approval)) = opened {
+                if e.session.as_ref() != Some(&thread) {
+                    e.observed.codex_approval = approval;
+                    e.session = Some(thread);
+                    mark_by_thread(e);
+                } else if e.observed.codex_approval.is_none() {
+                    e.observed.codex_approval = approval;
+                }
             }
             heard.landed = stdin_took(e) || heard.landed;
             heard.turn_started = true;
@@ -1054,6 +1063,20 @@ mod tests {
         assert!(e.run.as_ref().unwrap().rpc.as_ref().unwrap().broken.is_some(), "the canary's failure");
         drop(r);
         lock().entries.remove(id);
+    }
+
+    #[test]
+    fn the_threads_reported_policy_is_kept_after_its_first_turn_starts() {
+        let id = "as-observed-approval";
+        let lines = running(id, json!({ "method": "thread/start", "params": {} }));
+        hear(id, &json!({ "id": OPEN, "result": { "thread": { "id": "first-thread" }, "approvalPolicy": "never" } }));
+        assert!(lock().entries[id].observed.codex_approval.is_none());
+        assert!(lines.try_recv().is_ok());
+        hear(id, &json!({ "id": TURN, "result": { "turn": { "id": "first-turn" } } }));
+        let mut r = lock();
+        let e = r.entries.remove(id).unwrap();
+        assert_eq!(e.session.as_deref(), Some("first-thread"));
+        assert_eq!(serde_json::to_value(&e.observed).unwrap()["codexApproval"], "never");
     }
 
     /// A saved thread id Codex has no rollout for (0.169.0, seen live: "no

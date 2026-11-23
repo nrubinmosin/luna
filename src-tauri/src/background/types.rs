@@ -125,6 +125,9 @@ pub fn iso(ms: u64) -> Option<String> {
 #[serde(rename_all = "camelCase", default)]
 pub(super) struct Observed {
     pub(super) model: Option<String>,
+    /// The typed approval policy Codex reported for this helper's thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) codex_approval: Option<Value>,
     /// When its last turn ended: the last it did, for a core started since.
     pub(super) turn_ended_ms: u64,
     /// When it last printed anything.

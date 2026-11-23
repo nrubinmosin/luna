@@ -285,6 +285,9 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
                     let policy = format!("approval_policy=\"{approval}\"");
                     applied.push(Item::Approval.with(format!("-c {policy}")));
                     args.extend(["-c".into(), policy]);
+                } else if let Some(approval) = e.observed.codex_approval.as_ref().filter(|_| resume.is_some()) {
+                    typed.insert("approvalPolicy".into(), approval.clone());
+                    applied.push(Item::Approval.with(format!("approval policy {approval} of the resumed thread")));
                 }
                 // A spawn that named none runs in the sandbox Codex's own config
                 // settles on, with no flag of Luna's; its read-only still takes
@@ -330,8 +333,8 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             applied.push(crate::codex::launch::no_memories_applied());
             // Luna's own server, with its tools: none while the hub is not up.
             let luna = s.token.clone().filter(|_| s.tools).zip(crate::hub::mcp_url()).map(|(token, url)| {
-                let approval = if s.auto_review { Some(crate::codex::launch::AUTO_REVIEW) } else { s.approval.as_deref() };
-                let prompt = crate::codex::defaults::prompt_for_spawn(approval, &s.account_path, &dir, true, resume.is_some());
+                let approval = typed.get("approvalPolicy").and_then(Value::as_str);
+                let prompt = crate::codex::defaults::prompt_for_spawn(approval, &s.account_path, &dir);
                 (crate::codex::launch::mcp_args(&url, prompt), token, prompt)
             });
             if luna.is_some() {
@@ -1418,6 +1421,7 @@ mod tests {
 
     #[test]
     fn golden_headless_codex_helper_with_tools_gets_luna_mcp() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         const ID: &str = "golden-bg-codex-helper";
         let r = Redact::for_chat(ID);
         let mut e = entry(Provider::Codex);
@@ -1443,7 +1447,8 @@ mod tests {
         assert_eq!(t.value("approval"), Some("-c approval_policy=\"on-request\""));
         assert!(t.role.as_deref().is_some_and(|l| l.contains("You may start helpers of your own")), "a lead's role");
 
-        for (approval, auto_review, prompt) in [(Some("never"), false, false), (None, false, true), (None, true, true)] {
+        for (approval, auto_review, prompt) in [(Some("never"), false, cfg!(target_os = "macos")), (None, false, true), (None, true, true)]
+        {
             e.spec.approval = approval.map(str::to_owned);
             e.spec.auto_review = auto_review;
             let t = turn(&e, ID, &r);
@@ -1478,6 +1483,7 @@ mod tests {
 
     #[test]
     fn golden_headless_codex_helper_turns_off_the_servers_and_plugins_of_its_run() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         const ID: &str = "golden-bg-codex-servers";
         let account = std::env::temp_dir().join(format!("luna-golden-codex-servers-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
@@ -1525,16 +1531,21 @@ mod tests {
         assert!(t.args.iter().skip(table + 1).any(|a| a.starts_with("mcp_servers.luna.url=")), "{:?}", t.args);
         assert!(t.args.ends_with(&golden::codex_mcp(true)), "{:?}", t.args);
         std::fs::write(std::path::Path::new(&account).join("config.toml"), format!("approval_policy = \"never\"\n{config}")).unwrap();
-        for (approval, thread, prompt) in [
-            (None, None, false),
-            (None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"), true),
-            (Some("never"), Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"), false),
+        let resumed = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b");
+        for (approval, thread, learned, effective) in [
+            (None, None, None, None),
+            (None, resumed, None, None),
+            (None, resumed, Some("never"), Some("never")),
+            (Some("never"), None, None, Some("never")),
+            (Some("never"), resumed, Some("never"), Some("never")),
         ] {
             e.spec.approval = approval.map(str::to_owned);
             e.session = thread.map(str::to_owned);
+            e.observed.codex_approval = learned.map(|value| json!(value));
             let t = turn(&e, ID, &r);
+            let prompt = effective.is_none() || cfg!(target_os = "macos");
             assert!(t.args.ends_with(&golden::codex_mcp(prompt)), "{approval:?} {thread:?}: {:?}", t.args);
-            assert_eq!(t.open.unwrap()["params"]["approvalPolicy"].as_str(), approval);
+            assert_eq!(t.open.unwrap()["params"]["approvalPolicy"].as_str(), effective);
         }
         std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
         let refused = command_for(&e, ID).err().unwrap();
