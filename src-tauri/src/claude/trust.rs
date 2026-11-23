@@ -30,12 +30,9 @@ pub fn claude_folder_trusted(account_path: AccountPath, folder: AbsPath) -> Resu
     Ok(cfg["projects"][project_key(&folder)]["hasTrustDialogAccepted"].as_bool().unwrap_or(false))
 }
 
-/// Marks the folder trusted for this account — the same bit the CLI's own trust
-/// prompt writes — when the person ticked that in the new-chat dialog. Leaves
-/// every other key in the config untouched, and notes the write in Luna's
-/// ledger of what it applied (applied.rs). A core command (corecmd.rs), as
-/// Codex's is: the ledger's notes, and what it may have missed, are kept by
-/// the process that answers "What Luna applied".
+/// Marks the folder trusted for this account when the person asks in the
+/// new-chat dialog. Sets the same bit as the CLI's own trust prompt under
+/// Claude Code's config lock.
 pub fn claude_trust_folder(account_path: AccountPath, folder: AbsPath) -> Result<(), String> {
     trust_folder(&String::from(account_path), &String::from(folder))
 }
