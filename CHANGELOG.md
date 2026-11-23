@@ -26,6 +26,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- A Codex project trusted in Luna is no longer trusted by `codex` outside
+  it. Luna saves the approved project with the chat and passes trust on
+  start and resume while the directory matches. Deleting the chat clears
+  its grant. Trust already saved in the account still applies. Claude Code's
+  trust choice is still saved for the account.
+
 - The accounts guides list more of the options Luna passes at launch. The
   helper guide clarifies that both CLIs' helper memories stay off when
   connectors are enabled.

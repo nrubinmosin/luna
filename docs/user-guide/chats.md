@@ -38,20 +38,21 @@ and remove it when you are done.
 repository: chats, helpers and leads run there on both CLIs, the Git worktree
 box is simply not shown, and a chat started without the dialog (Ctrl+Shift+N)
 in a folder whose kept start asks for a worktree starts in the folder itself.
-Codex's trust for such a folder is the folder's own:
-trusting a folder trusts it alone, not the folders below it.
 
 These boxes add something to the CLI only when you ask for it:
 
-- **Trust this folder in "<account>"** shows when the account has not trusted
-  the folder yet, unticked. Ticked, Luna writes the same mark the CLI's own
-  trust prompt writes (`hasTrustDialogAccepted` in `.claude.json`, or
-  `trust_level = "trusted"` in `config.toml`), and the chat opens on its prompt.
-  Unticked, nothing is written and the CLI asks in the chat itself (Codex then
-  asks about its Windows sandbox too). Claude Code cannot ask when it makes a
-  worktree, so such a chat needs the box ticked or the worktree off. A chat an
-  agent starts never writes trust: a Codex helper is trusted for its own runs
-  only.
+- **Trust this folder for this account** saves Claude Code's
+  `hasTrustDialogAccepted` decision in the account's `.claude.json`. Leave it
+  unchecked to decide in the chat. Claude Code requires this choice before
+  it can start in a new Git worktree.
+- **Trust this project for this chat** lasts until you delete the chat.
+  Deleting the chat clears its grant. The project is the Git checkout root,
+  the main repository for a verified linked worktree, or the folder you
+  chose outside Git. The dialog shows the project folder when it differs
+  from your choice. Luna passes the grant on start and resume while the
+  approved directory still matches. If it changes, or you leave the box
+  unchecked, Codex handles consent. Accepting Codex's own prompt can still
+  save an account-wide decision. Existing entries in `config.toml` still apply.
 
 **Ctrl+Shift+N** opens the dialog instead when the folder is not trusted in the
 account, since whether to trust it is yours to say.

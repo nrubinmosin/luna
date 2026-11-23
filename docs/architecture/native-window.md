@@ -1516,13 +1516,16 @@ it closes, the keyboard goes back to the terminal it belongs in.
   made: the dialog asks `chat_folder_check` as the start would ask it, whose
   answer is the folder's refusal and whether it is in git (`inGit`); outside
   git there is no box. It is a flag the CLI is given; Luna makes no worktree.
-  A folder the account has not trusted shows the trust box, unticked: Luna
-  writes the CLI's own mark (`claude_trust_folder`, `codex_trust_folder`) only
-  if it was ticked, before the chat exists, and Claude Code with a worktree on
-  is held until it is ticked or the box turned off. Create waits for every
+  A folder the account has not trusted shows the trust box, unticked. A
+  ticked Claude Code box writes the account's mark (`claude_trust_folder`)
+  before the chat exists. A new Claude Code worktree requires account trust.
+  The Codex trust lookup returns the project key and its directory identity
+  where available. The dialog names the project folder when it differs from
+  the selected folder. A tick saves that grant as `codexTrust` on the chat,
+  sent as `trustFolder` on each `ensure_codex_session` start. Create waits for every
   answer (settings, trust, the folder's check) and goes through create.rs, the
   one path of the dialog, the quick chat and a helper opened as a chat: the
-  folder is checked once more as the start would, trust written, the chat
+  folder is checked once more as the start would, Claude Code's trust is written, the chat
   named `chat N`, listed and seated (`Workspace::add_chat`), and the folder
   and account remembered. A refusal or a failed write is said in the dialog
   and nothing is made. Cut from the page's dialog: the wait guard, Codex's
