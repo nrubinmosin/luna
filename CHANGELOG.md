@@ -10,12 +10,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Added
 
-- `luna_session_get` gives `context.toCompact`, an estimate of the tokens a
-  session can still take in before its CLI compacts on its own. A helper's
-  notices add "~Nk to auto-compaction" to their context share and to the line
-  past 85%, and a pane's ctx figure shows it on hover. Luna works it out from
-  Claude Code's and Codex's settings for the session's model. It is omitted
-  when auto-compaction is off or Luna lacks the inputs to estimate it.
+- A pane's context meter tooltip shows an estimate of the tokens the session
+  can still take in before its CLI compacts on its own. Luna works it out from
+  Claude Code's and Codex's settings for the session's model. The estimate
+  appears only in the tooltip and only when Luna has the inputs to calculate it
+  and auto-compaction is enabled.
 
 ### Changed
 

@@ -47,10 +47,12 @@ can type into it and answer its model's questions with `scope: "all"`
 - Past a share of its context window (**Tell me when a helper's context
   passes** in Settings → Agents & trust → Helpers, 50% unless changed; a spawn's
   `budgetPct` sets one helper's), every notice about a helper ends "(context
-  N%)", or "(context N%, ~Nk to auto-compaction)" where Luna can tell how many
-  tokens are left before its CLI compacts its context on its own; past 85% its
-  parent hears so once on its own, with that figure too. Nothing is stopped.
+  N%)". Past 85% its parent hears so once on its own. Nothing is stopped.
   `budgetTokens` still works, read as the share of the window it is.
+  In a chat pane, hover over the context meter to see Luna's estimate of how
+  many tokens the CLI can take in before it compacts. Codex settings edits
+  apply to the next launch. Claude Code settings edits can update the tooltip
+  during a session.
 - A lead (a helper given Luna's tools) does not wake its parent with what it
   writes while its own helpers or background work are still at it; that waits
   for the notice that comes once they are done, unless a message opens on
@@ -409,14 +411,7 @@ one of your own chats an agent may answer only a question its model asked
 did anything; `luna_session_get` adds its transcript and the CLI's own conversation id,
 when its turn began, the model it ran on (none until a model has answered), how full its
 context is after its last turn and the version of the CLI its process last started from
-(`cliVersion`). Its `context.toCompact` gives about how
-many tokens the session can still take in before its CLI compacts on its own, as Luna
-works it out from the CLI's settings ([CLI compatibility](../cli-compatibility.md)). It is
-always an estimate (`estimated: true`). It is omitted when auto-compaction is off
-or Luna lacks the settings or usage to estimate it. Codex settings edits apply
-to the next launch. Claude Code settings edits can update the estimate during a
-session. Use `luna_session_get` for the estimate, or read it
-in a helper's context notices. A pane's `ctx` figure shows the same number on hover.
+(`cliVersion`).
 `luna_account_list` names the accounts agents may use (the account alone is enough: it brings
 its own CLI) with their usage as the Accounts window shows it; `luna_account_get` adds the
 settings a helper would get there (read from the account's and the project's settings the way
