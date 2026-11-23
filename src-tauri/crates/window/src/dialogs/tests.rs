@@ -1071,6 +1071,62 @@ fn the_delete_dialog_asks_first_and_deletes_through_one_path(cx: &mut TestAppCon
     assert!(d.calls(cmd::BACKGROUND_DELETE).is_empty());
 }
 
+/// A pane's × asks through the same dialog, a name being edited in a bar
+/// or not: Cancel deletes nothing, Delete the chat of that pane alone.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_panes_x_deletes_its_own_chat_only_once_confirmed(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let board = d.view.read_with(d.cx, |v, _| v.board.clone());
+    d.cx.update(|window, cx| board.update(cx, |b, cx| b.start_rename("c-parser", window, cx)));
+    d.settle();
+    d.click("pane-1-delete");
+    assert_eq!(d.name(), Some("delete"));
+    d.click("delete-cancel");
+    assert_eq!(d.name(), None);
+    assert!(d.state().find("c-parser").is_some());
+    assert!(d.calls(cmd::DELETE_SESSION).is_empty());
+
+    d.cx.update(|window, cx| board.update(cx, |b, cx| b.start_rename("c-parser", window, cx)));
+    d.settle();
+    d.click("pane-2-delete");
+    d.click("delete-yes");
+    assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-codex" })]);
+    assert!(d.state().find("c-codex").is_none());
+    assert!(d.state().find("c-parser").is_some(), "the chat being renamed stays");
+}
+
+/// The peek's menu has Delete too. Let go of, the question hands the
+/// keyboard back to the peek's frame it was in, where Esc closes the peek
+/// rather than going to the CLI.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_peeks_delete_asks_and_cancel_gives_the_peek_back_its_keyboard(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let board = d.view.read_with(d.cx, |v, _| v.board.clone());
+    let peek_has_it = |d: &mut D<'_>| d.cx.update(|window, cx| board.read(cx).peek_focus.is_focused(window));
+    d.click("row-c-notes");
+    assert!(d.state().peek.is_some());
+    assert!(peek_has_it(&mut d));
+    d.click("peek-menu");
+    d.click("menu-delete");
+    assert_eq!(d.name(), Some("delete"));
+    d.click("delete-cancel");
+    assert!(d.state().find("c-notes").is_some());
+    assert!(d.calls(cmd::DELETE_SESSION).is_empty());
+    assert!(peek_has_it(&mut d), "back in the peek's frame");
+    d.cx.simulate_keystrokes("escape");
+    d.settle();
+    assert_eq!(d.state().peek, None, "Esc closed the peek");
+
+    d.click("row-c-notes");
+    d.click("peek-menu");
+    d.click("menu-delete");
+    d.click("delete-yes");
+    assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-notes" })]);
+    assert!(d.state().find("c-notes").is_none());
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_chats_helpers_are_kept_unless_the_person_says_otherwise(cx: &mut TestAppContext) {

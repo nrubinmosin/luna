@@ -525,6 +525,10 @@ pub fn scenes() -> Vec<Scene> {
         peek.click = Some("c-notes");
         let mut menu = chats("pane-menu", chats_state(2, true));
         menu.menu = Some(crate::board::MenuAt::Pane(0));
+        // A bottom pane's, which opens over its bar where it does not fit
+        // under it.
+        let mut menu_bottom = chats("pane-menu-bottom", chats_state(4, true));
+        menu_bottom.menu = Some(crate::board::MenuAt::Pane(2));
         let mut peek_menu = chats("peek-menu", chats_state(2, true));
         peek_menu.click = Some("c-notes");
         peek_menu.menu = Some(crate::board::MenuAt::Peek);
@@ -571,6 +575,7 @@ pub fn scenes() -> Vec<Scene> {
             chats("sidebar-collapsed", chats_state(2, false)),
             peek,
             menu,
+            menu_bottom,
             peek_menu,
             title_menu,
             renaming,

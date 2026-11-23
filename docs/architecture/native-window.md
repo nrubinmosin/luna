@@ -338,10 +338,18 @@ Auto-tile become rows of its Menu's list (same selectors, drawn once it is
 open); the status bar says its counts as "work", "wait" and "bg", and puts
 the update's and the CLIs' chips in a list over a "..." button (`more_menu`;
 `status-more`), keeping the accounts a field and Settings in reach. A pane's
-title bar shows its ID and Take off the board buttons and its details (model,
-account, context) only where the pane is `ROOMY_BAR` wide (`pane_width`
-estimates it from the window, the sidebar and the layout's columns); the
-pane's menu has both actions at any width. The peek's strip cuts its first
+title bar shows its ID and Take off the board buttons and its details
+(model, account, context) only where the pane is `ROOMY_BAR` wide, and its
+Delete (`×`) only where it is `DELETE_BAR` wide, which a pane of two at the
+900 px window is not (`pane_width` estimates the width from the window, the
+sidebar and the layout's columns); the pane's menu has all three actions at
+any width. Its Delete, like the `×` and the sidebar row's, only opens the
+delete dialog (`seams.delete_chat`), whose question comes before anything
+goes; let go of with the chat still listed, the dialog gives the keyboard
+back to what had it (a peek's frame, where Esc still closes the peek). The
+menu opens under its bar, or over it where it does not fit below and there
+is more room above (`menu_side`, from where the bar was last laid out), no
+taller than that room, its rows scrolling. The peek's strip cuts its first
 words short with an ellipsis and has no hint under 900 px, so To board and
 Close stay in the window. The status bar's panels are no taller than the
 window above the bar, their body scrolling under the title, and the
@@ -1702,7 +1710,8 @@ menu account|model`), and a quick chat (`dialog-quick-chat`); the
 accounts' their add form (`accounts-add`, driver line `adding`), a name in
 edit (`accounts-rename`, `rename <n>`) and the parent's list open
 (`accounts-parent`, `menu <id>`); the library's a folder's instructions list
-open (`library-folder-menu`); the board's the peek's menu (`peek-menu`); the
+open (`library-folder-menu`); the board's the peek's menu (`peek-menu`) and
+a bottom pane's of four (`pane-menu-bottom`); the
 helpers' fourteen at work under one chat (`dialog-helpers-many`).
 
 **Fit.** `fit_tests.rs` checks that the window fits small screens: every

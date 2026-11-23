@@ -15,6 +15,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Claude Code's and Codex's settings for the session's model. The estimate
   appears only in the tooltip and only when Luna has the inputs to calculate it
   and auto-compaction is enabled.
+- A pane's title bar has a **×** button, after **...** and **_**, and its
+  menu and the peek's a Delete row: all open the same Delete dialog as the
+  sidebar's row, helpers listed, and nothing is deleted until it is
+  confirmed. A bar under 310 px leaves the **×** to the menu, keeping **ID**
+  and **_** down to 240 px as before. Let go of, the dialog gives the
+  keyboard back to the peek it was asked from, where Esc closes the peek.
+- A pane's menu opens over its title bar where there is no room below (a
+  bottom pane on a low window), and scrolls where it does not all fit.
 
 ### Changed
 
@@ -55,6 +63,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   choice from their first successful start for later launches. Unreadable
   or unsupported Codex settings still fall back to `on-request` with
   `read-only`. Unreadable Claude settings leave the mode to Claude Code.
+- The dark theme's board is a muted teal (`#005050`, was black like the
+  terminals), so the gap between two panes reads as a separator.
+- A pane's title bar sets its details apart with " · ": "Opus · high ·
+  Claude Code: backend · ctx 9%", where they ran together.
 
 ### Removed
 

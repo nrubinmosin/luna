@@ -1,11 +1,11 @@
 //! The delete-chat dialog (src/features/chats/DeleteChatDialog.tsx): the one
-//! gate every Delete goes through, the sidebar row's and a pane's menu's. It
-//! says what goes (the session, its scrollback, the attachments; the
-//! transcript is kept), owns "stop or keep its helpers", and then deletes:
-//! the helpers it was told to, the chat's session and the row. Luna removes
-//! no worktree (ADR-0030): one the CLI made stays on disk. Passing a helper
-//! to another chat is cut too: a helper left alone answers to no chat and
-//! deletes itself once idle.
+//! gate every Delete goes through, the sidebar row's, a pane's menu's and its
+//! title bar's ×. It says what goes (the session, its scrollback, the
+//! attachments; the transcript is kept), owns "stop or keep its helpers", and
+//! then deletes: the helpers it was told to, the chat's session and the row.
+//! Luna removes no worktree (ADR-0030): one the CLI made stays on disk.
+//! Passing a helper to another chat is cut too: a helper left alone answers
+//! to no chat and deletes itself once idle.
 
 use super::rows::{self, AtStake, Choices, Helper, Line};
 use super::{DialogLayer, cmd};
