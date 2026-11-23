@@ -810,10 +810,38 @@ pub fn approval_on(screen: &str) -> bool {
         "Would you like to run the following command?",
         "Would you like to make the following edits?",
     ];
-    MARKS.iter().any(|m| screen.contains(m))
-        || (screen.contains("enter to submit | esc to cancel")
-            && screen.contains("Run the tool and continue")
-            && screen.contains("Cancel this tool call"))
+    MARKS.iter().any(|m| screen.contains(m)) || mcp_approval_on(screen)
+}
+
+fn mcp_approval_on(screen: &str) -> bool {
+    // The approval form draws numbered choices above its footer, with
+    // blank rows in between. Use only the bottom pane.
+    let mut rows = screen.lines().rev().take(16).map(str::trim).filter(|row| !row.is_empty());
+    if rows.next() != Some("enter to submit | esc to cancel") {
+        return false;
+    }
+    fn option(row: &str) -> Option<(u8, &str)> {
+        let (number, words) = row.trim_start_matches('›').trim_start().split_once(". ")?;
+        Some((number.parse::<u8>().ok()?, words))
+    }
+    let Some((mut number, cancel)) = rows.next().and_then(option) else { return false };
+    if !(2..=4).contains(&number) || !cancel.strip_prefix("Cancel").is_some_and(|words| words.trim() == "Cancel this tool call") {
+        return false;
+    }
+    for row in rows {
+        number -= 1;
+        let Some((n, words)) = option(row) else { return false };
+        if n != number {
+            return false;
+        }
+        if n == 1 {
+            return words.strip_prefix("Allow").is_some_and(|words| words.trim() == "Run the tool and continue");
+        }
+        if !words.starts_with("Allow for this session ") && !words.starts_with("Always allow ") {
+            return false;
+        }
+    }
+    false
 }
 
 /// `working` | `resting` off the rollout's own turn events: a turn begun
@@ -1108,6 +1136,10 @@ mod tests {
                       › 1. Allow   Run the tool and continue\n  2. Cancel  Cancel this tool call\n\n  enter to submit | esc to cancel";
         assert!(approval_on(screen));
         assert!(!approval_on("  › 1. Yes\n  2. Cancel\n\n  enter to submit | esc to cancel"));
+        assert!(!approval_on(
+            "Read the footer: enter to submit | esc to cancel\nRun the tool and continue\nCancel this tool call\n\n› Keep going"
+        ));
+        assert!(!approval_on(&format!("{screen}\n\n› The model is still working")));
     }
 
     /// The message one rollout line comes to on its own.

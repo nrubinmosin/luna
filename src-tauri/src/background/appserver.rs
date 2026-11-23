@@ -18,6 +18,8 @@
 use super::*;
 
 const MCP_ELICITATION: &str = "mcpServer/elicitation/request";
+const USER_INPUT: &str = "item/tool/requestUserInput";
+const MCP_APPROVAL_PREFIX: &str = "mcp_tool_call_approval_";
 
 /// The ids of Luna's own requests. A turn's process makes one of each but
 /// steers, whose id carries the text's (`Queued::id`).
@@ -73,6 +75,8 @@ pub(super) struct Rpc {
     /// interrupted turn's get no `item/completed` (0.169.0), so Luna closes
     /// them in its log.
     pub(super) open_items: Vec<(String, String)>,
+    /// Spawn items begun before Codex's fallback approval question.
+    spawn_items: HashMap<String, Ask>,
     /// `turn/interrupt` has gone out.
     pub(super) interrupting: bool,
     /// `turn/completed` came, or the turn cannot go on: stdin is closed and
@@ -96,6 +100,7 @@ impl Rpc {
             approval: None,
             turn: None,
             open_items: Vec::new(),
+            spawn_items: HashMap::new(),
             interrupting: false,
             done: false,
             broken: None,
@@ -484,12 +489,22 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
             }
             if let (Some(id), Some(rpc)) = (item["id"].as_str(), rpc_mut(e)) {
                 rpc.open_items.push((id.to_string(), item_label(item)));
+                if item["type"] == "mcpToolCall"
+                    && item["server"] == "luna"
+                    && item["tool"] == "luna_session_spawn"
+                    && item["arguments"].is_object()
+                    && rpc.spawn_items.len() < ASKS_PER_TURN
+                {
+                    rpc.spawn_items
+                        .insert(id.to_string(), Ask::permission(Some("luna_session_spawn".into()), Some(item["arguments"].to_string())));
+                }
             }
         }
         "item/completed" => {
             let item = &p["item"];
             if let (Some(id), Some(rpc)) = (item["id"].as_str(), rpc_mut(e)) {
                 rpc.open_items.retain(|(open, _)| open != id);
+                rpc.spawn_items.remove(id);
             }
             match item["type"].as_str() {
                 Some("agentMessage") => note(e, &format!("said: {}", one_line(item["text"].as_str().unwrap_or("")))),
@@ -511,7 +526,7 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
         "serverRequest/resolved" => {
             let rid = &p["requestId"];
             let before = e.held.len();
-            e.held.retain(|h| h.answer.is_some() || &h.input["id"] != rid || h.input.get("method").is_none());
+            e.held.retain(|h| &h.input["id"] != rid || h.input.get("method").is_none());
             if e.held.len() != before {
                 note(e, &format!("the server settled request {rid} itself: its ask is closed"));
                 heard.settled = true;
@@ -648,7 +663,7 @@ fn ask_of(method: &str, p: &Value, open: &[(String, String)]) -> Option<Ask> {
             };
             Ask::permission(Some(tool.into()), Some(detail))
         }
-        "item/tool/requestUserInput" => {
+        USER_INPUT => {
             let questions: Vec<crate::agents::AskQuestion> = p["questions"]
                 .as_array()?
                 .iter()
@@ -678,6 +693,10 @@ fn ask_of(method: &str, p: &Value, open: &[(String, String)]) -> Option<Ask> {
     Some(ask.asked_by(Some(crate::agents::AskSource::session())))
 }
 
+fn mcp_question(params: &Value) -> Option<&str> {
+    params["questions"].as_array()?.iter().filter_map(|q| q["id"].as_str()).find(|id| id.starts_with(MCP_APPROVAL_PREFIX))
+}
+
 /// A request of the server's. An approval or a question is held for an
 /// answer, its serial returned for `reply_when_answered`; what else it asks
 /// (other MCP elicitations, a dynamic tool, a token refresh, an attestation)
@@ -688,16 +707,30 @@ fn server_request(r: &mut Registry, id: &str, rid: &Value, method: &str, p: &Val
     let serial = *next_serial;
     let e = entries.get_mut(id)?;
     let is_elicitation = method == MCP_ELICITATION;
-    if is_elicitation && e.held.iter().any(|h| h.input["method"] == method && h.input["id"] == *rid) {
+    let fallback = (method == USER_INPUT).then(|| mcp_question(p)).flatten();
+    let is_mcp = is_elicitation || fallback.is_some();
+    if is_mcp && e.held.iter().any(|h| h.input["method"] == method && h.input["id"] == *rid) {
         return None;
     }
     let open = rpc_of(e).map(|rpc| rpc.open_items.clone()).unwrap_or_default();
-    // A helper without Luna's tools can have a connector named `luna`.
-    let ask =
-        ask_of(method, p, &open).filter(|_| !is_elicitation || (e.spec.tools && e.spec.token.is_some() && e.held.len() < ASKS_PER_TURN));
+    // The launch refuses any layer that defines Luna's server, including
+    // managed layers (Codex helper parity). The name here relies on that.
+    let ask = if is_mcp && (!e.spec.tools || e.spec.token.is_none() || e.held.len() >= ASKS_PER_TURN) {
+        None
+    } else if let Some(qid) = fallback {
+        let call = qid.strip_prefix(MCP_APPROVAL_PREFIX)?;
+        rpc_of(e)
+            .and_then(|rpc| rpc.spawn_items.get(call))
+            .cloned()
+            .filter(|_| p["itemId"] == call && p["questions"].as_array().is_some_and(|questions| questions.len() == 1))
+            .map(|ask| ask.asked_by(Some(crate::agents::AskSource::session())))
+    } else {
+        ask_of(method, p, &open)
+    };
     let Some(mut ask) = ask else {
         let line = match method {
             MCP_ELICITATION => reply(rid, json!({ "action": "decline" })),
+            USER_INPUT if fallback.is_some() => reply(rid, reply_to(method, p, None)),
             _ => refusal(rid, &format!("a Luna helper has nobody to answer {method}")),
         };
         if send(e, line) {
@@ -705,11 +738,17 @@ fn server_request(r: &mut Registry, id: &str, rid: &Value, method: &str, p: &Val
         }
         return None;
     };
-    ask.id = Some(format!("a{serial}"));
+    ask.id = Some(ask_id_of(serial));
     note(e, &format!("waits: {}", ask.line()));
     // An elicitation's reply needs only its id. The ask keeps the display
     // detail within the same cap as other permissions.
-    let input = if is_elicitation { json!({ "id": rid, "method": method }) } else { json!({ "id": rid, "method": method, "params": p }) };
+    let input = if is_elicitation {
+        json!({ "id": rid, "method": method })
+    } else if let Some(qid) = fallback {
+        json!({ "id": rid, "method": method, "params": { "questions": [{ "id": qid }] } })
+    } else {
+        json!({ "id": rid, "method": method, "params": p })
+    };
     e.held.push_back(Held { serial, ask, input, tool_use_id: None, answer: None, reply: None });
     *next_serial += 1;
     asked.insert(serial, id.to_string());
@@ -723,7 +762,10 @@ fn server_request(r: &mut Registry, id: &str, rid: &Value, method: &str, p: &Val
 fn reply_to(method: &str, p: &Value, answer: Option<&Value>) -> Value {
     let allowed = answer.is_some_and(|a| a["behavior"] == "allow");
     match method {
-        "item/tool/requestUserInput" => {
+        USER_INPUT => {
+            if let Some(id) = mcp_question(p) {
+                return json!({ "answers": { id: { "answers": [if allowed { "Allow" } else { "Cancel" }] } } });
+            }
             let picked = answer.filter(|_| allowed).and_then(|a| a["picked"].as_array());
             let mut answers = serde_json::Map::new();
             let asked = p["questions"].as_array().into_iter().flatten().filter(|q| q["question"].is_string());
@@ -1364,6 +1406,11 @@ mod tests {
             assert_eq!(pending.detail.as_deref(), Some(req["params"]["_meta"]["tool_params"].to_string().as_str()));
             let ask_id = pending.id.as_deref();
             assert!(ask_id.is_some());
+            assert!(answer(parent, id, None, &[], Some(true), None, false).is_err_and(|err| err.contains("requires its askId")));
+            let epoch = ask_epoch();
+            let other_core = if epoch.as_bytes()[1] == b'0' { '1' } else { '0' };
+            let stale = format!("a{other_core}{}{serial}", &epoch[2..]);
+            assert!(answer(parent, id, Some(&stale), &[], Some(true), None, false).is_err_and(|err| err.contains("unknown")));
             assert!(hear(id, &req).asks.is_empty(), "the same request is held once");
             reply_when_answered(id.into(), serial);
             assert!(answer(other, id, ask_id, &[], Some(true), None, false).is_err());
@@ -1378,6 +1425,76 @@ mod tests {
         for who in [id, parent, other] {
             forget(who);
         }
+    }
+
+    #[test]
+    fn the_fallback_spawn_question_uses_the_matching_items_arguments_and_a_one_shot_decision() {
+        use crate::agents::{answer, forget, register};
+        let (parent, other, id) = ("as-fallback-parent", "as-fallback-other", "as-fallback-lead");
+        for who in [parent, other] {
+            register(who, Provider::Codex, "C:/p", "C:/acc", None, true, json!({}));
+        }
+        let token = register(id, Provider::Codex, "C:/p", "C:/acc", Some(parent), true, json!({}));
+        let lines = running(id, Value::Null);
+        {
+            let mut r = lock();
+            let spec = &mut r.entries.get_mut(id).unwrap().spec;
+            spec.tools = true;
+            spec.token = token;
+        }
+        let args = json!({ "prompt": "review it", "sandbox": "danger-full-access" });
+        let qid = "mcp_tool_call_approval_call-1";
+        let request = json!({
+            "id": 9, "method": USER_INPUT, "params": {
+                "itemId": "call-1", "questions": [{
+                    "id": qid, "question": "Allow the luna MCP server to run tool \"luna_session_spawn\"?",
+                    "options": [{"label":"Allow"}, {"label":"Allow for this session"}, {"label":"Cancel"}]
+                }]
+            }
+        });
+        let read_reply = || {
+            let line = lines.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()["result"]["answers"][qid]["answers"].clone()
+        };
+        assert!(hear(id, &request).asks.is_empty(), "missing item");
+        assert_eq!(read_reply(), json!(["Cancel"]));
+        hear(
+            id,
+            &json!({
+                "method": "item/started", "params": { "item": {
+                    "id": "call-1", "type": "mcpToolCall", "server": "luna", "tool": "luna_session_spawn", "arguments": args
+                }}
+            }),
+        );
+        for (allow, expected) in [(false, "Cancel"), (true, "Allow")] {
+            let serial = hear(id, &request).asks[0];
+            let pending = ask(id).unwrap();
+            let ask_id = pending.id.as_deref();
+            assert_eq!((pending.kind, pending.tool.as_deref()), ("permission", Some("luna_session_spawn")));
+            assert_eq!(pending.detail.as_deref(), Some(args.to_string().as_str()));
+            assert!(answer(other, id, ask_id, &[], Some(true), None, false).is_err());
+            assert!(answer(parent, id, ask_id, &["Allow for this session".into()], None, None, false).is_err());
+            answer(parent, id, ask_id, &[], Some(allow), None, false).unwrap();
+            reply_when_answered(id.into(), serial);
+            assert_eq!(read_reply(), json!([expected]));
+        }
+        lock().entries.remove(id);
+        for who in [id, parent, other] {
+            forget(who);
+        }
+    }
+
+    #[test]
+    fn a_server_resolution_discards_an_answer_queued_before_the_reply_worker() {
+        let id = "as-settled-with-answer";
+        let lines = running(id, Value::Null);
+        let request = json!({ "id": 17, "method": "item/commandExecution/requestApproval", "params": { "command": "echo hi" } });
+        let serial = hear(id, &request).asks[0];
+        answer(id, None, &[], Some(true), None, |_| Ok(())).unwrap();
+        assert!(hear(id, &json!({ "method": "serverRequest/resolved", "params": { "requestId": 17 } })).settled);
+        reply_when_answered(id.into(), serial);
+        assert!(lines.recv_timeout(std::time::Duration::from_millis(100)).is_err());
+        lock().entries.remove(id);
     }
 
     #[test]

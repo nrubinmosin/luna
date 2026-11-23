@@ -292,6 +292,15 @@ fn lock() -> std::sync::MutexGuard<'static, Registry> {
     reg().0.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn ask_epoch() -> &'static str {
+    static EPOCH: OnceLock<String> = OnceLock::new();
+    EPOCH.get_or_init(|| format!("a{}-", crate::secret::random_hex(16)))
+}
+
+fn ask_id_of(serial: u64) -> String {
+    format!("{}{serial}", ask_epoch())
+}
+
 /// A chat id like the window's own (chats.store `newId`), so a helper opened
 /// as a chat later looks like any other.
 pub fn mint_id() -> String {
