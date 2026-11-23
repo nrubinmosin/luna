@@ -70,18 +70,33 @@ one off. At least one stays on.
   by name beats a provider, a provider beats **all**, and Claude Code and
   Codex together hold all): only one could go into the account's file, and
   this one would reach nobody there. Change either one's accounts first.
-- **Instructions for your chats only** that an earlier Luna put into accounts
-  stay there, with a line before them saying whose they are ("For chats with a
-  person only: a session whose task came from another agent skips this whole
-  file."), so that chats you start by hand still read them. Codex reads its
-  account's `AGENTS.md` in every session with no way to leave it out of one;
-  the line, and the note on a lead's or helper's task, tell such a session it
-  is not for it. Claude Code leaves the file out of a lead or helper
-  (`claudeMdExcludes`). Turning any other role on for such a file takes it out
-  of the accounts; from then on it goes per session.
+- **Instructions for your chats only** go per session like any other file
+  for some roles, on Claude Code and Codex alike. An earlier Luna put them
+  into the accounts with a line before them ("For chats with a person
+  only: …"), which Codex leads and helpers read all the same, since Codex
+  reads its account's `AGENTS.md` in every session. The first library pass
+  of this Luna (a Sync, or any session's start) removes an unwanted copy
+  only while it is still exactly what Luna wrote. Once it is gone,
+  the instructions no longer reach chats you start by hand outside Luna, nor
+  Codex leads and helpers. A copy you edited in the account is yours from then
+  on: Luna leaves it exactly as it is, says so once in its log, and no longer
+  counts it as its own. Every session on that account reads it, chats, leads
+  and helpers alike, on Claude Code and Codex, until you remove it by hand.
+  If an every-session entry wants the same path, Luna recognizes the edited
+  old copy from its opening line or from the saved hash of that line plus
+  the library text. With the line removed, recognition can fail if the
+  matching text changed, was deleted, cannot be read, or the instructions
+  folder cannot be listed. If recognition fails and the pass has a usable
+  every-session replacement, it backs up and replaces the edited copy.
+  If you return to 0.21 before 0.22 saves your settings, 0.21 can read the
+  old layout setting and lay the chats-only copies out again at empty paths.
+- A chat already running keeps the instructions it started with: a change to
+  one for your chats reaches it at its next start. Opening a chat that is
+  still running attaches to its process as it is; a Codex chat resumed
+  rebuilds its context from its own record and keeps what it was given, unless
+  that record is gone.
 - A session's start records what the audience gave it or kept from it
-  (`library.audience`). Where it could not keep something out it says so: a Codex copy
-  changed there or not yet written does not say whose it is; and in
+  (`library.audience`). Where it could not keep something out it says so: in
   the rare project whose folder name Claude Code's matcher would confuse with
   the account's, the account's `CLAUDE.md` is read after all.
 
@@ -181,21 +196,20 @@ and the library's copy does not go there while it is. Such a place says so in
 the window; it clears once the file is gone (the library's copy then goes
 there) or once you leave the place out.
 
-Luna's own copies always end up as the library has them. One changed where it
-lies has the library's written over it the next time the library is laid out,
-which is before every session Luna starts; one deleted there is put back; one
-no longer meant for its place (a skill un-ticked for an account, say) is taken
-out, changed there or not. What a change there had made is kept in Luna's
-backups (`library-backups` in its data folder) for 30 days, and Luna's log names
-each place written over or taken out and where its backup is.
+Luna lays out the library's current text before every session it starts.
+It restores missing copies that are still wanted and replaces edited copies
+that are still managed. When account instructions are no longer wanted,
+Luna removes an unedited copy and leaves an edited copy where it is. This
+also applies to copies of entries you delete. Luna drops its ownership note
+and records the change once in its log. The file belongs to you until you
+remove it. A skill no longer wanted is taken out even if edited. Before
+replacing or removing an edited copy, Luna saves it for 30 days in
+`library-backups` in its data folder and logs the backup's location.
 
-**Edit in the library, not in an account.** An edit made inside an account to
-something Luna laid out there is undone at the next session start, a backup of
-it kept for 30 days: Claude Code's `/memory` on the account's `CLAUDE.md`, a
-model improving a skill in place with skill-creator, a hand edit of an
-account's `AGENTS.md` or `skills/<name>/SKILL.md`. Make the change in the
-library's own file (the editor here, or the file under the library's folder)
-and every copy follows.
+**Make changes in the library to update every copy.** An edit made in an
+account to a copy Luna still manages can be undone at the next session
+start. This includes Claude Code's `/memory` edits to `CLAUDE.md` and edits
+to a laid-out skill made with skill-creator.
 
 In a skill's folder only the files Luna wrote are Luna's. Anything a person or
 a tool adds beside them (a `__pycache__/`, a `node_modules/`, a `.DS_Store`, a

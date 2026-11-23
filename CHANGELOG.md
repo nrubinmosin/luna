@@ -107,6 +107,24 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   note still read without it.
 - The lead role text no longer says nothing outlives a Codex lead's turn;
   it says nothing else wakes it.
+- Library instructions for your chats only now reach them per session, on
+  Claude Code and Codex alike, and are no longer kept in the accounts'
+  `CLAUDE.md` and `AGENTS.md` with a "For chats with a person only" line
+  before them: Codex leads and helpers read that file all the same. Luna's
+  library pass removes unwanted account instructions only if they still
+  match what Luna wrote. It keeps an edited copy, including a copy of an
+  every-session entry that is no longer wanted, drops its ownership note,
+  and logs the change once. Every session on the account reads the kept
+  file until you remove it. If an every-session entry wants the same path,
+  Luna recognizes an edited chats-only copy from its opening line or from
+  the saved hash of that line plus the library text. With the line removed,
+  recognition can fail if the matching text changed, was deleted, cannot
+  be read, or the instructions folder cannot be listed. If recognition
+  fails and the pass has a usable replacement, it backs up and replaces
+  the edited copy.
+  Once the old copy is gone, these instructions no longer reach chats you
+  start outside Luna, nor Codex leads and helpers. Returning to 0.21 before
+  0.22 saves settings can lay the chats-only copies out again at empty paths.
 
 ### Removed
 

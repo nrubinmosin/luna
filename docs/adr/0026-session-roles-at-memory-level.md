@@ -147,3 +147,17 @@ for chats, in the same order, under the same headings, by the same mechanism
 as before; with none, it gets no file and no argument, as it did when the
 override was empty. An override left at `<library>/system/role-chat/TEXT.md`
 is no longer read or listed, and Luna does not delete it.
+
+## Note, 2026-11-23: the chats' instructions leave the accounts
+
+Instructions an earlier Luna laid out for the chats no longer stay in
+accounts: `LibrarySettings::laid_out` and its line are gone, and such an
+entry goes per session like any other for some roles. Codex reads its
+account's `AGENTS.md` in every session, so its leads and helpers read the
+chats' text all the same, which Claude Code's `claudeMdExcludes` kept from
+its own. When the path is no longer wanted, a pass takes out an old copy
+still as Luna wrote it. An edited copy becomes the person's file, read by
+every session on the account until they remove it. The
+[cleanup rules](../architecture/library.md#audiences) also describe the
+case where an every-session entry wants that path. Once the old copy is
+gone, chats started outside Luna no longer receive the instructions.
