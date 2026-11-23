@@ -86,6 +86,13 @@ fn held_to(share: f32, span: Pixels, least: f32) -> f32 {
     share.clamp(floor, 1. - floor)
 }
 
+/// A title bar's details, those it has: each after the first opens with
+/// " · ", which shrinks and is cut short with it, so they never run together
+/// ("Opus · high · Claude Code: backend · ctx 9%").
+fn bar_details(parts: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
+    parts.into_iter().flatten().filter(|s| !s.is_empty()).enumerate().map(|(n, s)| if n == 0 { s } else { format!("· {s}") }).collect()
+}
+
 /// About how wide pane `i` is: the window less the sidebar and the board's
 /// padding, and with two columns less the divider, by its column's share, at
 /// 100% (scale.rs `width`).
@@ -364,8 +371,16 @@ impl Board {
         // before the name does.
         let detail = |s: String| div().flex_shrink(1.).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(s);
         let context = live.context.map(|c| format!("ctx {:.0}%", (c * 100.).clamp(0., 100.)));
-        let context_tip = live.to_compact.map(ctx_tip);
+        let mut context_tip = live.to_compact.map(ctx_tip);
         let tips = self.tips;
+        let has_context = context.is_some();
+        let details = if roomy {
+            bar_details([Some(chat.model_effort()), Some(format!("{}: {}", provider_label(chat.provider), chat.account)), context])
+        } else {
+            Vec::new()
+        };
+        // The context, where there is one, is the last of them.
+        let context_at = details.len().checked_sub(1).filter(|_| has_context);
         let chat_id = id.to_owned();
         let menu_open = self.menu == Some(at);
         let mut bar = div()
@@ -401,18 +416,20 @@ impl Board {
                     .child(tag(p, Some(p.info), t).whitespace_nowrap().overflow_hidden().text_ellipsis())
             }))
             .child(name)
-            .children(roomy.then(|| detail(chat.model_effort())))
-            .children(roomy.then(|| detail(format!("{}: {}", provider_label(chat.provider), chat.account))))
-            .children(context.filter(|_| roomy).map(|c| {
+            .children(details.into_iter().enumerate().map(|(n, s)| {
+                if Some(n) != context_at {
+                    return detail(s).into_any_element();
+                }
                 // The hover test needs its bounds even though this detail can
                 // give way entirely to the bar's buttons.
-                detail(c)
+                detail(s)
                     .id(SharedString::from(format!("{key}-ctx")))
                     .debug_selector(|| format!("{key}-ctx"))
-                    .when_some(context_tip, |d, lines| d.tip(tips, p, lines))
+                    .when_some(context_tip.take(), |d, lines| d.tip(tips, p, lines))
+                    .into_any_element()
             }));
-        // A bar with no room leaves what the chat's details say out, and ID
-        // and Take off the board to the menu, which has both.
+        // A bar with no room leaves what the chat's details say out, and ID,
+        // Take off the board and Delete to the menu, which has all three.
         if chat.session_id.is_some() && roomy {
             let copy = chat_id.clone();
             bar = bar.child(
@@ -963,5 +980,20 @@ impl Render for Board {
         };
         let peek = state.peek.clone().map(|peek| self.peek(&p, &state, peek, window, cx));
         div().id("board").relative().size_full().flex().p(u(4.)).bg(p.board).child(grid).children(peek).child(self.follow(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bar_details;
+
+    #[test]
+    fn a_bars_details_are_set_apart_and_those_it_lacks_leave_no_dot() {
+        let s = |t: &str| Some(t.to_owned());
+        assert_eq!(
+            bar_details([s("Opus · high"), s("Claude Code: backend"), s("ctx 9%")]),
+            ["Opus · high", "· Claude Code: backend", "· ctx 9%"]
+        );
+        assert_eq!(bar_details([s(""), s("Codex: work"), None]), ["Codex: work"]);
     }
 }

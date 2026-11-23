@@ -54,6 +54,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `read-only`. Unreadable Claude settings leave the mode to Claude Code.
 - The dark theme's board is a muted teal (`#005050`, was black like the
   terminals), so the gap between two panes reads as a separator.
+- A pane's title bar sets its details apart with " · ": "Opus · high ·
+  Claude Code: backend · ctx 9%", where they ran together.
 
 ### Removed
 
