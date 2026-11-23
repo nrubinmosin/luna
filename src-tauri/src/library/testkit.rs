@@ -174,8 +174,8 @@ impl GoldenLibrary {
     }
 
     /// A library whose entries are all the person's chats' (audience.rs): its
-    /// `main` instructions and `report` skill, into every account. Its folder
-    /// is a repository the library says nothing of.
+    /// `main` instructions, given per session, and its `report` skill, into
+    /// every account. Its folder is a repository the library says nothing of.
     pub(crate) fn chats_only(tag: &str) -> Self {
         let f = Fixture::new(&format!("golden-{tag}"));
         f.skill("report", "v1");
@@ -184,7 +184,6 @@ impl GoldenLibrary {
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         let mut lib = LibrarySettings { instructions: first(all()), skills: skills(&["report"]), ..Default::default() };
         lib.audience.instructions.insert(FIRST_INSTRUCTIONS.into(), Audience::CHATS);
-        lib.laid_out.insert(FIRST_INSTRUCTIONS.into());
         lib.audience.skills.insert("report".into(), Audience::CHATS);
         f.run(&lib, &mut Ledger::default(), true);
         let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };

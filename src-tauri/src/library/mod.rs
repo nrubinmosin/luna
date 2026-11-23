@@ -276,10 +276,10 @@ struct Ledger {
     #[serde(default, serialize_with = "this_format")]
     format: u32,
     written: BTreeMap<String, Hashes>,
-    /// Places Luna is never to adopt, by destination: the copies 0.19 left
-    /// where they lay as no longer wanted but changed there (its `kept`),
-    /// the person's own from 0.20 on even where they come to hold the
-    /// library's very bytes. One goes once nothing is there.
+    /// Places Luna is never to adopt, by destination: edited account
+    /// instructions left by a pass and copies 0.19 left as no longer wanted
+    /// but changed there (its `kept`). They are the person's own even where
+    /// they come to hold the library's very bytes. One goes once nothing is there.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     disowned: BTreeSet<String>,
     /// The manifests Luna wrote for a listed folder's plugin in a Codex

@@ -765,29 +765,23 @@ pub fn library_new_instructions(name: String) -> Result<Overview, String> {
     overview_locked(false)
 }
 
-/// What the settings keep of instructions `name` gone: its reach, its
-/// audience, and its being laid into accounts for the chats (`laid_out`),
-/// which only instructions an earlier Luna laid out carry; one made anew
-/// under the name inherits none of it.
+/// What the settings keep of instructions `name` gone: its reach and its
+/// audience; one made anew under the name inherits neither.
 fn forget_instructions(lib: &mut LibrarySettings, name: &str) {
     lib.instructions.remove(name);
     lib.audience.instructions.remove(name);
-    lib.laid_out.remove(name);
 }
 
-/// Instructions `from` renamed `to` in the settings: their reach, audience
-/// and `laid_out` move with them, or the next pass would take for per session
-/// what is laid into accounts and remove its copies; the folders that gave
-/// them give them under the new name.
+/// Instructions `from` renamed `to` in the settings: their reach and
+/// audience move with them, or the next pass would take for every session's
+/// what is given per session; the folders that gave them give them under the
+/// new name.
 fn rename_instructions(lib: &mut LibrarySettings, from: &str, to: &str) {
     if let Some(reach) = lib.instructions.remove(from) {
         lib.instructions.insert(to.to_string(), reach);
     }
     if let Some(audience) = lib.audience.instructions.remove(from) {
         lib.audience.instructions.insert(to.to_string(), audience);
-    }
-    if lib.laid_out.remove(from) {
-        lib.laid_out.insert(to.to_string());
     }
     for choice in lib.folders.iter_mut().flat_map(|f| f.instructions.values_mut()) {
         if choice.as_deref() == Some(from) {
@@ -1191,32 +1185,26 @@ mod tests {
         unlink_dir(&f.dirs.skills().join("notes"));
     }
 
-    /// Chats' instructions an earlier Luna laid into accounts, read as this
-    /// one migrates them, then renamed: they stay laid out, worded, in a
-    /// Claude Code and a Codex account alike; deleted, they are not laid out
-    /// for whatever takes the name next.
+    /// The person's chats' instructions renamed keep their audience: still
+    /// given per session, never laid into an account under the new name, in
+    /// a Claude Code and a Codex account alike; deleted, a new entry of the
+    /// name inherits none of it.
     #[test]
-    fn instructions_laid_out_before_stay_laid_out_through_a_rename() {
-        let f = Fixture::new("laid-out-rename");
+    fn chats_instructions_keep_their_audience_through_a_rename() {
+        let f = Fixture::new("chats-rename");
         f.instructions("main", "Speak Russian to me.\n");
-        let old: crate::settings::Settings =
-            serde_json::from_str(r#"{"library": {"instructions": true, "audience": {"instructions": {"main": "chats"}}}}"#).unwrap();
-        let mut lib = old.library;
-        assert!(lib.laid_out.contains("main"), "migrated as laid out");
+        let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
+        lib.audience.instructions.insert("main".into(), Audience::CHATS);
         let mut ledger = Ledger::default();
-        f.run(&lib, &mut ledger, true);
-        let worded =
-            |i: usize, file: &str| f.read(i, file).ends_with("Speak Russian to me.\n") && f.read(i, file).starts_with("> For chats");
-        assert!(worded(0, "CLAUDE.md") && worded(1, "AGENTS.md"), "laid into both providers' accounts");
-
         std::fs::rename(f.dirs.instructions_file("main"), f.dirs.instructions_file("russian")).unwrap();
         rename_instructions(&mut lib, "main", "russian");
-        assert!(lib.laid_out.contains("russian") && !lib.laid_out.contains("main"));
+        assert_eq!(lib.audience.instructions, BTreeMap::from([("russian".to_string(), Audience::CHATS)]));
         let p = f.run(&lib, &mut ledger, true);
-        assert!(worded(0, "CLAUDE.md") && worded(1, "AGENTS.md"), "still in both accounts: {:?}", p.places);
+        assert!(p.places.is_empty(), "{:?}", p.places);
+        assert!(!f.account(0).join("CLAUDE.md").exists() && !f.account(1).join("AGENTS.md").exists());
 
         forget_instructions(&mut lib, "russian");
-        assert!(lib.laid_out.is_empty(), "nothing left for a new entry of the name to inherit");
+        assert!(lib.audience.instructions.is_empty() && lib.instructions.is_empty(), "nothing left for a new entry of the name to inherit");
     }
 
     /// A skill renamed keeps what the settings say of it under its new name,

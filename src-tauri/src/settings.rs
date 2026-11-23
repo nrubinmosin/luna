@@ -85,13 +85,6 @@ pub struct LibrarySettings {
     /// not every session's (library/audience.rs).
     #[serde(skip_serializing_if = "Audiences::is_empty")]
     pub audience: Audiences,
-    /// Instructions for the person's chats alone that are still laid into
-    /// accounts, with a line saying whose they are (library/audience.rs
-    /// `worded`): those an earlier Luna laid out so, which chats started
-    /// outside Luna read there too. Every other entry for some roles only
-    /// reaches its sessions one session at a time, never through an account.
-    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub laid_out: std::collections::BTreeSet<String>,
 }
 
 /// The three kinds of session Luna starts, by who gave it its task: the
@@ -182,13 +175,6 @@ impl Audience {
 enum AudienceField {
     Word(String),
     Roles(Vec<Role>),
-}
-
-impl AudienceField {
-    /// Written by a Luna before roles, for the person's chats alone.
-    fn was_chats(&self) -> bool {
-        matches!(self, AudienceField::Word(w) if w == "chats")
-    }
 }
 
 impl TryFrom<AudienceField> for Audience {
@@ -301,7 +287,6 @@ struct LibrarySettingsFile {
     folders: Vec<LibraryFolderFile>,
     folders_only: Vec<String>,
     audience: AudiencesFile,
-    laid_out: std::collections::BTreeSet<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -373,16 +358,12 @@ impl TryFrom<LibrarySettingsFile> for LibrarySettings {
         }
         // This Luna's file has every audience under `roles`, beside the
         // words a Luna before roles reads (`Audiences`' Serialize). Without
-        // them the words are that Luna's: instructions it laid into accounts
-        // for the person's chats stay there, still said to be theirs
-        // (`laid_out`).
-        let mut laid_out = f.laid_out;
+        // them the words are that Luna's. (Its `laidOut`, the person's chats'
+        // instructions it laid into accounts, is not read: they go per
+        // session now, library/audience.rs.)
         let (by_role, skills_by_role) = match f.audience.roles {
             Some(roles) => (roles.instructions, roles.skills),
-            None => {
-                laid_out.extend(f.audience.instructions.iter().filter(|(_, a)| a.was_chats()).map(|(n, _)| n.clone()));
-                (f.audience.instructions, f.audience.skills)
-            }
+            None => (f.audience.instructions, f.audience.skills),
         };
         type ByName<T> = std::collections::BTreeMap<String, T>;
         let read = |m: ByName<AudienceField>| -> Result<ByName<Audience>, String> {
@@ -402,7 +383,6 @@ impl TryFrom<LibrarySettingsFile> for LibrarySettings {
             skills,
             folders,
             audience,
-            laid_out,
         })
     }
 }
@@ -674,7 +654,7 @@ mod tests {
         assert_eq!(json["library"]["audience"]["roles"]["instructions"]["main"], serde_json::json!(["chat", "helper"]));
         assert!(json["library"]["audience"].get("instructions").is_none(), "0.17 has no word for chats and helpers");
         let json = serde_json::to_value(Settings::default()).unwrap();
-        assert!(json["library"].get("audience").is_none() && json["library"].get("laidOut").is_none(), "nothing set, nothing written");
+        assert!(json["library"].get("audience").is_none(), "nothing set, nothing written");
         assert!(serde_json::from_str::<Settings>(r#"{"library": {"audience": {"skills": {"x": "people"}}}}"#).is_err(), "no guess");
         assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
     }
@@ -710,12 +690,12 @@ mod tests {
     }
 
     #[test]
-    fn audiences_of_before_roles_read_as_roles_and_chats_instructions_stay_laid_out() {
+    fn audiences_of_before_roles_read_as_roles_and_an_old_laid_out_is_passed_over() {
         let old: Settings = serde_json::from_str(
             r#"{"library": {"audience": {
                 "skills": {"council": "chats", "cleanup": "helpers", "review": "both"},
                 "instructions": {"main": "chats", "terse": "helpers"}
-            }}}"#,
+            }, "laidOut": ["terse"]}}"#,
         )
         .unwrap();
         let a = &old.library.audience;
@@ -724,14 +704,13 @@ mod tests {
         assert!(!a.skills.contains_key("review"));
         assert_eq!(a.instructions["main"], Audience::CHATS);
         assert_eq!(a.instructions["terse"], Audience::of(&[Role::Lead, Role::Helper]));
-        assert_eq!(old.library.laid_out, ["main".to_string()].into(), "the chats' instructions stay in the accounts");
-        // Written back with the roles beside the old words, which reads the same.
+        // Written back with the roles beside the old words, which reads the
+        // same, and no `laidOut`.
         let json = serde_json::to_value(&old).unwrap();
+        assert!(json["library"].get("laidOut").is_none());
         assert_eq!(json["library"]["audience"]["roles"]["instructions"]["main"], serde_json::json!(["chat"]));
         assert_eq!(json["library"]["audience"]["instructions"]["main"], "chats");
-        assert_eq!(json["library"]["laidOut"], serde_json::json!(["main"]));
         let back: Settings = serde_json::from_value(json).unwrap();
-        assert_eq!(back.library.laid_out, old.library.laid_out);
         assert_eq!(back.library.audience.instructions, old.library.audience.instructions);
     }
 
@@ -785,7 +764,6 @@ mod tests {
         let back: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(back.library.audience.instructions, s.library.audience.instructions, "every set back, the new ones too");
         assert_eq!(back.library.audience.skills, s.library.audience.skills);
-        assert!(back.library.laid_out.is_empty(), "this Luna's chats' word is no 0.17 layout to keep");
     }
 
     #[test]
