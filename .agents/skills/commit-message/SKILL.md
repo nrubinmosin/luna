@@ -1,6 +1,7 @@
 ---
 name: commit-message
-description: Write or fix a commit message in the Luna repo so it passes scripts/check-commit-msg.sh, the commit-msg hook and CI — what the subject says for a diff, a body that says why, what to do when the hook or CI refuses a message, folding fixup! commits and rewording an older commit before a merge, the revert, merge-revert and release-bump forms, and a dependency moved by hand (a lockfile, an Action's SHA, an image digest). Use it whenever you commit here or write, reword, amend or squash a commit message, revert a commit or a merge, or a commit-message check refused one (a Dependabot commit too), even if the ask is only "commit this", "commit the lockfile bump" or "CI is red on my commits". Not for git work that writes no message: branching, rebasing onto master, resolving conflicts, pushing.
+description: >-
+  Write or fix a commit message in the Luna repo so it passes scripts/check-commit-msg.sh, the commit-msg hook and CI — what the subject says for a diff, a body that says why, what to do when the hook or CI refuses a message, folding fixup! commits and rewording an older commit before a merge, the revert, merge-revert and release-bump forms, and a dependency moved by hand (a lockfile, an Action's SHA, an image digest). Use it whenever you commit here or write, reword, amend or squash a commit message, revert a commit or a merge, or a commit-message check refused one (a Dependabot commit too), even if the ask is only "commit this", "commit the lockfile bump" or "CI is red on my commits". Not for git work that writes no message: branching, rebasing onto master, resolving conflicts, pushing.
 ---
 
 # Commit message
