@@ -45,7 +45,8 @@ pub fn absolute(s: &str) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return bad("not absolute");
     }
-    for part in s.split(['/', '\\']) {
+    // The platform's separators: on Unix `notes\..\draft` is one name.
+    for part in s.split(std::path::is_separator) {
         if part == "." || part == ".." {
             return bad("a . or .. part");
         }
@@ -303,6 +304,11 @@ mod tests {
         }
         #[cfg(windows)]
         assert!(absolute(r"\\server\share\p").is_ok());
+        // A backslash is no separator on Unix: these are names.
+        #[cfg(unix)]
+        for p in [r"/home/u/notes\..\draft", r"/home/u/a\.\b", r"/home/u/..\x"] {
+            assert!(absolute(p).is_ok(), "{p}");
+        }
     }
 
     #[test]
