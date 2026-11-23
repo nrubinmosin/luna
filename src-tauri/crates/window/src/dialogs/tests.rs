@@ -9,6 +9,8 @@ use crate::host::mailbox;
 use crate::models::Models;
 use crate::root::LunaWindow;
 use crate::state::WindowState;
+#[cfg(debug_assertions)]
+use crate::status::cmd::ORPHAN_SESSIONS;
 use crate::term::paste::Provider;
 #[cfg(debug_assertions)]
 use gpui::Modifiers;
@@ -1687,30 +1689,96 @@ fn delete_says_when_the_core_is_down(cx: &mut TestAppContext) {
     assert_eq!(error(&mut d), None, "the core is back");
 }
 
-/// The core refusing a row's session delete, the id a helper it still holds
-/// for an opening, the row is listed again where it stood: gone, the
-/// opening could never be settled to it.
+/// A periodic look can run while the core is still deleting a chat's session.
 #[cfg(debug_assertions)]
 #[gpui::test]
-fn a_row_whose_delete_the_core_refuses_is_kept(cx: &mut TestAppContext) {
-    let mut d = open_as(cx, |host| {
+fn a_chat_is_known_to_orphan_scans_until_its_delete_succeeds(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let running = Arc::new(AtomicBool::new(true));
+    let session_running = running.clone();
+    let mut d = open_as(cx, move |host| {
         host.answer(cmd::BACKGROUND_HELPERS, json!([]));
-        host.fail(cmd::DELETE_SESSION, Some(&format!("c-notes {}; it can be deleted once it has opened", super::rows::HELD_AS_HELPER)));
+        host.defer(cmd::DELETE_SESSION);
+        host.respond(ORPHAN_SESSIONS, move |args| {
+            if session_running.load(Ordering::Relaxed) && !args["known"].as_array().unwrap().contains(&json!("c-notes")) {
+                json!([{ "id": "c-notes", "provider": "claude", "cwd": "C:\\w", "accountPath": "C:\\a" }])
+            } else {
+                json!([])
+            }
+        });
     });
-    let before = d.state().listed("c-notes").expect("listed");
+    let scans = d.calls(ORPHAN_SESSIONS).len();
     let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
     d.cx.update(|window, cx| seam("c-notes".into(), window, cx));
     d.settle();
     d.click("delete-yes");
-    d.settle();
+    d.drive("deletechat", "yes");
+    d.escape();
+    d.drive("dialog", "new-chat");
+    assert_eq!(d.name(), Some("delete"));
+    assert!(d.drawn("delete-pending"), "the dialog explains why opening another one has to wait");
     assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-notes" })]);
-    assert_eq!(d.state().listed("c-notes"), Some(before), "back where it stood");
+    assert!(d.state().find("c-notes").is_some());
+    d.models.status.update(d.cx, |v, cx| v.scan(cx));
+    d.settle();
+    let calls = d.calls(ORPHAN_SESSIONS);
+    assert_eq!(calls.len(), scans + 1);
+    assert!(calls.last().unwrap()["known"].as_array().unwrap().contains(&json!("c-notes")));
+    assert!(d.models.status.read_with(d.cx, |v, _| v.orphans().is_empty()));
+
+    running.store(false, Ordering::Relaxed);
+    assert!(d.host.resolve(cmd::DELETE_SESSION, Ok(Value::Null)));
+    d.settle();
+    assert_eq!(d.name(), None);
+    assert!(d.state().find("c-notes").is_none());
+    let calls = d.calls(ORPHAN_SESSIONS);
+    assert_eq!(calls.len(), scans + 2);
+    assert!(!calls.last().unwrap()["known"].as_array().unwrap().contains(&json!("c-notes")));
+    assert!(d.models.status.read_with(d.cx, |v, _| v.orphans().is_empty()));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_failed_delete_keeps_the_chat_and_shows_the_error(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.defer(cmd::DELETE_SESSION);
+        host.defer(cmd::BACKGROUND_DELETE);
+    });
+    let before = chat_ids(&d.state());
+    let scans = d.calls(ORPHAN_SESSIONS).len();
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("c-parser".into(), window, cx));
+    d.settle();
+    d.click("delete-helpers-too");
+    d.click("delete-yes");
+    assert_eq!(d.calls(cmd::BACKGROUND_DELETE), vec![json!({ "id": "h-done", "stopWorking": false, "ofChat": "c-parser" })]);
+    assert!(d.host.resolve(cmd::DELETE_SESSION, Err("The core connection was lost.".into())));
+    d.settle();
+    let Some(Dialog::Delete(dialog)) = d.dialog() else { panic!("the delete dialog stays open") };
+    assert_eq!(dialog.read_with(d.cx, |v, _| v.error.clone()).as_deref(), Some("The core connection was lost."));
+    assert_eq!(chat_ids(&d.state()), before);
+    assert_eq!(d.calls(ORPHAN_SESSIONS).len(), scans);
+    let looks = d.calls(cmd::BACKGROUND_HELPERS).len();
+    d.click("delete-yes");
+    assert_eq!(d.calls(cmd::DELETE_SESSION).len(), 1, "retry waits for helper deletion and refresh");
+    d.host.answer(cmd::BACKGROUND_HELPERS, json!([]));
+    assert!(d.host.resolve(cmd::BACKGROUND_DELETE, Ok(Value::Null)));
+    d.settle();
+    assert_eq!(d.calls(cmd::BACKGROUND_HELPERS).len(), looks + 1);
+    assert!(!d.drawn("delete-helpers-too"), "the refreshed helper list is empty");
+    d.click("delete-yes");
+    assert_eq!(d.calls(cmd::DELETE_SESSION).len(), 2, "Delete is available again");
+    assert_eq!(d.calls(cmd::BACKGROUND_DELETE).len(), 1, "the retry leaves the deleted helper alone");
+    assert!(d.host.resolve(cmd::DELETE_SESSION, Err("The core connection was lost.".into())));
+    d.settle();
+    d.click("delete-cancel");
+    assert_eq!(d.name(), None, "Cancel is available again");
 }
 
 /// A delete is work an update's last write waits for until the core has
-/// answered: an update that freezes the list meanwhile writes the row the
-/// core's refusal puts back, not its removal. One the core takes past
-/// `DELETE_HELD` to answer holds the update no longer.
+/// answered. A refusal leaves the row where it stood, even if an update
+/// froze the list. A success must reach the saved list even after 12 seconds.
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn an_update_waits_for_the_cores_word_on_a_delete(cx: &mut TestAppContext) {
@@ -1727,7 +1795,7 @@ fn an_update_waits_for_the_cores_word_on_a_delete(cx: &mut TestAppContext) {
         d.click("delete-yes");
         d.settle();
     };
-    let before = d.state().listed("c-notes").expect("listed");
+    let before = chat_ids(&d.state());
     delete(&mut d, "c-notes");
     assert_eq!(admitted(&mut d), 1, "held until the core answers");
     d.models.workspace.update(d.cx, |w, cx| w.freeze(cx));
@@ -1735,15 +1803,30 @@ fn an_update_waits_for_the_cores_word_on_a_delete(cx: &mut TestAppContext) {
     assert!(d.host.resolve(cmd::DELETE_SESSION, Err(refusal)));
     d.settle();
     assert_eq!(admitted(&mut d), 0);
-    assert_eq!(d.state().listed("c-notes"), Some(before), "back, frozen or not");
+    assert_eq!(chat_ids(&d.state()), before, "kept while frozen");
+    d.escape();
     d.models.workspace.update(d.cx, |w, cx| w.thaw(cx));
     d.settle();
     let other = d.state().chats().map(|c| c.id.clone()).find(|id| id != "c-notes").expect("another row");
     delete(&mut d, &other);
     assert_eq!(admitted(&mut d), 1);
-    d.cx.executor().advance_clock(super::delete::DELETE_HELD);
+    d.models.workspace.update(d.cx, |w, cx| w.freeze(cx));
+    let saved = Rc::new(RefCell::new(None));
+    let told = saved.clone();
+    d.models.workspace.update(d.cx, |w, cx| w.save_for_install(move |result, _| *told.borrow_mut() = Some(result), cx));
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(13));
     d.settle();
-    assert_eq!(admitted(&mut d), 0, "let go past DELETE_HELD");
+    assert_eq!(*saved.borrow(), None, "the last write still waits for the delete");
+    assert!(!d.models.workspace.read_with(d.cx, |w, _| w.sealed()));
+    assert_eq!(admitted(&mut d), 1);
+    assert!(d.host.resolve(cmd::DELETE_SESSION, Ok(Value::Null)));
+    d.settle();
+    assert!(d.state().find(&other).is_none(), "an admitted delete can finish while frozen");
+    assert_eq!(admitted(&mut d), 0);
+    assert_eq!(*saved.borrow(), Some(Ok(())));
+    assert!(d.models.workspace.read_with(d.cx, |w, _| w.sealed()));
+    let last = d.host.sends_of(crate::host::cmd::SAVE_WINDOW_STATE).pop().expect("sent");
+    assert!(!last["text"].as_str().unwrap().contains(&format!("\"{other}\"")), "the saved list omits the chat");
 }
 
 /// A row taken off the list while its opening is tried again is never said

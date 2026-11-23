@@ -1951,30 +1951,10 @@ impl Workspace {
     }
 
     /// A chat the delete dialog deleted: off every board and out of the list.
-    /// Kept while frozen for an update (the dialog refuses before then).
+    /// The delete was admitted before any update froze the list. The update's
+    /// last write waits for the core's reply and the resulting row change.
     pub fn remove_chat(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.frozen {
-            log::warn!("chat {id} not taken off the list: {FROZEN}");
-            return;
-        }
         self.unlist(id, cx);
-    }
-
-    /// A row the delete dialog took off, put back where it stood: the core
-    /// refused its session's delete, the id being a helper's it still holds
-    /// for an opening (dialogs/rows.rs `HELD_AS_HELPER`). Its session is
-    /// there still; gone from the list, the opening could never be settled
-    /// to a row. Frozen or not, as the delete was let through before the list
-    /// froze (`admit`) and the list's last write waits for its answer; once
-    /// that write is made (`sealed`), the next start settles the helper.
-    pub fn relist(&mut self, row: crate::state::Listed, cx: &mut Context<Self>) {
-        if self.sealed {
-            return log::warn!("chat {} not listed again: the update's last write is made", row.chat.id);
-        }
-        let n = self.state.folders.len();
-        if self.state.relist(row, || new_id("f", n)) {
-            self.changed(cx);
-        }
     }
 
     /// The row listed for a helper opened as a chat, taken off again where

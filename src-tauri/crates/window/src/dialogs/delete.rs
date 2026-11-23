@@ -13,12 +13,14 @@ use crate::models::Models;
 use crate::panels::ask;
 use crate::panels::ui::{self, OnClick, Tone};
 use crate::scale::u;
+use crate::selector::Selector;
 use crate::state::Chat;
-use gpui::{Context, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, WeakEntity, Window, div};
+use gpui::{
+    Context, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, Task, WeakEntity, Window, div,
+};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Duration;
 
 pub struct DeleteChat {
     models: Models,
@@ -30,15 +32,9 @@ pub struct DeleteChat {
     stake: HashMap<String, AtStake>,
     pub choices: Choices,
     pub error: Option<String>,
+    pending: bool,
+    _looking: Option<Task<()>>,
 }
-
-/// How long a delete counts as work an update's last write waits for
-/// (`Workspace::admit`): until the core has answered its session's delete,
-/// whose refusal for a helper it holds comes at once, an accepted one within
-/// the session's quit (10 s, pty/control.rs `GRACE`). Under the update's
-/// `SETTLE_LIMIT`.
-pub const DELETE_HELD: Duration = Duration::from_secs(12);
-const _: () = assert!(DELETE_HELD.as_secs() < crate::workspace::SETTLE_LIMIT.as_secs());
 
 /// What the dialog says while the core is not up: nothing it deletes could
 /// be done, the session's delete among it, and the core's list of helpers a
@@ -56,8 +52,17 @@ impl DeleteChat {
             cx.notify();
         })
         .detach();
-        let mut dialog =
-            DeleteChat { models, layer, chat, helpers: Vec::new(), stake: HashMap::new(), choices: Choices::default(), error: None };
+        let mut dialog = DeleteChat {
+            models,
+            layer,
+            chat,
+            helpers: Vec::new(),
+            stake: HashMap::new(),
+            choices: Choices::default(),
+            error: None,
+            pending: false,
+            _looking: None,
+        };
         dialog.look(cx);
         dialog
     }
@@ -68,41 +73,47 @@ impl DeleteChat {
 
     /// The chat's helpers, then what each has at stake.
     fn look(&mut self, cx: &mut Context<Self>) {
+        let after_delete = self.pending;
         let all = ask::<Vec<Helper>>(&self.models.host, cmd::BACKGROUND_HELPERS, json!({}));
         let host = self.models.host.clone();
         let chat = self.chat.id.clone();
-        cx.spawn(async move |this, cx| {
-            let Ok(all) = all.await else { return };
-            let mine = rows::helpers_under(&all, &chat);
+        self._looking = Some(cx.spawn(async move |this, cx| {
+            let mine = all.await.map(|all| rows::helpers_under(&all, &chat)).unwrap_or_default();
             let ids: Vec<String> = mine.iter().map(|h| h.id.clone()).collect();
             let _ = this.update(cx, |v, cx| {
                 v.helpers = mine;
+                v.stake.clear();
                 cx.notify();
             });
-            if ids.is_empty() {
-                return;
-            }
-            if let Ok(rows) = ask::<Vec<AtStake>>(&host, cmd::BACKGROUND_AT_STAKE, json!({ "ids": ids })).await {
-                let _ = this.update(cx, |v, cx| {
-                    v.stake = rows.into_iter().map(|r| (r.id.clone(), r)).collect();
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
+            let stake = if ids.is_empty() {
+                Vec::new()
+            } else {
+                ask::<Vec<AtStake>>(&host, cmd::BACKGROUND_AT_STAKE, json!({ "ids": ids })).await.unwrap_or_default()
+            };
+            let _ = this.update(cx, |v, cx| {
+                v.stake = stake.into_iter().map(|r| (r.id.clone(), r)).collect();
+                if after_delete {
+                    v.pending = false;
+                }
+                cx.notify();
+            });
+        }));
     }
 
     fn lines(&self) -> Vec<Line> {
         rows::lines(&self.helpers, &self.stake)
     }
 
-    pub fn may_close(&mut self, _cx: &mut Context<Self>) -> bool {
-        true
+    pub fn may_close(&self) -> bool {
+        !self.pending
     }
 
     /// Deletes: what the person ticked of the helpers, the chat's session,
     /// and the row, off every board and out of the list.
     pub fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending {
+            return;
+        }
         // Nothing is stopped or deleted that the list could not then drop.
         if let Err(why) = self.models.workspace.read(cx).unfrozen() {
             self.error = Some(why);
@@ -127,12 +138,14 @@ impl DeleteChat {
             );
             return cx.notify();
         }
-        // Work the update's last write waits for, until the core has answered:
-        // a refusal puts the row back before that write, not after it.
+        // The update's last write waits for the delete to settle.
         if let Err(why) = self.models.workspace.update(cx, |w, _| w.admit()) {
             self.error = Some(why);
             return cx.notify();
         }
+        self.pending = true;
+        self.error = None;
+        cx.notify();
         let lines = self.lines();
         let shown: Vec<String> = lines.iter().map(|l| l.id.clone()).collect();
         let host = self.models.host.clone();
@@ -148,44 +161,46 @@ impl DeleteChat {
                 (d.id, call)
             })
             .collect();
-        // Where the row stood, for the core's refusal to put it back: a list of
-        // helpers a little behind the core can still miss one it holds.
-        let listed = self.models.workspace.read(cx).state.listed(&chat.id);
         let workspace = self.models.workspace.downgrade();
-        cx.spawn(async move |_, cx| {
-            let timeout = cx.background_executor().timer(DELETE_HELD);
-            let (answer, held) = match futures::future::select(Box::pin(session), timeout).await {
-                futures::future::Either::Left((answer, _)) => (answer, true),
-                // The update waits no longer: a refusal comes at once, so what
-                // comes now is the delete's own end.
-                futures::future::Either::Right((_, session)) => {
-                    let _ = workspace.update(cx, |w, cx| w.release(cx));
-                    (session.await, false)
+        let layer = self.layer.clone();
+        let handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let answer = session.await;
+            // Keep the session among the orphan scan's known IDs until the
+            // core has removed it. Unlisting then triggers a fresh scan.
+            let _ = workspace.update(cx, |w, cx| {
+                if answer.is_ok() {
+                    w.remove_chat(&chat.id, cx);
                 }
-            };
+                w.release(cx);
+            });
+            let failed = answer.is_err();
             match answer {
-                Err(e) if e.contains(rows::HELD_AS_HELPER) => {
-                    log::warn!("deleting the session refused, its row kept: {e}");
-                    if let Some(row) = listed {
-                        let _ = workspace.update(cx, |w, cx| w.relist(row, cx));
-                    }
+                Ok(_) => {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        let _ = layer.update(cx, |l, cx| l.close(window, cx));
+                    });
                 }
-                Err(e) => log::warn!("deleting the session failed: {e}"),
-                Ok(_) => {}
-            }
-            if held {
-                let _ = workspace.update(cx, |w, cx| w.release(cx));
+                Err(e) => {
+                    log::warn!("deleting the session failed: {e}");
+                    let _ = this.update(cx, |v, cx| {
+                        v.error = Some(e);
+                        cx.notify();
+                    });
+                }
             }
             for (id, call) in helpers {
                 if let Err(e) = call.await {
                     log::warn!("deleting helper {id} failed: {e}");
                 }
             }
+            if failed {
+                // Some helpers may already be gone even though the chat is
+                // still listed. Refresh after their replies before a retry.
+                let _ = this.update(cx, |v, cx| v.look(cx));
+            }
         })
         .detach();
-        let id = chat.id;
-        self.models.workspace.update(cx, |w, cx| w.remove_chat(&id, cx));
-        let _ = self.layer.update(cx, |l, cx| l.close(window, cx));
     }
 
     fn act(&self, cx: &Context<Self>, f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static) -> OnClick {
@@ -204,7 +219,9 @@ impl Render for DeleteChat {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.models.shell.read(cx).palette();
         let close = self.act(cx, |v, window, cx| {
-            let _ = v.layer.update(cx, |l, cx| l.close(window, cx));
+            if v.may_close() {
+                let _ = v.layer.update(cx, |l, cx| l.close(window, cx));
+            }
         });
         let name = if self.chat.name.chars().count() > 38 {
             format!("{}...", self.chat.name.chars().take(38).collect::<String>())
@@ -237,6 +254,13 @@ impl Render for DeleteChat {
             None if !self.core_up(cx) => body = body.child(ui::alert(&p, Tone::Trouble, NO_CORE)),
             None => {}
         }
+        if self.pending {
+            body = body.child(
+                ui::alert(&p, Tone::Working, "Wait for this deletion to finish before opening another dialog.")
+                    .id("delete-pending")
+                    .selector(|| "delete-pending".into()),
+            );
+        }
         let flip = |f: fn(&mut Choices)| {
             self.act(cx, move |v, _, cx| {
                 f(&mut v.choices);
@@ -253,7 +277,7 @@ impl Render for DeleteChat {
                     if n > 1 { "s" } else { "" }
                 ),
                 c.with_helpers,
-                true,
+                !self.pending,
                 flip(|c| c.with_helpers = !c.with_helpers),
             ));
         }
@@ -268,7 +292,7 @@ impl Render for DeleteChat {
                     if working.len() == 1 { "it finishes" } else { "they finish" }
                 ),
                 c.stop_working,
-                true,
+                !self.pending,
                 flip(|c| c.stop_working = !c.stop_working),
             ));
         }
@@ -281,8 +305,14 @@ impl Render for DeleteChat {
             .p(u(8.))
             .border_t_1()
             .border_color(p.frame)
-            .child(ui::button("delete-cancel", &p, "Cancel", true, close.clone()))
-            .child(ui::primary("delete-yes", &p, "Delete", true, self.act(cx, |v, window, cx| v.confirm(window, cx))));
+            .child(ui::button("delete-cancel", &p, "Cancel", !self.pending, close.clone()))
+            .child(ui::primary(
+                "delete-yes",
+                &p,
+                if self.pending { "Deleting..." } else { "Delete" },
+                !self.pending,
+                self.act(cx, |v, window, cx| v.confirm(window, cx)),
+            ));
         let scroll = div().id("delete-scroll").flex_1().min_h_0().overflow_y_scroll().child(body);
         ui::frame(
             &p,
