@@ -646,9 +646,8 @@ const NOTHING_RUNNING: &str = " Nothing of its own is running: it will not go on
 /// owed to it by anyone else, a helper of its own or a session it wrote to,
 /// whose notice would wake it; no `luna_session_wait` of its out; nothing
 /// queued, held or reserved for it; and no line waiting to go in, one queued
-/// (`news`) or one the notifier types in by itself: a usage window, a
-/// helper's context past its level, a spawn a core's going cut off, a refused
-/// place. Each is read as it stands now, not as the
+/// (`news`) or one the notifier types in by itself: a quota notice, a spawn
+/// a core's going cut off, or a refused place. Each is read as it stands now, not as the
 /// notifier's last look saw it, so that what changed since can only hold the
 /// sentence back. What its words say it waits on does not count: only what
 /// Luna sees run.
@@ -668,8 +667,7 @@ fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option
             && !r.spawns.values().any(|s| s.caller == id && (s.left_by_core || s.news.is_some()))
             && !r.places_refused.contains_key(id)
     };
-    // Off the registry's lock: these ask whether helpers are live, and read
-    // their transcripts.
+    // The quota check asks whether helpers are live off the registry's lock.
     quiet && !quota_due(pty, id)
 }
 

@@ -14,13 +14,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-/// Usage and its model for the compaction estimate.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Sample {
-    pub tokens: u64,
-    pub model: String,
-}
-
 /// The start of a session a figure is reckoned for.
 #[derive(Clone, Debug)]
 pub struct Launch {

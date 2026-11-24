@@ -1063,6 +1063,90 @@ mod tests {
         dir
     }
 
+    fn chat_context(provider: Provider, id: &str, account: &str, resume: &str) -> (serde_json::Value, serde_json::Value) {
+        let pty = manager();
+        let (mut session, quit) = fake_session_built(id, account, true, None, Box::new(|_, _, _| {}));
+        session.provider = provider;
+        session.resume = Some(resume.to_string());
+        session.account_path = account.to_string();
+        if provider == Provider::Codex {
+            session.codex_compaction = crate::codex::compact::at_launch(id, account, account);
+            assert!(session.codex_compaction.is_some());
+        }
+        let alive = Arc::clone(&session.alive);
+        pty.sessions.lock().unwrap().insert(id.to_string(), session);
+        crate::agents::register(id, provider, account, account, None, false, serde_json::json!({}));
+
+        let get = || serde_json::to_value(crate::agents::session_get(id, id, false).unwrap()).unwrap()["context"].clone();
+        let context = get();
+        let pane = serde_json::to_value(super::super::probe::session_meta(id, account.to_string())).unwrap();
+        alive.store(false, Ordering::SeqCst);
+        assert!(pty.compaction_launch(id, None).is_none());
+        assert_eq!(get()["basis"], "model");
+
+        quit.store(true, Ordering::SeqCst);
+        pty.sessions.lock().unwrap().remove(id);
+        crate::agents::forget(id);
+        (context, pane)
+    }
+
+    #[test]
+    fn a_claude_chat_keeps_its_compaction_basis_without_post_tokens() {
+        let dir = scratch("claude-context");
+        let account = dir.to_str().unwrap();
+        let thread = "chat-context-claude";
+        let path = crate::claude::session::transcript_file(account, account, thread);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(dir.join("settings.json"), r#"{"autoCompactWindow":195000}"#).unwrap();
+        let registry = dir.join("sessions");
+        std::fs::create_dir(&registry).unwrap();
+        let pid = std::process::id();
+        let entry = serde_json::json!({ "cwd": account, "sessionId": thread, "entrypoint": "cli", "pid": pid });
+        std::fs::write(registry.join(format!("{pid}.json")), entry.to_string()).unwrap();
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":150000}}}"#,
+                "\n",
+                r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"preTokens":150000}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let (context, pane) = chat_context(Provider::Claude, "chat-claude-context", account, thread);
+        assert_eq!(context, serde_json::json!({ "pct": 93, "tokens": 150_000, "window": 162_000, "basis": "autoCompact" }));
+        assert_eq!(pane["context"], 150_000.0 / 162_000.0);
+        assert_eq!(pane["contextAutoCompact"], true);
+        assert!(pane["contextToCompact"].is_null(), "the boundary has no current count");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_codex_chat_keeps_its_compaction_basis_when_usage_is_recomputed() {
+        crate::codex::config::use_empty_machine_layers_for_test();
+        let dir = scratch("codex-context");
+        let account = dir.to_str().unwrap();
+        let thread = "0192a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+        let day = dir.join("sessions/2026/09/17");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(dir.join("config.toml"), "model_auto_compact_token_limit = 100000\n").unwrap();
+        let path = day.join(format!("rollout-2026-09-17T14-03-22-{thread}.jsonl"));
+        std::fs::write(&path, concat!(
+            r#"{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#, "\n",
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":80000},"last_token_usage":{"total_tokens":80000},"model_context_window":200000}}}"#, "\n",
+            r#"{"type":"turn_context","payload":{"model":"gpt-0-unanswered"}}"#, "\n",
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":80000},"last_token_usage":{"total_tokens":18000},"model_context_window":200000}}}"#, "\n",
+        )).unwrap();
+
+        let (context, pane) = chat_context(Provider::Codex, "chat-codex-context", account, thread);
+        assert_eq!(context, serde_json::json!({ "pct": 18, "tokens": 18_000, "window": 100_000, "basis": "autoCompact" }));
+        assert_eq!(pane["context"], 0.18);
+        assert_eq!(pane["contextAutoCompact"], true);
+        assert_eq!(pane["contextToCompact"], 82_000);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A start of `id` in `cwd` on another thread, captured: what it would
     /// run is built, and nothing runs.
     fn start(id: &'static str, cwd: String) -> std::thread::JoinHandle<Result<String, String>> {

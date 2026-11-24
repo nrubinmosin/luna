@@ -80,20 +80,18 @@ impl Context {
         provider: Provider,
         launch: Option<&crate::to_compact::Launch>,
     ) -> Option<(Self, Option<u64>)> {
-        use crate::to_compact::Sample;
-        let (tokens, window, sample) = match provider {
+        let (tokens, window, model, fresh_tokens) = match provider {
             Provider::Claude => {
                 let c = crate::claude::session::last_context(path)?;
-                (c.tokens, c.window, c.compaction)
+                (c.tokens, c.window, c.model, c.fresh_tokens)
             }
             Provider::Codex => {
                 let tail = crate::codex::session::read_tail(path);
                 let tokens = tail.context_tokens?;
-                let sample = tail.context_model.map(|model| Sample { tokens: tokens as u64, model });
-                (tokens, tail.context_window?, sample)
+                (tokens, tail.context_window?, tail.context_model, Some(tokens))
             }
         };
-        Self::measure(id, launch, tokens, window, sample.as_ref())
+        Self::measure(id, launch, tokens, window, model.as_deref(), fresh_tokens)
     }
 
     /// The same reading supplies both the context share and the estimated
@@ -103,15 +101,16 @@ impl Context {
         launch: Option<&crate::to_compact::Launch>,
         tokens: f64,
         window: f64,
-        sample: Option<&crate::to_compact::Sample>,
+        model: Option<&str>,
+        fresh_tokens: Option<f64>,
     ) -> Option<(Self, Option<u64>)> {
         if !(tokens >= 0.0 && window > 0.0) {
             return None;
         }
-        let limit = launch.zip(sample).and_then(|(launch, sample)| crate::to_compact::threshold(id, launch, &sample.model, window as u64));
-        let tokens = sample.map_or(tokens as u64, |s| s.tokens);
+        let limit = launch.zip(model).and_then(|(launch, model)| crate::to_compact::threshold(id, launch, model, window as u64));
+        let tokens = fresh_tokens.unwrap_or(tokens) as u64;
         let (window, basis, left) = match limit {
-            Some(limit) => (limit, "autoCompact", Some(limit.saturating_sub(tokens))),
+            Some(limit) => (limit, "autoCompact", fresh_tokens.map(|_| limit.saturating_sub(tokens))),
             None => (window as u64, "model", None),
         };
         let context = Self { pct: (Self::share(tokens, window) * 100.0).round() as u64, tokens, window, basis };

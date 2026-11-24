@@ -66,7 +66,7 @@ can type into it and answer its model's questions with `scope: "all"`
   its next turn.
 - When a helper or lead ends a turn with nothing of its own running (no job,
   subagent or helper of its own still at it,
-  nothing waiting to go into it, a usage or context notice included),
+  nothing waiting to go into it, a quota notice included),
   its agent's notice adds "Nothing of its own is running: it will not go on
   unless you send to it", whatever its last words said it was waiting for.
 - A send may ask for no reply (`expectReply: false`): the helper's answer then

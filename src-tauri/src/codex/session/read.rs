@@ -294,7 +294,8 @@ fn thread_names(path: &Path) -> std::sync::Arc<HashMap<String, (String, String)>
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tail {
     pub model: Option<String>,
-    /// The model that produced the sample, even if a later turn names another.
+    /// The model of the reported context window. Recomputed usage within the
+    /// same window keeps its model until a turn on another model reports usage.
     pub context_model: Option<String>,
     pub context_tokens: Option<f64>,
     pub context_window: Option<f64>,
@@ -365,16 +366,11 @@ pub(super) fn tail_in(text: &str, whole: bool) -> Tail {
                 // after a new model was requested. Compaction can also
                 // recompute the sample without growing the running total.
                 let grew = total.zip(previous_total).is_some_and(|(now, before)| now > before);
-                let repeated = total.is_some() && total == previous_total;
                 previous_total = total.or(previous_total);
                 if tokens > 0.0 {
                     let window = info["model_context_window"].as_f64();
-                    if grew {
+                    if grew || (out.context_model.is_some() && out.context_window != window) {
                         out.context_model.clone_from(&asked);
-                    } else if !repeated
-                        || (out.context_model != asked && (out.context_tokens != Some(tokens) || out.context_window != window))
-                    {
-                        out.context_model = None;
                     }
                     out.context_tokens = Some(tokens);
                     out.context_window = window;
@@ -938,7 +934,8 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
             m.context_tokens = Some(tokens);
             m.context_window = Some(window);
             m.context = Some((tokens / window).min(1.0));
-            m.compaction_sample = t.context_model.map(|model| crate::to_compact::Sample { tokens: tokens as u64, model });
+            m.context_model = t.context_model;
+            m.fresh_context_tokens = Some(tokens);
         }
     }
     Some(m)
@@ -1345,7 +1342,7 @@ mod tests {
         let compacted = again.replace("16867", "2000");
         let before_new_answer = sample(&format!("{head}{asked}\n{compacted}\n"));
         assert_eq!(before_new_answer.context_tokens, Some(2_000.0));
-        assert_eq!(before_new_answer.context_model, None, "a recomputed sample does not establish an answer");
+        assert_eq!(before_new_answer.context_model, before.context_model, "recomputed usage keeps the known model for the same window");
         let grew = again.replace("32377", "50000").replace("16867", "20000");
         let new_answer = sample(&format!("{head}{asked}\n{grew}\n"));
         assert_eq!(new_answer.context_model.as_deref(), Some("gpt-0-missing"));

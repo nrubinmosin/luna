@@ -210,7 +210,7 @@ Every consumer reads the record, and none keeps a verdict of its own:
 | The rows' status (`sessions_meta`) | `Life::status` as the power board reads it: `busy`, `waiting`, `background` (turn over, work of its own beside it), `idle`; the disk's own word until a record exists; a live session with nothing on disk yet answers the record's word alone (unknown reads `busy`), not no meta |
 | `luna_session_get`'s `leftRunning` | the background's names, else its counts |
 | The person's Delete dialog (`at_stake`) | a helper's phase and background |
-| autoDelete (`reap`) | not active, with no live helper under it, no answer owed, no wait on it and no context notice pending, for 30 min (the clock starts over when one of these stops holding) |
+| autoDelete (`reap`) | not active, with no live helper under it, no answer owed and no wait on it, for 30 min (the clock starts over when one of these stops holding) |
 | The core's idle exit, `Welcome.sessions` and `left_only`, `close_if_left_only` | helpers active (`background::running_counts`); left only = active between turns, with only processes left in its job |
 
 ## Process jobs

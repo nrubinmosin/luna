@@ -1778,9 +1778,11 @@ mod clicks {
         w.cx.run_until_parked();
         let live = w.models.workspace.read_with(w.cx, |w, _| w.live("c-parser"));
         assert_eq!((live.context, live.to_compact), (Some(0.64), Some(347_400)));
-        let tip = |left| crate::board::ctx_tip(left).into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(tip(Some(347_400)), ["Share of auto-compaction limit", "~347k tokens to auto-compaction (estimated)"]);
-        assert_eq!(tip(None), ["Share of model window"]);
+        assert!(live.context_auto_compact);
+        let tip = |auto, left| crate::board::ctx_tip(auto, left).into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(tip(true, Some(347_400)), ["Share of auto-compaction limit", "~347k tokens to auto-compaction (estimated)"]);
+        assert_eq!(tip(true, None), ["Share of auto-compaction limit"]);
+        assert_eq!(tip(false, None), ["Share of model window"]);
         for pane in ["pane-1-ctx", "pane-2-ctx"] {
             let at = w.cx.debug_bounds(pane).unwrap_or_else(|| panic!("no {pane} drawn")).center();
             w.cx.simulate_mouse_move(at, None, Modifiers::none());

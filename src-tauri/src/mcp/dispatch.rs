@@ -768,6 +768,13 @@ mod tests {
         let expected = call(json!({ "prompt": "go", "folder": "relative" }));
         assert!(expected.contains("folder: not a usable path"), "{expected}");
         assert_eq!(call(json!({ "prompt": "go", "folder": "relative", "budgetPct": 101, "budgetTokens": "ignored" })), expected);
+        assert_eq!(call(json!({ "prompt": "go", "folder": "relative", "budgetPct": null, "budgetTokens": null })), expected);
+        for persons in [true, false] {
+            let schemas = super::super::tools::tools_as(persons);
+            let spawn = schemas.as_array().unwrap().iter().find(|tool| tool["name"] == "luna_session_spawn").unwrap();
+            let props = spawn["inputSchema"]["properties"].as_object().unwrap();
+            assert!(!props.contains_key("budgetPct") && !props.contains_key("budgetTokens"));
+        }
         assert!(call(json!({ "prompt": "go", "budgetPtc": 50 })).contains("has no argument"));
         agents::forget(caller);
     }

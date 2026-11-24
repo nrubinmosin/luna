@@ -137,7 +137,7 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         turns_ended,
         running: true,
         queued: !queue.is_empty(),
-        queue: queue.iter().map(|t| Queued::from(*t)).collect(),
+        queue: Some(queue.iter().map(|t| Queued::from(*t)).collect()),
         in_flight: Vec::new(),
         fed: Vec::new(),
         undelivered: Vec::new(),

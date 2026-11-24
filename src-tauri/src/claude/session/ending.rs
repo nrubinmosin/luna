@@ -3,13 +3,13 @@
 //! tool call it stands on, and when what it waits on is due.
 
 use super::*;
-use crate::to_compact::Sample;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ContextRead {
     pub(crate) tokens: f64,
     pub(crate) window: f64,
-    pub(crate) compaction: Option<Sample>,
+    pub(crate) model: Option<String>,
+    pub(crate) fresh_tokens: Option<f64>,
 }
 
 // Free context reading: the last assistant message in the session transcript
@@ -19,9 +19,8 @@ fn context_in(text: &str) -> Option<ContextRead> {
     scan_usage(text).map(|(tokens, model, compaction_tokens)| ContextRead {
         tokens,
         window: crate::claude::context::context_window(&model),
-        compaction: compaction_tokens
-            .filter(|_| !model.is_empty() && !model.starts_with('<'))
-            .map(|tokens| Sample { tokens: tokens as u64, model }),
+        model: (!model.is_empty() && !model.starts_with('<')).then_some(model),
+        fresh_tokens: compaction_tokens,
     })
 }
 
@@ -75,7 +74,7 @@ pub fn last_model(path: &Path) -> Option<String> {
     ending(path).model
 }
 
-/// The last answer's context (tokens and window) and the compaction sample.
+/// The last answer's context (tokens and window) with the model and any newer count from a compaction boundary.
 pub(crate) fn last_context(path: &Path) -> Option<ContextRead> {
     ending(path).context
 }
@@ -429,21 +428,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_compact_boundary_changes_only_the_estimate_until_the_next_answer() {
+    fn a_compact_boundary_keeps_the_model_and_updates_usage_when_it_has_a_count() {
         let answer = r#"{"type":"assistant","message":{"model":"claude-sonnet-5-5","usage":{"input_tokens":960000}}}"#;
         let bare = r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"preTokens":960000}}"#;
         let compact = r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"preTokens":960000,"postTokens":18000}}"#;
         let next = r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":20000}}}"#;
-        for (boundary, tokens) in [(bare, None), (compact, Some(18_000))] {
+        for (boundary, tokens) in [(bare, None), (compact, Some(18_000.0))] {
             let text = format!("{answer}\n{boundary}\n");
             assert_eq!(usage_in(&text), Some((960_000.0, "claude-sonnet-5-5".into())));
             let context = context_in(&text).unwrap();
             assert_eq!(context.tokens, 960_000.0);
-            assert_eq!(context.compaction.map(|s| s.tokens), tokens);
+            assert_eq!(context.model.as_deref(), Some("claude-sonnet-5-5"));
+            assert_eq!(context.fresh_tokens, tokens);
         }
         let context = context_in(&format!("{answer}\n{compact}\n{next}\n")).unwrap();
         assert_eq!(context.tokens, 20_000.0);
-        assert_eq!(context.compaction, Some(Sample { tokens: 20_000, model: "claude-opus-5-5".into() }));
+        assert_eq!(context.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(context.fresh_tokens, Some(20_000.0));
     }
 
     #[test]

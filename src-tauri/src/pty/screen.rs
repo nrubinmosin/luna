@@ -33,9 +33,13 @@ pub struct SessionMeta {
     pub context_tokens: Option<f64>,
     /// The model window reported by the CLI or estimated from its model ID.
     pub context_window: Option<f64>,
-    /// Usage and model for `context_to_compact`.
+    /// Model for the compaction threshold, independent of usage.
     #[serde(skip)]
-    pub compaction_sample: Option<crate::to_compact::Sample>,
+    pub context_model: Option<String>,
+    /// The count usable for estimating tokens left, where it is current.
+    #[serde(skip)]
+    pub fresh_context_tokens: Option<f64>,
+    pub context_auto_compact: bool,
     /// The tokens it can take in before its CLI compacts its context on its
     /// own, estimated (to_compact.rs); None where that is off or not known.
     pub context_to_compact: Option<u64>,

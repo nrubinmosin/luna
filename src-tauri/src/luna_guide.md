@@ -30,8 +30,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - `luna_session_get` gives one session whole: `settings`, `folder`, `cwd` (where its CLI works,
   when not the folder: a worktree), `transcript`, `sessionId` (the CLI's own), `turnStartedAt` (null between turns), `lastActivityAt` (a long command shows nothing
   until it ends: quiet is not stuck), `resolvedModel` (the model that answered), `context`
-  (`pct` of `window` tokens, `basis`: `autoCompact` or `model`),
-  `contextToCompact` (estimated tokens to compaction, omitted until the delegate's first turn after a core restart), and
+  (`tokens` used, `pct` of `window`, `basis`: `autoCompact` or `model`),
+  `contextToCompact` (estimated tokens left for a delegate). After a core restart a delegate's
+  basis is `model` until its next turn. `luna_session_get` also gives
   `leftRunning`: what its turns left running between turns, by name and pid (`"tail.exe (pid 22104)"`) or as a
   count (`"2 shells"`), which keeps the PC awake for as long as it is there.
   Times are UTC ISO.

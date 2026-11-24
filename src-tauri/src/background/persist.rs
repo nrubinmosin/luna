@@ -26,8 +26,8 @@ pub(super) struct Saved {
     pub(super) queued: bool,
     /// That text, word for word, for its sender to send again (a file an
     /// older core left has only `queued`).
-    #[serde(default, deserialize_with = "read_queue")]
-    pub(super) queue: Vec<Queued>,
+    #[serde(default, deserialize_with = "read_saved_queue")]
+    pub(super) queue: Option<Vec<Queued>>,
     /// See `Entry::in_flight`.
     #[serde(default, deserialize_with = "read_queue")]
     pub(super) in_flight: Vec<Queued>,
@@ -78,6 +78,11 @@ pub(super) struct Saved {
     /// handoff's to sort out (`retire_handoff`).
     #[serde(default)]
     pub(super) no_handoff: bool,
+}
+
+// A missing queue is the legacy format that recorded only whether text was queued.
+fn read_saved_queue<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<Queued>>, D::Error> {
+    read_queue(d).map(Some)
 }
 
 /// Drops marked context alarms saved with a notice by an earlier core.
@@ -140,7 +145,7 @@ fn retire_handoff(s: &mut Saved) {
         s.session = switch.and_then(|w| w.before);
     }
     let legacy = !s.no_handoff;
-    for store in [&mut s.queue, &mut s.in_flight, &mut s.fed, &mut s.undelivered] {
+    for store in s.queue.iter_mut().chain([&mut s.in_flight, &mut s.fed, &mut s.undelivered]) {
         store.retain_mut(|q| {
             if opening.as_deref() == Some(q.id.as_str()) {
                 return false;
@@ -211,7 +216,7 @@ pub(super) fn snapshot() -> Vec<Saved> {
             turns_ended: e.turns_ended,
             running: e.run.is_some(),
             queued: !e.queue.is_empty(),
-            queue: e.queue.clone(),
+            queue: Some(e.queue.clone()),
             in_flight: e.in_flight.clone(),
             fed: e.fed.clone(),
             undelivered: e.undelivered.clone(),
@@ -557,11 +562,12 @@ pub(super) fn seen_when_taken_up(e: &mut Entry, seen_out: bool) {
 }
 
 pub(super) fn taken_up(mut s: Saved) -> Entry {
+    let queued = s.queued && s.queue.as_ref().is_none_or(|q| !q.is_empty());
     retire_handoff(&mut s);
     let stopped = s.running || s.cut_short;
     let resumable = turn_known_over(&s);
     let first: Vec<Queued> = lone_opening(&mut s, stopped).into_iter().collect();
-    let undelivered = [first, s.undelivered, s.in_flight, s.fed, s.queue].concat();
+    let undelivered = [first, s.undelivered, s.in_flight, s.fed, s.queue.unwrap_or_default()].concat();
     let cwd = s.cwd.map(|c| home_of(&s.spec, c));
     let mut e = Entry {
         spec: s.spec,
@@ -570,7 +576,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         cwd,
         run: None,
         compaction: None,
-        turns_ended: s.turns_ended + u32::from(s.running) + u32::from(s.queued),
+        turns_ended: s.turns_ended + u32::from(s.running) + u32::from(queued),
         queue: Vec::new(),
         in_flight: Vec::new(),
         fed: Vec::new(),
@@ -609,7 +615,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         note(&mut e, "Luna's core went mid-turn and stopped the turn");
         e.error = Some("Luna's core restarted mid-turn and stopped the turn".into());
     }
-    if s.queued {
+    if queued {
         note(&mut e, "what was queued behind it never reached it");
     }
     note(&mut e, "taken up by a new core");
@@ -844,7 +850,7 @@ mod tests {
             turns_ended: 3,
             running,
             queued,
-            queue: if queued { vec!["first".into(), "second".into()] } else { Vec::new() },
+            queue: Some(if queued { vec!["first".into(), "second".into()] } else { Vec::new() }),
             in_flight: Vec::new(),
             fed: Vec::new(),
             undelivered: Vec::new(),
@@ -1040,7 +1046,7 @@ mod tests {
             crate::agents::NOTICE_TAG
         );
         let mut s = with_lines(false);
-        s.queue = vec![Queued::new(None, notice)];
+        s.queue = Some(vec![Queued::new(None, notice)]);
         let e = taken_up(s);
         let texts: Vec<String> = e.undelivered.iter().map(|q| q.text.clone()).collect();
         assert_eq!(texts, [format!("{} Your helper h1 answered.", crate::agents::NOTICE_TAG)]);
@@ -1171,7 +1177,7 @@ mod tests {
                 turns_ended: 1,
                 running: true,
                 queued: false,
-                queue: Vec::new(),
+                queue: Some(Vec::new()),
                 in_flight: Vec::new(),
                 fed: Vec::new(),
                 undelivered: Vec::new(),
@@ -1228,15 +1234,30 @@ mod tests {
         let tag = crate::agents::NOTICE_TAG;
         let alarm = "Your helper kid has used 90% of its context window.";
         let mut value = serde_json::to_value(with_lines(true)).unwrap();
-        value["queue"] = json!([
-            { "text": format!("{tag} {alarm}"), "budget": [{"id": "kid", "line": alarm}] },
-            { "text": format!("{tag} Your helper answered. {alarm}"), "budget": [{"id": "kid", "line": alarm}] },
-            { "from": "parent", "text": alarm }
-        ]);
+        let alarm_only = json!({ "text": format!("{tag} {alarm}"), "budget": [{"id": "kid", "line": alarm}] });
+        let mixed = json!({ "text": format!("{tag} Your helper answered. {alarm}"), "budget": [{"id": "kid", "line": alarm}] });
+        for store in ["queue", "inFlight", "fed", "undelivered"] {
+            value[store] = json!([alarm_only, mixed, { "from": "parent", "text": alarm }]);
+        }
+        value["budgetsLanded"] = json!(["kid"]);
+        let saved: Saved = serde_json::from_value(value.clone()).unwrap();
+        for queue in [saved.queue.as_ref().unwrap(), &saved.in_flight, &saved.fed, &saved.undelivered] {
+            assert_eq!(queue.len(), 2);
+            assert_eq!(queue[0].text, format!("{tag} Your helper answered."));
+            assert_eq!(queue[1].text, alarm);
+        }
+        assert!(serde_json::to_value(saved).unwrap().get("budgetsLanded").is_none());
+
+        value["queued"] = json!(true);
+        value["queue"] = json!([alarm_only]);
+        let saved: Saved = serde_json::from_value(value.clone()).unwrap();
+        let ended = saved.turns_ended + u32::from(saved.running);
+        let resumed = taken_up(saved);
+        assert_eq!(resumed.turns_ended, ended, "a retired alarm would not have started a turn");
+        assert!(!resumed.log.iter().any(|line| line.contains("queued behind")));
+        value.as_object_mut().unwrap().remove("queue");
         let saved: Saved = serde_json::from_value(value).unwrap();
-        assert_eq!(saved.queue.len(), 2);
-        assert_eq!(saved.queue[0].text, format!("{tag} Your helper answered."));
-        assert_eq!(saved.queue[1].text, alarm);
+        assert_eq!(taken_up(saved).turns_ended, ended + 1, "a legacy queued flag still counts");
     }
 
     /// In the transcript it is the model's, whatever Luna had time to note: not
@@ -1359,7 +1380,7 @@ mod tests {
         let codex_saved = |in_flight: Vec<Queued>, fed: Vec<Queued>, queue: Vec<Queued>| {
             let mut s = with_lines(true);
             s.spec = entry(Provider::Codex).spec;
-            (s.in_flight, s.fed, s.queue) = (in_flight, fed, queue);
+            (s.in_flight, s.fed, s.queue) = (in_flight, fed, Some(queue));
             s
         };
         let settled = |mut s: Saved, arrived: &[&str]| {

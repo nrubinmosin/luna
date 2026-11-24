@@ -412,7 +412,7 @@ impl Board {
         // before the name does.
         let detail = |s: String| div().flex_shrink(1.).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(s);
         let context = live.context.map(|c| format!("ctx {:.0}%", (c * 100.).clamp(0., 100.)));
-        let mut context_tip = context.as_ref().map(|_| ctx_tip(live.to_compact));
+        let mut context_tip = context.as_ref().map(|_| ctx_tip(live.context_auto_compact, live.to_compact));
         let tips = self.tips;
         let has_context = context.is_some();
         let details = if roomy {
@@ -1026,13 +1026,13 @@ impl Board {
 }
 
 /// The ctx meter's denominator and, when known, the remaining tokens.
-pub(crate) fn ctx_tip(to_compact: Option<u64>) -> Vec<SharedString> {
-    match to_compact {
-        Some(tokens) => {
-            vec!["Share of auto-compaction limit".into(), format!("~{}k tokens to auto-compaction (estimated)", tokens / 1000).into()]
-        }
-        None => vec!["Share of model window".into()],
+pub(crate) fn ctx_tip(auto_compact: bool, to_compact: Option<u64>) -> Vec<SharedString> {
+    let basis = if auto_compact { "Share of auto-compaction limit" } else { "Share of model window" };
+    let mut lines = vec![basis.into()];
+    if let Some(tokens) = to_compact {
+        lines.push(format!("~{}k tokens to auto-compaction (estimated)", tokens / 1000).into());
     }
+    lines
 }
 
 impl Render for Board {
