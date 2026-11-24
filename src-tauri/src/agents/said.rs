@@ -103,6 +103,16 @@ pub(super) struct Request {
     pub(super) taken: bool,
     #[serde(default)]
     pub(super) told: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) planned: bool,
+    #[serde(default)]
+    pub(super) baseline: u32,
+    #[serde(default)]
+    pub(super) cursor: u64,
+    #[serde(default)]
+    pub(super) queued: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) delivery: Option<String>,
 }
 
 /// How much of a request's text is kept to find it again among the prompts:
@@ -125,7 +135,7 @@ pub(super) fn reply_by_default() -> bool {
 
 impl Request {
     pub(super) fn new(n: u32, key: Option<String>, head: String, reply: bool) -> Self {
-        Self { n, key, head, reply, taken: false, told: false }
+        Self { n, key, head, reply, taken: false, told: false, planned: false, baseline: 0, cursor: 0, queued: false, delivery: None }
     }
 
     /// The heading used in answer files and tool replies.
@@ -162,7 +172,7 @@ impl Said {
             let found: Vec<Option<usize>> = requests
                 .iter()
                 .map(|q| {
-                    if q.taken || previous == Some(q.n) {
+                    if previous == Some(q.n) {
                         return None;
                     }
                     // One prompt can batch distinct sends. Repeating the
@@ -218,6 +228,7 @@ impl Said {
             let Some(status) = self.texts.get(i).and_then(|text| status_word(text)) else { continue };
             if let Some(k) = current {
                 requests[k].told |= status.lasting();
+                requests[k].planned |= status == Status::Plan && requests[k].reply;
             }
             if i >= self.last_turn {
                 lasting_in_last_turn |= status.lasting();

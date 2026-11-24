@@ -319,7 +319,8 @@ pub fn forget(id: &str) {
     r.requests.retain(|(who, chat), _| who != id && chat != id);
     r.notice_times.retain(|(who, chat), _| who != id && chat != id);
     r.stopped.retain(|(who, chat), _| who != id && chat != id);
-    r.failures_told.retain(|(who, chat)| who != id && chat != id);
+    r.failures_told.retain(|(who, chat), _| who != id && chat != id);
+    r.transcript_generations.remove(id);
     r.exits.remove(id);
     let told = r.quota_told.len();
     r.quota_told.retain(|(caller, _, _), _| caller != id);
@@ -411,11 +412,11 @@ mod tests {
             reap_these(pty, vec![id.into()]);
             assert!(reg().lock().unwrap().known.contains_key(id), "unread answer is retained");
             if read {
-                let undo = super::super::owed::read_silent(parent, id, debt.rev).expect("answer read");
+                let undo = super::super::owed::read_silent(parent, id, debt.rev, debt.transcript_rev).expect("answer read");
                 undo();
                 reap_these(pty, vec![id.into()]);
                 assert!(reg().lock().unwrap().known.contains_key(id), "a canceled read restores retention");
-                let _ = super::super::owed::read_silent(parent, id, debt.rev).expect("answer read again");
+                let _ = super::super::owed::read_silent(parent, id, debt.rev, debt.transcript_rev).expect("answer read again");
             } else {
                 reg().lock().unwrap().owed.get_mut(&key).unwrap().wake.unread_since = Some(0);
             }

@@ -7,7 +7,7 @@ use crate::agents::held::is_held;
 use crate::agents::lost::undelivered_note;
 use crate::agents::notifier::job_end_stood;
 use crate::agents::notifier::lines::{news_for_parent, real_turn_past, verdict, Verdict};
-use crate::agents::owed::{background_stopped_note, hand_over_said, last_shown, looked, Owed, QUEUED_GRACE_MS};
+use crate::agents::owed::{background_stopped_note, hand_over_scope, last_shown, looked, AnswerScope, Owed, QUEUED_GRACE_MS};
 use crate::agents::read::{failure_of, transcript_found, transcript_path, MAX_TEXT};
 use crate::agents::registry::{authorize_view, in_scope, is_dev, reg, waits_on_helpers};
 use crate::agents::said::{answer_file, answer_text, replies_since, said_since, Said};
@@ -134,6 +134,8 @@ pub struct Waited {
     /// hands it over: this `wait`, or a `wait_many` once it has its response.
     #[serde(skip)]
     pub(super) job_debt: Option<u64>,
+    #[serde(skip)]
+    scope: Option<AnswerScope>,
 }
 
 /// The outcome of a session in a `wait_many` that is out of the caller's reach
@@ -160,6 +162,7 @@ impl Waited {
             background_stopped: None,
             said: Vec::new(),
             job_debt: None,
+            scope: None,
         }
     }
 }
@@ -260,6 +263,7 @@ fn wait_for(
                     background_stopped: None,
                     said: Vec::new(),
                     job_debt: None,
+                    scope: None,
                 },
                 false,
             ));
@@ -267,10 +271,12 @@ fn wait_for(
         std::thread::sleep(POLL);
     }
     let now = crate::activity::turn_state(id).map(|t| t.turns_ended);
-    let (owed_since, answered_at, queued, late, told_debt) = {
+    transcript_path(pty, id);
+    let (sampled, owed_since, answered_at, queued, late, told_debt) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let owed = r.owed.get(&key);
         (
+            owed.copied(),
             owed.map(|o| o.baseline),
             r.answered.get(&key).copied(),
             owed.is_some_and(|o| o.queued),
@@ -278,6 +284,8 @@ fn wait_for(
             owed.filter(|o| o.told_pending).map(|o| o.rev),
         )
     };
+    #[cfg(test)]
+    super::test_support::reached("wait sampled", caller);
     let after_turn = if late { None } else { after_turn };
     // Told it is not done, a wait is for what a notice would bring next: the
     // job's end or a turn no notice started. A count asked for is that count.
@@ -386,7 +394,8 @@ fn wait_for(
             // Read from where the caller's question found the transcript, once
             // a move to another is seen to (`moved_to`).
             transcript_path(pty, id);
-            let debt = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
+            let current = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
+            let debt = sampled.map(|old| current.filter(|o| o.rev == old.rev || o.transcript_rev != old.transcript_rev).unwrap_or(old));
             let debt_cut = debt.is_some_and(|o| o.cut_short);
             // A core's going stopped the turn (the helper's word or the debt's, a
             // chat brought back): as the notice says it, and with what it said.
@@ -403,23 +412,23 @@ fn wait_for(
             let halted = (answers || outcome == "exit").then(|| crate::background::stop_of(id)).flatten().filter(|_| !cut);
             // A turn that stopped on an error has said all it will.
             // Which of the caller's requests each answer is to, as a notice says it.
-            let requests = crate::agents::owed::requests_of(caller, id);
-            let reply_now = |stopped: bool| reply_of(pty, id, known.provider, debt, alone, stopped, requests.clone());
-            let mut reply = if outcome == "job_done" {
-                debt.and_then(|o| {
-                    let replies = said_since(pty, id, known.provider, o.cursor).asked_after(requests.clone(), o.request_match);
-                    reply_with_report(id, &replies, alone)
-                })
+            let requests = debt.map_or_else(Vec::new, |o| {
+                crate::agents::owed::requests_through(caller, id, Owed { upto: sampled.map_or(0, |q| q.upto), ..o }, turns_ended)
+            });
+            let reply_now = |stopped: bool| replies_of(pty, id, known.provider, debt, stopped, requests.clone());
+            let mut words = if outcome == "job_done" {
+                debt.map(|o| said_since(pty, id, known.provider, o.cursor).asked_after(requests.clone(), o.request_match))
+                    .unwrap_or_default()
             } else if says {
                 reply_now(failed.is_some() || halted.is_some())
             } else {
-                None
+                Said::default()
             };
             let late = std::time::Instant::now() + std::time::Duration::from_millis(REPLY_GRACE_MS);
-            while says && reply.is_none() && std::time::Instant::now() < late && !gone() {
+            while says && words.is_empty() && std::time::Instant::now() < late && !gone() {
                 std::thread::sleep(POLL);
                 failed = failed.or_else(failure);
-                reply = reply_now(failed.is_some() || halted.is_some());
+                words = reply_now(failed.is_some() || halted.is_some());
             }
             // In doubt again after the grace, it is the notice's to bring.
             if gone() || (answers && holding() == Holding::Unsure) {
@@ -428,6 +437,7 @@ fn wait_for(
             // Taken over while its words were read: none of them go out.
             reach()?;
             let failed = failed.or_else(failure);
+            let reply = reply_with_report(id, &words, alone);
             let transcript_missing = says && reply.is_none() && !transcript_found(pty, id);
             let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some() || halted.is_some());
             let screen = (outcome == "waiting" || bare).then(|| screen_of(pty, id)).flatten();
@@ -435,12 +445,19 @@ fn wait_for(
             let undelivered = if answers { undelivered_note(caller, id) } else { None };
             let (background_stopped, said) = if answers { background_stopped_note(caller, id) } else { (None, Vec::new()) };
             let job_debt = told_debt.filter(|_| outcome == "job_done");
+            let scope = sampled
+                .filter(|old| debt.is_some_and(|now| now.transcript_rev == old.transcript_rev))
+                .map(|old| AnswerScope::from_said(id, old, turns_ended, &words));
+            transcript_path(pty, id);
             if !answers {
                 // Nothing was handed over: whatever is owed stays owed.
                 looked(id);
-            } else if alone && !call.commit(hand_over_said(caller, id, turns_ended, job_debt, said.clone())) {
-                // A cancel since the last look: it stays owed after all.
-                return gone_err();
+            } else if alone {
+                if let Some(undo) = hand_over_scope(caller, id, turns_ended, job_debt, scope.clone(), said.clone()) {
+                    if !call.commit(undo) {
+                        return gone_err();
+                    }
+                }
             }
             let (state, ask) = state_of(id);
             return Ok((
@@ -459,6 +476,7 @@ fn wait_for(
                     background_stopped,
                     said,
                     job_debt,
+                    scope,
                 },
                 answers,
             ));
@@ -485,6 +503,7 @@ fn wait_for(
                     background_stopped: None,
                     said: Vec::new(),
                     job_debt: None,
+                    scope: None,
                 },
                 false,
             ));
@@ -611,7 +630,7 @@ pub fn wait_many(
     }
     // (session, the count it answered by, the debt a job's end settles), for
     // the hand-over below.
-    let mut answers: Vec<(String, u32, Option<u64>, Vec<u32>)> = Vec::new();
+    let mut answers: Vec<_> = Vec::new();
     let mut results: Vec<WaitedOne> = unique
         .iter()
         .copied()
@@ -625,7 +644,7 @@ pub fn wait_many(
             let waited = match r {
                 Some(Ok((w, answered))) => {
                     if answered {
-                        answers.push((id.to_string(), w.turns_ended, w.job_debt, w.said.clone()));
+                        answers.push((id.to_string(), w.turns_ended, w.job_debt, w.scope.clone(), w.said.clone()));
                     }
                     w
                 }
@@ -655,6 +674,7 @@ pub fn wait_many(
                         background_stopped: None,
                         said: Vec::new(),
                         job_debt: None,
+                        scope: None,
                     }
                 }
             };
@@ -670,8 +690,13 @@ pub fn wait_many(
     let outcome = if (!all && !finished.is_empty()) || over { "finished" } else { "timeout" };
     // Each with the losses its own reply said as it was put together: one
     // recorded while the others were waited on is still to be said.
-    let undo: Vec<_> =
-        answers.into_iter().map(|(id, turns_ended, job_debt, said)| hand_over_said(caller, &id, turns_ended, job_debt, said)).collect();
+    let undo: Vec<_> = answers
+        .into_iter()
+        .filter_map(|(id, turns_ended, job_debt, scope, said)| {
+            transcript_path(crate::pty::manager(), &id);
+            hand_over_scope(caller, &id, turns_ended, job_debt, scope, said)
+        })
+        .collect();
     if !call.commit(move || undo.into_iter().for_each(|u| u())) {
         return Err(LET_GO.into());
     }
@@ -762,20 +787,18 @@ enum Holding {
 /// with no question out, its last message. None when it said nothing, or the
 /// prompt is the last word of a turn that has not `stopped` short
 /// (`own_words`). `cut` as in `reply_text`.
-fn reply_of(
+fn replies_of(
     pty: &crate::pty::PtyManager,
     id: &str,
     provider: Provider,
     debt: Option<Owed>,
-    cut: bool,
     stopped: bool,
     requests: Vec<crate::agents::said::Request>,
-) -> Option<(String, ReportPart)> {
-    let replies = match debt {
+) -> Said {
+    match debt {
         Some(o) => replies_since(pty, id, provider, o.cursor, stopped).asked_after(requests, o.request_match),
         None => Said::one_turn(replies_since(pty, id, provider, 0, false).texts.pop().into_iter().collect()),
-    };
-    reply_with_report(id, &replies, cut)
+    }
 }
 
 /// The report alone of a wait's reply: its text (`report_text`), how many
@@ -878,6 +901,52 @@ mod tests {
 
     fn owed_to(caller: &str, id: &str) -> bool {
         reg().lock().unwrap().owed.contains_key(&(caller.to_string(), id.to_string()))
+    }
+
+    #[test]
+    fn a_wait_hands_over_its_sampled_request_through_a_queued_send() {
+        use crate::agents::owed::{owe_asked, owe_sent, requests_of, Asked};
+        let (caller, id) = ("wait-sampled-parent", "wait-sampled-helper");
+        let settings = serde_json::json!({});
+        crate::agents::register(caller, Provider::Claude, ".", "acc", None, true, settings.clone());
+        crate::agents::register(id, Provider::Claude, ".", "acc", Some(caller), true, settings);
+        crate::background::idle_for_test(caller, Provider::Claude, 0, false);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        let line = |role, text| {
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "type":role,"message":{"role":role,"content":[{"type":"text","text":text}]}
+                })
+            )
+        };
+        let first = [line("user", "first request"), line("assistant", "first answer")].concat();
+        let path = std::env::temp_dir().join(format!("luna-wait-sampled-{}.jsonl", std::process::id()));
+        std::fs::write(&path, &first).unwrap();
+        transcripts().lock().unwrap().insert(id.into(), path.clone());
+        owe_asked(caller, id, 0, 0, &Asked { text: "first request", key: None, reply: true });
+        let stop = super::super::test_support::stop_at("wait sampled", caller);
+        std::thread::scope(|threads| {
+            let task = threads.spawn(|| wait(caller, id, "turn_done", 10, None, None, &crate::mcp::Call::new()));
+            stop.wait();
+            owe_sent(
+                caller,
+                id,
+                1,
+                first.len() as u64,
+                None,
+                &Asked { text: "queue for later", key: None, reply: true },
+                (true, None, false),
+            );
+            stop.go();
+            assert!(task.join().unwrap().unwrap().reply.unwrap().contains("first answer"));
+        });
+        assert_eq!(requests_of(caller, id).into_iter().map(|q| q.n).collect::<Vec<_>>(), [2]);
+        crate::background::gone_for_test(caller);
+        crate::background::gone_for_test(id);
+        crate::agents::forget(id);
+        crate::agents::forget(caller);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1063,6 +1132,7 @@ mod tests {
             background_stopped: None,
             said: Vec::new(),
             job_debt: None,
+            scope: None,
         };
         // One report past the limit: cut, and the cut names a file with all of it.
         let long = "R".repeat(MAX_TEXT + 100);
@@ -1114,6 +1184,7 @@ mod tests {
                 background_stopped: None,
                 said: Vec::new(),
                 job_debt: None,
+                scope: None,
             },
         };
         let mut results = [

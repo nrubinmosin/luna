@@ -68,6 +68,7 @@ pub use persist::{
 #[cfg(test)]
 pub(crate) use persist::{chats_frozen, stops_for_test};
 pub(crate) use persist::{of_retired_handoff, retired_opening, without_handed_off};
+pub(crate) use read::observe_transcript;
 pub use read::{read, report_get, Message};
 pub(crate) use registry::mint;
 #[cfg(test)]

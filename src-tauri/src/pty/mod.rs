@@ -19,6 +19,8 @@
 //! `codex::launch`.
 
 mod control;
+#[cfg(test)]
+pub(crate) use control::tests::notice_terminal;
 pub(crate) mod folder;
 pub(crate) mod probe;
 mod screen;

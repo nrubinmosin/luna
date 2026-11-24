@@ -5,7 +5,7 @@ use crate::agents::ask::{ask_of, live};
 use crate::agents::lost::{never_started_what, sentence, undelivered_for, undelivered_line, undelivered_text};
 use crate::agents::notifier::Settled;
 use crate::agents::owed::requests_of;
-use crate::agents::owed::{Owed, QUEUED_GRACE_MS};
+use crate::agents::owed::{requests_through, Owed, QUEUED_GRACE_MS};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{failure_of, transcript_end, transcript_found, transcript_path};
 use crate::agents::registry::{is_descendant, label, reg, waits_on_helpers, Known, Registry};
@@ -354,7 +354,10 @@ pub(in crate::agents) fn pair_stopped(pty: &crate::pty::PtyManager, caller: &str
     if !breaker_lifted(pty, caller, id, at) {
         return true;
     }
-    reg().lock().unwrap_or_else(|e| e.into_inner()).stopped.remove(&key);
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.stopped.remove(&key);
+    r.failures_told.remove(&key);
+    drop(r);
     crate::log::info("agents", &format!("notices to {} about {} go on: a person has typed in", label(caller), label(id)));
     false
 }
@@ -384,6 +387,7 @@ pub(in crate::agents) fn notice_line(
         return None;
     }
     let mut o = o;
+    let had_plan = o.wake.plan_through.is_some();
     let ts = crate::activity::turn_state(id);
     let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let turn = ts.map(|t| t.turn);
@@ -396,7 +400,7 @@ pub(in crate::agents) fn notice_line(
     let background = ts.is_some_and(|t| t.children_busy) && alive;
     let left = if background { left_named(id) } else { None };
     let waits = waits_on_helpers(id, caller);
-    let work_left = alive && (background || !runs_nothing(id, ts));
+    let work_left = alive && (background || waits || !runs_nothing(id, ts));
     if o.wake.plan_through.is_some()
         && turn == Some(crate::activity::Turn::Busy)
         && !super::notice_waits(id)
@@ -495,15 +499,17 @@ pub(in crate::agents) fn notice_line(
                 let found = transcript_found(pty, id);
                 let plain = failed.is_none() && halted.is_none() && stopped.is_empty() && lost.is_empty() && !o.unsure && found;
                 let status = fresh_status(&said);
-                let said = said.asked_after(requests_of(caller, id), o.request_match);
+                let said = said.asked_after(requests_through(caller, id, o, ended), o.request_match);
                 let (requests, plan, fyi) = said.notice_requests();
                 let keeps_plan = fyi && o.wake.plan_through.is_some();
-                if plain && keeps_plan && status.is_none() {
+                if plain && keeps_plan && status.is_none() && requests.iter().all(|q| q.taken) {
                     return Some((None, Settled::PlanFyi(ended, requests, !said.is_empty())));
                 }
                 // An internal wake still goes to a lead whose delegates finished.
                 if plain
                     && is_lead(k)
+                    && o.wake.plan_through.is_none()
+                    && !plan
                     && had_delegates(id, o)
                     && quiet_since_held(pty, id, k, &o, &said)
                     && wake_lead(pty, id, ended) == Wake::Waits
@@ -517,7 +523,7 @@ pub(in crate::agents) fn notice_line(
                 let how = if plain {
                     turn_settlement(o, ended, read_to, &said, requests, status, plan || keeps_plan, false, false, false)
                 } else {
-                    Settled::Failed
+                    failed_requests(id, o, ended, &requests)
                 };
                 let quoted = if failed.is_some() { String::new() } else { begins_re(&said, o.told_pending) };
                 let n = said.len();
@@ -557,7 +563,7 @@ pub(in crate::agents) fn notice_line(
             return None;
         }
         let status = fresh_status(&fresh);
-        let replies = fresh.asked_after(requests_of(caller, id), o.request_match);
+        let replies = fresh.asked_after(requests_through(caller, id, o, ended), o.request_match);
         let (requests, plan, fyi) = replies.notice_requests();
         let keeps_plan = fyi && o.wake.plan_through.is_some();
         if real_turn && !keeps_plan {
@@ -592,6 +598,7 @@ pub(in crate::agents) fn notice_line(
         let never_started = parent && crate::background::never_started(id);
         let trouble =
             cut || halted.is_some() || failed.is_some() || never_started || !found || o.unsure || !lost.is_empty() || !stopped.is_empty();
+        let failure = || failed_requests(id, o, ended, &requests);
         let lead = is_lead(k);
         if !trouble && work_left {
             if lead && (background || waits) {
@@ -602,10 +609,10 @@ pub(in crate::agents) fn notice_line(
             }
         }
         if !trouble && !work_left {
-            if keeps_plan && status.is_none() {
+            if keeps_plan && status.is_none() && requests.iter().all(|q| q.taken) {
                 return Some((None, Settled::PlanFyi(ended, requests, !replies.is_empty())));
             }
-            if lead && quiet_on_helpers(pty, id, k, &o, ended, silent) && wake_lead(pty, id, ended) == Wake::Waits {
+            if lead && !had_plan && !plan && quiet_on_helpers(pty, id, k, &o, ended, silent) && wake_lead(pty, id, ended) == Wake::Waits {
                 return None;
             }
             if status.is_none() && !can_stall(o, &requests) {
@@ -640,7 +647,7 @@ pub(in crate::agents) fn notice_line(
             let what = never_started_what(&lost, file.as_deref());
             return Some((
                 Some(format!("{who} never got started: Luna's core restarted before its first turn got anywhere, so its prompt was lost and there is nothing to carry on from; {what}. luna_session_send starts it afresh.")),
-                Settled::Failed,
+                failure(),
             ));
         }
         let lost = undelivered_line(&lost, !replies.is_empty(), file.as_deref());
@@ -648,7 +655,7 @@ pub(in crate::agents) fn notice_line(
         if cut {
             return Some((
                 Some(format!("{who} did NOT finish its turn: Luna's core restarted mid-turn. It ended{reply}.{stopped}{lost}{unsure} [send to resume]")),
-                Settled::Failed,
+                failure(),
             ));
         }
         // Whatever else is going on: this turn did not get to its end.
@@ -656,14 +663,14 @@ pub(in crate::agents) fn notice_line(
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
             return Some((
                 Some(format!("{who} did not finish its turn: {}{said}{stopped}{lost}{unsure} [send to resume]", sentence(&why))),
-                Settled::Failed,
+                failure(),
             ));
         }
         if let Some(why) = failed {
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
             return Some((
                 Some(format!("{who} stopped on an error: {}{said}{stopped}{lost}{unsure} [send to resume]", sentence(&why))),
-                Settled::Failed,
+                failure(),
             ));
         }
         let reply = if inline.is_some() { reply } else { format!("{reply}{}", begins_re(&replies, o.told_pending)) };
@@ -709,14 +716,18 @@ pub(in crate::agents) fn notice_line(
                     let earlier = if replies.is_empty() { String::new() } else { format!(" Its turns since you asked ended{reply}.") };
                     return Some((
                         Some(format!("{who} seems stuck: no reply to Luna's delegates-finished notice.{earlier}{stopped}{lost}{unsure}")),
-                        if trouble { Settled::Failed } else { Settled::Answered },
+                        if trouble {
+                            failure()
+                        } else {
+                            turn_settlement(o, ended, read_to, &replies, requests, status, false, false, false, false)
+                        },
                     ));
                 }
             }
         }
         let idle = if parent && !trouble && alive && runs_nothing(id, ts) { NOTHING_RUNNING } else { "" };
         let how = if trouble {
-            Settled::Failed
+            failure()
         } else {
             turn_settlement(o, ended, read_to, &replies, requests, status, plan || keeps_plan, false, false, false)
         };
@@ -733,12 +744,28 @@ pub(in crate::agents) fn notice_line(
             let at = now_ms();
             let due = due_ms(pty, id, k.provider);
             if due.is_none_or(|due| at >= due.saturating_add(PAST_DUE_MS)) {
+                let target = if o.upto == 0 {
+                    o.quiet_target()
+                } else {
+                    let (said, _) = written_range(pty, id, k.provider, o.cursor);
+                    let requests = requests_through(caller, id, o, ended.saturating_add(1));
+                    said.asked_after(requests, o.request_match)
+                        .notice_requests()
+                        .0
+                        .into_iter()
+                        .rev()
+                        .find(|q| q.reply && q.taken)
+                        .map(|q| q.n)
+                };
                 return Some(match waiting {
                     Some(w) => (
                         Some(background_wait_line(who, quiet, &background_calls(pty, id, k.provider), &w.procs)),
-                        Settled::WaitsOnBackground(ended),
+                        if o.upto == 0 { Settled::WaitsOnBackground(ended) } else { Settled::QuietFor(ended, target, true) },
                     ),
-                    None => (Some(quiet_line(who, quiet, due.map(|due| at - due))), Settled::Quiet(ended)),
+                    None => (
+                        Some(quiet_line(who, quiet, due.map(|due| at - due))),
+                        if o.upto == 0 { Settled::Quiet(ended) } else { Settled::QuietFor(ended, target, false) },
+                    ),
                 });
             }
         }
@@ -746,18 +773,38 @@ pub(in crate::agents) fn notice_line(
     standing_line(pty, who, id, k, o)
 }
 
+fn failed_requests(id: &str, o: Owed, ended: u32, requests: &[Request]) -> Settled {
+    if requests.is_empty() {
+        return Settled::Failed;
+    }
+    let covered: Vec<_> = requests
+        .iter()
+        .filter(|q| {
+            q.taken
+                || q.delivery.as_deref().is_some_and(|qid| crate::background::delivery_lost(id, qid))
+                || (q.n == 1 && q.baseline < ended && !q.queued && (q.delivery.is_none() || o.cut_short))
+        })
+        .map(|q| q.n)
+        .collect();
+    if covered.len() == requests.len() {
+        Settled::Failed
+    } else {
+        Settled::FailedRequests(ended, covered)
+    }
+}
+
 fn turn_changed(id: &str, ended: u32) -> bool {
     crate::activity::turn_state(id).is_some_and(|t| t.turn != crate::activity::Turn::Idle || t.turns_ended != ended)
 }
 
 fn can_stall(o: Owed, requests: &[Request]) -> bool {
-    if o.no_reply || o.wake.plan_through.is_some() {
+    if o.no_reply {
         return false;
     }
     if requests.is_empty() {
-        return o.legacy_can_stall();
+        return o.wake.plan_through.is_none() && o.legacy_can_stall();
     }
-    requests.iter().any(|q| q.reply && q.taken && !q.told)
+    requests.iter().any(|q| q.reply && q.taken && !q.told && (!q.planned || o.wake.plan_through.is_none()))
 }
 
 fn silent_or_untaken(o: Owed, ended: u32, requests: &[Request], unread: bool) -> Settled {
@@ -855,49 +902,25 @@ pub(super) fn runs_nothing(id: &str, ts: Option<crate::activity::TurnState>) -> 
             if !o.active() || o.no_reply {
                 continue;
             }
-            let state = crate::activity::turn_state(to);
-            let working = pending.contains(to)
-                || crate::background::has_work(to)
-                || state.is_some_and(|t| t.turn != crate::activity::Turn::Idle || t.children_busy);
-            let notice_due = !r.stopped.contains_key(&(from.clone(), to.clone()))
-                && (o.resumed
-                    || o.job_went
-                    || o.told_pending
-                    || o.wake.skipped.is_some()
-                    || state.is_none_or(|t| t.turns_ended > o.notice_baseline()));
-            if working || notice_due {
-                edges.entry(from.clone()).or_default().push(to.clone());
-            }
+            edges.entry(from.clone()).or_default().push(to.clone());
         }
         (edges, pending)
     };
-    !edges.get(id).is_some_and(|targets| {
-        targets.iter().any(|target| {
-            !idle_cycle(id, target, &edges, |id| {
-                !pending.contains(id)
-                    && !super::notice_waits(id)
-                    && !crate::background::has_work(id)
-                    && !crate::activity::turn_state(id).is_some_and(|t| t.turn != crate::activity::Turn::Idle || t.children_busy)
-            })
-        })
-    })
-}
-
-/// Let one idle member of a wait cycle finish. A live turn or an in-flight
-/// notice breaks the cycle on its own. Ordering the cut by session ID means
-/// the notifier's traversal order cannot make every member wait forever.
-fn idle_cycle<'a>(first: &str, target: &'a str, edges: &'a HashMap<String, Vec<String>>, idle: impl Fn(&str) -> bool) -> bool {
-    let mut crossed = HashSet::new();
-    let mut to_visit = vec![target];
-    while let Some(next) = to_visit.pop() {
-        if next == first {
-            return true;
+    let mut visited = HashSet::from([id]);
+    let mut peers: Vec<_> = edges.get(id).into_iter().flatten().map(String::as_str).collect();
+    while let Some(peer) = peers.pop() {
+        if !visited.insert(peer) {
+            continue;
         }
-        if next > first && crossed.insert(next) && idle(next) {
-            to_visit.extend(edges.get(next).into_iter().flatten().map(String::as_str));
+        if pending.contains(peer)
+            || crate::background::has_work(peer)
+            || crate::activity::turn_state(peer).is_some_and(|t| t.turn != crate::activity::Turn::Idle || t.children_busy)
+        {
+            return false;
         }
+        peers.extend(edges.get(peer).into_iter().flatten().map(String::as_str));
     }
-    false
+    true
 }
 
 /// What a notice says of a helper whose CLI stopped what its last turn left in
@@ -1925,7 +1948,16 @@ mod tests {
             ask("Heads up", false);
             let first = [line_of("user", "First task"), line_of("assistant", "DONE: first task")].concat();
             let rest = [
-                line_of("user", "Next task"),
+                if provider == Provider::Claude {
+                    format!(
+                        "{}\n",
+                        serde_json::json!({"type":"attachment","attachment":{
+                            "type":"queued_command","prompt":"Next task","source_uuid":"joined-uuid"
+                        }})
+                    )
+                } else {
+                    line_of("user", "Next task")
+                },
                 line_of("assistant", "Here's the output."),
                 line_of("user", "Heads up"),
                 line_of("assistant", "OK."),
@@ -1953,6 +1985,55 @@ mod tests {
             forget(caller);
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn an_earlier_failure_keeps_the_send_waiting_for_a_place() {
+        use crate::agents::owed::{owe_asked, owe_sent, Asked};
+        let (caller, id) = ("failure-queue-caller", "failure-queue-helper");
+        let key = (caller.into(), id.into());
+        let (known, path) = lead_on(Provider::Claude, caller, id, 1, false, "");
+        owe_asked(caller, id, 0, 0, &Asked { text: "first request", reply: true, key: None });
+        let first = prompt_line("first request");
+        std::fs::write(&path, &first).unwrap();
+        owe_sent(
+            caller,
+            id,
+            1,
+            first.len() as u64,
+            None,
+            &Asked { text: "waiting for a place", reply: true, key: None },
+            (true, Some("queued-id".into()), false),
+        );
+        crate::background::cut_for_test(id);
+        let pty = crate::pty::manager();
+        let o = held(reg().lock().unwrap().owed[&key], 1, QUEUED_GRACE_MS.max(REPLY_GRACE_MS));
+        let Some((Some(text), how)) = notice_line(pty, caller, "Session", id, &known, o) else { panic!("the first failure wakes") };
+        assert!(text.contains("did NOT finish"), "{text}");
+        super::super::settle_told(&mut reg().lock().unwrap(), key.clone(), how, &o);
+        let left = reg().lock().unwrap().owed[&key];
+        assert_eq!((left.baseline, left.cursor, left.queued), (1, first.len() as u64, true));
+        let requests = requests_of(caller, id);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].n, 2);
+        crate::background::gone_for_test(id);
+        forget(id);
+        forget(caller);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_lead_keeps_waiting_for_plan_approval_when_its_job_ends() {
+        let (caller, id) = ("plan-job-caller", "plan-job-lead");
+        let (known, path) = lead_on(Provider::Claude, caller, id, 1, false, "");
+        let o = held(Owed::pending(1, 0), 1, BACKGROUND_GRACE_MS);
+        let o = Owed { wake: super::super::super::owed::WakeState { plan_through: Some(1), job_running: true, ..o.wake }, ..o };
+        let _ = notice_line(crate::pty::manager(), caller, "Lead", id, &known, o);
+        assert!(!reg().lock().unwrap().woken.contains_key(id));
+        crate::background::gone_for_test(id);
+        forget(id);
+        forget(caller);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -2818,7 +2899,7 @@ mod tests {
     /// nothing will. The notice's own verdict stops some of these earlier, so
     /// they are put to the check directly.
     #[test]
-    fn idle_wait_cycles_can_resolve_but_work_and_delivery_hold_the_stall() {
+    fn idle_wait_cycles_resolve_when_their_sessions_are_idle() {
         use crate::activity::Turn;
         for size in [2, 3] {
             let ids: Vec<_> = (0..size).map(|i| format!("cycle-{size}-{i}")).collect();
@@ -2827,14 +2908,13 @@ mod tests {
                 owe_from(id, &ids[(i + 1) % size], 0, 0);
             }
             let idle = |id| runs_nothing(id, crate::activity::turn_state(id));
-            assert!(idle(&ids[0]), "one idle member can make progress");
-            assert!(ids[1..].iter().all(|id| !idle(id)), "the others wait for that answer");
+            assert!(ids.iter().all(idle), "every idle member can make progress");
             crate::background::set_running_for_test(&ids[1]);
             assert_eq!(crate::activity::turn_state(&ids[1]).unwrap().turn, Turn::Busy);
             assert!(!idle(&ids[0]), "a turn in the cycle can still answer");
             crate::background::idle_for_test(&ids[1], Provider::Claude, 1, false);
             let delivery = super::super::TypingInto::claim(&ids[1]).unwrap();
-            assert!(!idle(&ids[0]), "notice delivery can still break the cycle");
+            assert!(idle(&ids[0]), "delivery to a peer cannot suppress this stall");
             drop(delivery);
             for id in &ids {
                 forget(id);
@@ -2904,7 +2984,7 @@ mod tests {
         assert!(runs_nothing(id, idle), "an idle helper of its own, nothing to say of it");
         owe_from(id, sub, 0, 0);
         assert!(waits_on_helpers(id, top));
-        stops("a helper still owes an answer");
+        assert!(runs_nothing(id, idle), "its unanswered helper is idle too");
         let debt = reg().lock().unwrap().owed[&key(sub)];
         super::super::settle_told(&mut reg().lock().unwrap(), key(sub), Settled::Silent(1, true), &debt);
         assert!(!waits_on_helpers(id, top));
@@ -2924,10 +3004,10 @@ mod tests {
         reg().lock().unwrap().spawns.remove(&9_177_001);
         assert!(runs_nothing(id, idle));
         owe_from(id, other, 0, 0);
-        stops("an answer owed to it by a session it wrote to");
+        assert!(runs_nothing(id, idle), "an idle peer owes an answer");
         reg().lock().unwrap().owed.remove(&key(other));
         owe_from(id, top, 0, 0);
-        stops("the caller also owes it an answer");
+        assert!(runs_nothing(id, idle), "its idle caller owes an answer");
         reg().lock().unwrap().owed.remove(&key(top));
         assert!(runs_nothing(id, idle));
         crate::background::gone_for_test(id);

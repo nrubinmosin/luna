@@ -278,6 +278,16 @@ fn on_hook(chat_id: &str, body: &str) -> u16 {
         HEARD.lock().unwrap_or_else(|e| e.into_inner()).push((chat_id.to_string(), event));
     }
     crate::agents::on_hook(chat_id, body);
+    if crate::pty::manager().provider(chat_id) == Some(crate::provider::Provider::Claude)
+        && serde_json::from_str::<serde_json::Value>(body)
+            .is_ok_and(|v| v["agent_id"].is_null() && matches!(v["hook_event_name"].as_str(), Some("SessionStart" | "UserPromptSubmit")))
+    {
+        // Resolve through the live registry, never a path supplied by the hook.
+        crate::agents::observe_transcript(chat_id);
+        if crate::activity::HookEvent::parse(body).is_none() {
+            return 204;
+        }
+    }
     if let Some(ev) = crate::activity::HookEvent::parse(body) {
         crate::activity::on_hook_about(chat_id, ev, crate::activity::HookEvent::subject(body));
     }

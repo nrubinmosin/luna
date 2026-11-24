@@ -19,6 +19,7 @@ pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Res
         in_flight: Vec::new(),
         fed: Vec::new(),
         drained: Vec::new(),
+        received: Default::default(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         calls: VecDeque::new(),
@@ -877,6 +878,9 @@ fn args_for_log(id: &str, args: &[String]) -> String {
 /// The turn has taken in its opening batch. Returns whether it held any text.
 pub(super) fn stdin_took(e: &mut Entry) -> bool {
     let batch = std::mem::take(&mut e.in_flight);
+    for q in &batch {
+        super::events::received(e, q);
+    }
     !batch.is_empty()
 }
 

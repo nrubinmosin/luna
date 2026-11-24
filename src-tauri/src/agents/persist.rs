@@ -40,6 +40,9 @@ pub struct Ties {
     pub orphan: bool,
     /// (caller, baseline, cursor) of every answer owed by it (see `Owed`).
     pub owed: Vec<(String, u32, u64)>,
+    /// Older cores must not interpret these readable answers as active debt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) silent_owed: Vec<(String, u32, u64)>,
     /// Numbering by caller, with prompt heads only while an answer is owed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(super) requests: BTreeMap<String, Requests>,
@@ -118,7 +121,13 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         tools: k.tools,
         auto_delete: r.auto.contains_key(id),
         orphan: k.orphan,
-        owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
+        owed: r.owed.iter().filter(|((_, s), o)| s == id && o.active()).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
+        silent_owed: r
+            .owed
+            .iter()
+            .filter(|((_, s), o)| s == id && !o.active())
+            .map(|((c, _), o)| (c.clone(), o.baseline, o.cursor))
+            .collect(),
         requests: r
             .requests
             .iter()
@@ -171,12 +180,16 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     if ties.auto_delete {
         r.auto.insert(id.to_string(), Auto::default());
     }
-    for (caller, baseline, cursor) in ties.owed {
+    for (caller, baseline, cursor) in ties.owed.into_iter().chain(ties.silent_owed) {
         let mut o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));
         if let Some(notice) = ties.notices.get(&caller) {
             notice.restore(&mut o);
         }
         o.request_match = ties.request_matches.get(&caller).copied();
+        if let Some(requests) = ties.requests.get(&caller) {
+            o.upto = requests.made;
+            o.queued = requests.open.iter().any(|q| !q.taken && q.queued);
+        }
         r.owed.insert((caller, id.to_string()), o);
     }
     r.requests.extend(ties.requests.into_iter().map(|(caller, requests)| ((caller, id.to_string()), requests)));
@@ -829,13 +842,17 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         // it was being written by went with it, and the one the window starts
         // is between turns. That turn counts as ended, as a helper's does.
         let mut count = c.turns_ended;
-        for (caller, baseline, cursor) in ties.owed {
+        for (caller, baseline, cursor) in ties.owed.into_iter().chain(ties.silent_owed) {
             // Its turn was over, told so: what it left went with the core. Not
             // one it was in the middle of again: that turn is cut short below.
             let mut o = told_job_went(&ties.told_pending, &caller, baseline, cursor)
                 .filter(|_| !c.mid_turn)
                 .unwrap_or_else(|| Owed::from(baseline, cursor));
             o.request_match = ties.request_matches.get(&caller).copied();
+            if let Some(requests) = ties.requests.get(&caller) {
+                o.upto = requests.made;
+                o.queued = requests.open.iter().any(|q| !q.taken && q.queued);
+            }
             if let Some(notice) = ties.notices.get(&caller) {
                 notice.restore(&mut o);
             }
@@ -1500,6 +1517,24 @@ mod tests {
         round_trip();
         assert!(reg().lock().unwrap().owed[&key].request_match.is_none());
         assert_eq!(requests_of(caller, id).iter().map(|q| q.n).collect::<Vec<_>>(), [2]);
+        forget(id);
+    }
+
+    #[test]
+    fn silent_answers_are_saved_outside_the_older_readers_debts() {
+        use crate::agents::notifier::{settle_told, Settled};
+        let (caller, id) = ("downgrade-answer-caller", "downgrade-answer-helper");
+        let key = (caller.into(), id.into());
+        let ties = owed_chat(id, caller, 0, 0).ties;
+        tie_back(id, Provider::Claude, ".", "acc", ties);
+        let debt = reg().lock().unwrap().owed[&key];
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Silent(1, true), &debt);
+        let saved = serde_json::to_value(ties_of(id).unwrap()).unwrap();
+        assert_eq!(saved["owed"], serde_json::json!([]));
+        forget(id);
+        tie_back(id, Provider::Claude, ".", "acc", serde_json::from_value(saved).unwrap());
+        assert!(!reg().lock().unwrap().owed[&key].active());
+        assert!(reg().lock().unwrap().owed[&key].wake.unread_since.is_some());
         forget(id);
     }
 

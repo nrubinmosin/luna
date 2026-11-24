@@ -28,9 +28,23 @@ pub(super) fn took(e: &mut Entry, uuid: &str) -> bool {
         landed.extend(of_line);
     }
     for q in &landed {
+        received(e, q);
         note(e, &format!("took in: {}", one_line(&q.text)));
     }
     !landed.is_empty()
+}
+
+/// Delivery confirmation can precede registration of the send's request.
+pub(super) fn received(e: &mut Entry, q: &Queued) {
+    const RECENT_DELIVERIES: usize = 256;
+    if e.received.len() == RECENT_DELIVERIES {
+        e.received.pop_front();
+    }
+    e.received.push_back((q.id.clone(), e.turns_ended));
+}
+
+pub fn delivery_turn(id: &str, qid: &str) -> Option<u32> {
+    lock().entries.get(id)?.received.iter().rev().find(|(q, _)| q == qid).map(|(_, turn)| *turn)
 }
 
 /// A permission prompt or `AskUserQuestion` its CLI asks on its stdout

@@ -156,6 +156,14 @@ pub(crate) fn silent_answer_for_power_test(caller: &str, id: &str) {
     super::notifier::settle_told(&mut r, key, Settled::Silent(1, true), &o);
 }
 
+pub(crate) fn notifier_tick_for_test(caller: &str) {
+    super::notifier::tick_for_test(caller);
+}
+
+pub(crate) fn expire_refusal_for_test(caller: &str) {
+    reg().lock().unwrap().places_refused.get_mut(caller).unwrap().since = crate::throttle::now_ms().saturating_sub(10 * 60 * 1000);
+}
+
 pub(crate) fn refusal_for_power_test(lead: &str) {
     super::spawn::refused_a_place(&mut reg().lock().unwrap(), lead);
 }

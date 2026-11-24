@@ -14,7 +14,7 @@ use crate::throttle::now_ms;
 /// more than one activity sample.
 pub(super) const QUEUED_GRACE_MS: u64 = 8_000;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct Owed {
     /// Turns over when the caller asked; the answer ends a later one.
     pub(super) baseline: u32,
@@ -77,6 +77,10 @@ pub(super) struct Owed {
     pub(super) rev: u64,
     /// Generation of the transcript these offsets belong to.
     pub(super) transcript_rev: u64,
+    /// Invalidates evidence about input that the CLI will retry.
+    pub(super) delivery_rev: u64,
+    /// Last numbered request that existed when this revision was made.
+    pub(super) upto: u32,
     /// Where a lead's transcript ended at its last turn held back from the
     /// caller while its delegates worked (notifier `Settled::Skip`): what it
     /// wrote up to there waits in its report, and is no word on their end
@@ -141,7 +145,7 @@ pub(super) const SINCE_KEPT: usize = 4;
 /// What a debt owes of its own past an earlier one it took in (`Owed::since`):
 /// from where the first ask after that one's was asked, and whether every
 /// such ask wanted no reply.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct Since {
     rev: u64,
     cursor: u64,
@@ -150,7 +154,7 @@ pub(super) struct Since {
     upto: u32,
 }
 
-fn next_rev() -> u64 {
+pub(super) fn next_rev() -> u64 {
     static NEXT_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
@@ -160,6 +164,8 @@ impl Owed {
         Owed {
             rev: next_rev(),
             transcript_rev: 0,
+            delivery_rev: 0,
+            upto: 0,
             baseline,
             told_waiting: false,
             told_ask: 0,
@@ -187,8 +193,8 @@ impl Owed {
 
     /// The session went on in another transcript (read.rs `moved_to`): what
     /// came after each debt taken in is read there from `from`.
-    pub(super) fn rebase_since(&mut self, from: u64) {
-        self.transcript_rev = next_rev();
+    pub(super) fn rebase_since(&mut self, from: u64, generation: u64) {
+        self.transcript_rev = generation;
         for s in self.since.iter_mut().flatten() {
             s.cursor = from;
         }
@@ -303,6 +309,8 @@ fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<(bool, O
                 resumed: before.resumed,
                 job_went: before.job_went,
                 transcript_rev: before.transcript_rev,
+                upto: before.upto,
+                delivery_rev: before.delivery_rev,
                 ..if waits { Owed::pending(turns_ended, cursor) } else { Owed::from(turns_ended, cursor) }
             })
             .rev
@@ -313,6 +321,52 @@ fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<(bool, O
         x.put_in = Some(rev);
     }
     Some(rev)
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AnswerScope {
+    debt: Owed,
+    covered: Vec<u32>,
+}
+
+impl AnswerScope {
+    pub(super) fn read(caller: &str, id: &str, debt: Owed, provider: crate::provider::Provider, ended: u32, to: Option<u64>) -> Self {
+        let pty = crate::pty::manager();
+        let requests = requests_through(caller, id, debt, ended);
+        let (said, end) = super::said::written_range(pty, id, provider, debt.cursor);
+        if to.is_some_and(|to| end > to) {
+            return Self { debt, covered: Vec::new() };
+        }
+        Self::from_said(id, debt, ended, &said.asked_after(requests, debt.request_match))
+    }
+
+    pub(super) fn from_said(id: &str, debt: Owed, ended: u32, said: &super::said::Said) -> Self {
+        let covered = said
+            .notice_requests()
+            .0
+            .into_iter()
+            .filter(|q| {
+                q.taken
+                    && (q.baseline < ended
+                        || q.delivery
+                            .as_deref()
+                            .is_some_and(|qid| crate::background::delivery_turn(id, qid).is_some_and(|turn| turn < ended)))
+            })
+            .map(|q| q.n)
+            .collect();
+        Self { debt, covered }
+    }
+}
+
+pub(super) fn hand_over_scope(
+    caller: &str,
+    id: &str,
+    ended: u32,
+    job_debt: Option<u64>,
+    scope: Option<AnswerScope>,
+    said: Vec<u32>,
+) -> Option<impl FnOnce() + Send + 'static> {
+    hand_over_of(caller, id, ended, job_debt, Some(scope), said)
 }
 
 /// The latest answer handed over to a caller about a session (`hand_over`).
@@ -342,6 +396,7 @@ pub(super) fn hand_over(caller: &str, id: &str, turns_ended: u32, job_debt: Opti
 /// helper's background work (`background_stopped_note`): those, and only
 /// those, `caller` has had, a loss recorded since the note was made staying
 /// to be said.
+#[cfg(test)]
 pub(super) fn hand_over_said(
     caller: &str,
     id: &str,
@@ -357,27 +412,36 @@ pub(super) fn hand_over_said(
     }
 }
 
-/// `hand_over_said` of the debt of revision `rev` alone, checked and taken
-/// under one hold of the lock: None, and nothing done, when the caller's debt
-/// there is another by now (a question asked since), which `hand_over` would
-/// take.
-pub(super) fn hand_over_rev(caller: &str, id: &str, turns_ended: u32, rev: u64, said: Vec<u32>) -> Option<impl FnOnce() + Send + 'static> {
-    hand_over_of(caller, id, turns_ended, None, Some(rev), said)
-}
-
 fn hand_over_of(
     caller: &str,
     id: &str,
     turns_ended: u32,
     job_debt: Option<u64>,
-    expected: Option<u64>,
+    expected: Option<Option<AnswerScope>>,
     said: Vec<u32>,
 ) -> Option<impl FnOnce() + Send + 'static> {
     let key = (caller.to_string(), id.to_string());
-    let (taken, seen_before, receipt, goes_on, stop) = {
+    let (taken, seen_before, receipt, goes_on, stop, partial) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        if expected.is_some_and(|rev| r.owed.get(&key).map(|o| o.rev) != Some(rev)) {
-            return None;
+        let current = r.owed.get(&key).copied();
+        let mut partial = None;
+        if let Some(expected) = expected {
+            match (expected, current) {
+                (None, None) => {}
+                (Some(scope), Some(now))
+                    if scope.debt.transcript_rev == now.transcript_rev && scope.debt.delivery_rev == now.delivery_rev =>
+                {
+                    let uncovered = r.requests.get(&key).is_some_and(|qs| qs.open.iter().any(|q| !scope.covered.contains(&q.n)));
+                    if now.rev != scope.debt.rev || uncovered {
+                        if scope.covered.is_empty() {
+                            return None;
+                        }
+                        partial = Some((scope, now));
+                    }
+                    // A moved legacy debt has no request identity to collect.
+                }
+                _ => return None,
+            }
         }
         // A call whose token no longer names its caller (a helper handed over
         // to the person since it began) takes nothing: what it read is still
@@ -399,22 +463,35 @@ fn hand_over_of(
             receipt.put_in = None;
         }
         let (n, taken) = (receipt.n, receipt.stands_for.map(|(o, _)| o.rev));
-        let goes_on = take_debt(&mut r, &key, turns_ended, job_debt);
+        let (goes_on, partial) = match partial {
+            Some((scope, before)) => {
+                let removed = settle_requests(&mut r, &key, scope.debt, &scope.covered, turns_ended);
+                if removed.is_empty() {
+                    return None;
+                }
+                let receipt = r.receipts.get_mut(&key).unwrap();
+                receipt.stands_for = None;
+                (None, Some((before, removed)))
+            }
+            None => (take_debt(&mut r, &key, turns_ended, job_debt), None),
+        };
         // Who the helper still owes once this debt goes: a loss all of them
         // have had is done with.
         let stop = (now.is_some() && !said.is_empty()).then(|| callers_on(&r, id));
-        (taken, seen_before, n, goes_on, stop)
+        (taken, seen_before, n, goes_on, stop, partial)
     };
     owed_on_for(key.clone(), turns_ended, goes_on, taken);
     seen(caller, id, turns_ended);
     // What never reached it goes with this response alone: any later one no
     // longer finds it, so the receipt below says nothing of it.
     let parent = parent_of(id).as_deref() == Some(caller);
-    let taken = take_undelivered(id, caller, parent);
+    let taken = partial.is_none().then(|| take_undelivered(id, caller, parent));
     let stop_told = stop.map(|owed| crate::background::losses_told(id, caller, &said, &owed)).unwrap_or_default();
     let id = id.to_string();
     Some(move || {
-        put_undelivered_back(&id, taken);
+        if let Some(taken) = taken {
+            put_undelivered_back(&id, taken);
+        }
         // Whatever the receipt below says: a later reply found the caller told
         // and did not say it again.
         crate::background::losses_untold(&id, &key.0, &stop_told);
@@ -425,14 +502,34 @@ fn hand_over_of(
         let Some((owed, put_in)) = r.receipts.get(&key).filter(|x| x.n == receipt).map(|x| (x.stands_for.map(|(o, _)| o), x.put_in)) else {
             return;
         };
-        if let Some(o) = owed {
+        if let Some((before, mut removed)) = partial {
+            let current = r.owed.get(&key).copied();
+            if r.transcript_generations.get(&key.1).copied().unwrap_or(0) == before.transcript_rev
+                && current.is_none_or(|o| o.transcript_rev == before.transcript_rev)
+            {
+                let qs = r.requests.entry(key.clone()).or_default();
+                removed.retain(|q| !qs.open.iter().any(|open| open.n == q.n));
+                qs.open.extend(removed);
+                qs.open.sort_by_key(|q| q.n);
+                let o = r.owed.entry(key.clone()).or_insert(before);
+                if o.rev == before.rev {
+                    *o = before;
+                } else {
+                    o.cursor = o.cursor.min(before.cursor);
+                    o.no_reply &= before.no_reply;
+                    o.wake.after = Some(before.notice_baseline().min(o.notice_baseline()));
+                }
+            }
+        }
+        if let Some(o) = owed.filter(|o| r.transcript_generations.get(&key.1).copied().unwrap_or(0) == o.transcript_rev) {
             match r.owed.get_mut(&key) {
                 // What was put in the place of the debt it stands for
                 // (`owed_on`) goes, and that debt is back as it was.
-                Some(now) if Some(now.rev) == put_in => {
+                Some(now) if Some(now.rev) == put_in && now.transcript_rev == o.transcript_rev => {
                     *now = Owed { resumed: now.resumed, job_went: now.job_went, ..o };
                 }
-                Some(now) => now.cursor = now.cursor.min(o.cursor),
+                Some(now) if now.transcript_rev == o.transcript_rev => now.cursor = now.cursor.min(o.cursor),
+                Some(_) => {}
                 None => {
                     r.owed.insert(key.clone(), o);
                 }
@@ -482,20 +579,26 @@ pub(super) fn seen(caller: &str, id: &str, turns_ended: u32) {
 
 /// A full report was read from a silently settled answer. Restore the unread
 /// hold if the client cancels this response and the debt is still the same.
-pub(super) fn read_silent(caller: &str, id: &str, rev: u64) -> Option<impl FnOnce() + Send + 'static> {
+pub(super) fn read_silent(caller: &str, id: &str, rev: u64, transcript_rev: u64) -> Option<impl FnOnce() + Send + 'static> {
     let key = (caller.to_string(), id.to_string());
     let unread_since = reg()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .owed
         .get_mut(&key)
-        .filter(|o| o.rev == rev && !o.active())?
+        .filter(|o| o.rev == rev && o.transcript_rev == transcript_rev && !o.active())?
         .wake
         .unread_since
         .take()?;
     crate::background::save();
     Some(move || {
-        if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&key).filter(|o| o.rev == rev && !o.active()) {
+        if let Some(o) = reg()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .owed
+            .get_mut(&key)
+            .filter(|o| o.rev == rev && o.transcript_rev == transcript_rev && !o.active())
+        {
             o.wake.unread_since.get_or_insert(unread_since);
         }
         crate::background::save();
@@ -534,10 +637,39 @@ pub(super) fn owe_asked(caller: &str, id: &str, baseline: u32, cursor: u64, aske
     owe(caller, id, baseline, cursor, None, Some(asked));
 }
 
+pub(super) fn owe_sent(
+    caller: &str,
+    id: &str,
+    baseline: u32,
+    cursor: u64,
+    handovers: Option<u64>,
+    asked: &Asked,
+    placement: (bool, Option<String>, bool),
+) -> bool {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if !owe_in(&mut r, caller, id, baseline, cursor, handovers, Some(asked)) {
+        return false;
+    }
+    let key = (caller.to_string(), id.to_string());
+    let (queued, delivery, taken) = placement;
+    if let Some(o) = r.owed.get_mut(&key) {
+        o.queued = queued;
+    }
+    if let Some(q) = r.requests.get_mut(&key).and_then(|qs| qs.open.last_mut()) {
+        q.queued = queued;
+        q.delivery = delivery;
+        q.taken = taken;
+    }
+    drop(r);
+    crate::background::save();
+    true
+}
+
 /// `owe_asked` for text a send put into a helper's queue, `handovers` being the
 /// count (handover.rs `handovers_of`) taken before it went in: none if the person
 /// has taken the helper over since, which took that text back out and told its
 /// sender, so nothing of the chat it is now is owed. False then.
+#[cfg(test)]
 pub(super) fn owe_from_at(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: u64, asked: &Asked) -> bool {
     owe(caller, id, baseline, cursor, Some(handovers), Some(asked))
 }
@@ -554,6 +686,16 @@ pub(super) struct Requests {
 }
 
 /// The requests the debt of `caller` on `id` covers now, when one stands.
+pub(super) fn requests_through(caller: &str, id: &str, owed: Owed, ended: u32) -> Vec<Request> {
+    let mut requests = requests_of(caller, id);
+    requests.retain(|q| q.n <= owed.upto);
+    for q in &mut requests {
+        q.taken |=
+            q.delivery.as_deref().is_some_and(|qid| crate::background::delivery_turn(id, qid).is_some_and(|baseline| baseline < ended));
+    }
+    requests
+}
+
 pub(super) fn requests_of(caller: &str, id: &str) -> Vec<Request> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let key = (caller.to_string(), id.to_string());
@@ -594,10 +736,9 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
     // Text can miss its turn before the send that placed it gets here (`retried`).
     let floor = r.delivery_floors.get(&key).copied().unwrap_or(0);
     let mut wake = before.map_or_else(WakeState::default, |o| o.wake);
-    if !own_no_reply {
+    if !own_no_reply && asked.is_none() {
         wake.status = None;
         wake.plan_through = None;
-        wake.quiet_task = None;
     }
     wake.after = before.filter(|o| o.active()).map(|o| o.notice_baseline().min(baseline.max(floor)));
     wake.skipped = None;
@@ -629,9 +770,13 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
             no_reply,
             wake,
             since,
+            upto: made + u32::from(asked.is_some() && (before.is_none() || r.requests.contains_key(&key))),
+            told_quiet: before.and_then(|o| o.told_quiet),
+            told_background_wait: before.and_then(|o| o.told_background_wait),
             request_match,
-            transcript_rev: before.map_or(0, |o| o.transcript_rev),
+            transcript_rev: r.transcript_generations.get(id).copied().unwrap_or_else(|| before.map_or(0, |o| o.transcript_rev)),
             job_went: before.is_some_and(|o| o.job_went),
+            delivery_rev: before.map_or(0, |o| o.delivery_rev),
             ..Owed::from(baseline.max(floor), cursor)
         },
     );
@@ -647,7 +792,11 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
     };
     if let (Some(a), Some(requests)) = (asked, requests) {
         requests.made += 1;
-        requests.open.push(Request::new(requests.made, a.key.map(str::to_owned), request_head(a.text), a.reply));
+        requests.open.push(Request {
+            baseline: baseline.max(floor),
+            cursor: asked_from,
+            ..Request::new(requests.made, a.key.map(str::to_owned), request_head(a.text), a.reply)
+        });
     }
     true
 }
@@ -661,6 +810,46 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
 /// hold was of the answer to them all, and goes. A "no reply" send that
 /// crossed a notice in flight otherwise had its answer told as one to all,
 /// the first told again.
+pub(super) fn settle_requests(r: &mut Registry, key: &(String, String), told: Owed, covered: &[u32], ended: u32) -> Vec<Request> {
+    let Some(now) =
+        r.owed.get(key).copied().filter(|now| now.transcript_rev == told.transcript_rev && now.delivery_rev == told.delivery_rev)
+    else {
+        return Vec::new();
+    };
+    let Some(qs) = r.requests.get_mut(key) else { return Vec::new() };
+    let mut taken = Vec::new();
+    qs.open.retain(|q| {
+        if q.n <= told.upto && covered.contains(&q.n) {
+            taken.push(q.clone());
+            false
+        } else {
+            true
+        }
+    });
+    if let Some(first) = qs.open.first() {
+        let left = r.owed.get_mut(key).unwrap();
+        if !taken.is_empty() {
+            left.cursor = if now.wake.unread_since.is_some() { now.cursor.min(first.cursor) } else { first.cursor };
+            left.baseline = qs.open.iter().map(|q| q.baseline).max().unwrap_or(first.baseline);
+            left.queued = qs.open.iter().any(|q| q.queued);
+            left.no_reply = qs.open.iter().all(|q| !q.reply);
+            left.request_match = left.request_match.filter(|n| qs.open.iter().any(|q| q.n == *n));
+        }
+        if now.rev == told.rev {
+            left.wake.unused_turn = Some(left.wake.unused_turn.unwrap_or(0).max(ended));
+            left.held = None;
+            left.cut_short = false;
+            left.unsure = false;
+            left.told_pending = false;
+            left.wake.job_running = false;
+            left.wake.skipped = None;
+        }
+    } else if !taken.is_empty() {
+        r.owed.remove(key);
+    }
+    taken
+}
+
 pub(super) fn told_before(r: &mut Registry, key: &(String, String), told: u64) {
     let Some(now) = r.owed.get(key).copied() else { return };
     let Some(s) = now.since.iter().flatten().find(|s| s.rev == told).copied() else { return };
@@ -719,6 +908,7 @@ pub fn retried(id: &str, callers: &[String], turns_ended: u32) {
             o.wake.after = None;
             o.held = None;
             o.rev = next_rev();
+            o.delivery_rev = o.rev;
         }
         let floor = r.delivery_floors.entry(key).or_default();
         *floor = (*floor).max(turns_ended);
@@ -758,7 +948,7 @@ pub(super) fn queue_settled(key: &(String, String), o: Owed, turns_ended: u32) -
         return true;
     }
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let Some(owed) = r.owed.get_mut(key) else { return false };
+    let Some(owed) = r.owed.get_mut(key).filter(|now| now.rev == o.rev && now.transcript_rev == o.transcript_rev) else { return false };
     match owed.held {
         Some((n, at)) if n == turns_ended => now_ms().saturating_sub(at) >= QUEUED_GRACE_MS,
         _ => {

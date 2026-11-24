@@ -583,8 +583,9 @@ turn, stopped on a prompt (once per stop) or exited.
   (`held_for_wait`, `job_end_stood`).
 - A notice is an ordinary turn of the caller; a dev caller with no terminal gets
   none, its lines going to the log. Typing one takes seconds and the turn it
-  starts may ask again meanwhile, so the notifier changes the debt only if it is
-  still the one it announced.
+  starts may ask again meanwhile. A notice, wait or complete read settles the
+  request numbers it covered, scoped to the transcript and delivery
+  generation it read. A queued request keeps its own turn baseline and cursor.
 - Lines no debt brings (a helper taken over, an auto-delete, a queued text
   refused, or a system notice) wait for a caller a restart has yet to bring back for as
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
@@ -592,20 +593,24 @@ turn, stopped on a prompt (once per stop) or exited.
 - **Wake policy.** A fresh `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
   opening wakes an owed caller after the turn ends. A prompt, question,
   failure or exit can also wake it. A status or answer covers a numbered
-  request only after the transcript shows its prompt. An untold request
+  request after the CLI confirms delivery or its transcript shows the prompt. An untold request
   that wants a reply gets one idle stall, carrying what the session said.
   Work, queued inputs and pending replies keep that stall back. An idle
-  cycle can resolve at its first session by ID. Interim and suppressed text
+  cycle or idle peer allows each caller its own stall. A draft holds only its
+  own notice. Interim and suppressed text
   stays readable. An idle plan watches for a later independent turn without
   creating a job debt. A separate allowance per task covers the 30-minute
   quiet check, including when a turn waits for its own background work.
   Ties save request intent and coverage, idle plan state, quiet allowance,
-  and untold restart interruptions. A move to another transcript invalidates
-  settlements made with the old transcript's byte offsets.
+  and untold restart interruptions. A move to another transcript captures
+  the destination offset and invalidates settlements from the old file.
+  Silent debts are saved separately so older cores skip them.
 - **Riders.** Later quiet lines accompany another notice. A place refusal
   can go alone after ten minutes or when the top chat has no active debt.
-  An untold refusal keeps the power-off countdown back. Suppressed answers
-  hold no countdown. Quota and system notices keep their own policy.
+  An untold refusal holds the power-off countdown for up to ten minutes
+  while its top chat can take it. It expires with that chat or its line.
+  Suppressed answers hold no countdown. Quota and system notices keep
+  their own policy.
 - **Company.** A notice ready for an idle caller that is owed an answer by
   another session still mid-turn (`Turn::Busy`) waits for it up to
   `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
@@ -623,7 +628,8 @@ turn, stopped on a prompt (once per stop) or exited.
   nothing said of them (`quiet_on_helpers`, `quiet_since_held`: that last
   turn wrote nothing, or nothing since `held_to`; what it wrote while they
   worked waits for its parent and is no word on their end),
-  Luna wakes the lead instead of telling its parent (`wake_lead`). Whether
+  Luna wakes the lead instead of telling its parent (`wake_lead`), unless
+  a recorded PLAN is awaiting approval. Whether
   its interim turn was held back first is no matter: a helper that answers
   within that turn's reply grace ends before the notifier has looked at it.
   A notice never drops what a session wrote because its last turn wrote

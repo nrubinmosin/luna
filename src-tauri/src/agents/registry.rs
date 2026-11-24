@@ -168,9 +168,12 @@ pub(super) struct Registry {
     /// Lines for a caller's next notice that no debt brings: by caller.
     pub(super) news: Vec<(String, String)>,
     pub(super) system_news: Vec<SystemNews>,
+    /// Transcript generations, including sessions with no current debt.
+    pub(super) transcript_generations: HashMap<String, u64>,
+    /// When the most recent failure bypassed a tripped breaker.
+    pub(super) failures_told: HashMap<(String, String), u64>,
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
-    pub(super) failures_told: std::collections::HashSet<(String, String)>,
     pub(super) places_refused: HashMap<String, PlacesRefused>,
 }
 
@@ -214,6 +217,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             quota_told: HashMap::new(),
             news: Vec::new(),
             system_news: Vec::new(),
+            transcript_generations: HashMap::new(),
             failures_told: Default::default(),
             places_refused: HashMap::new(),
         })

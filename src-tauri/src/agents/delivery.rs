@@ -7,7 +7,7 @@ use crate::agents::admission::{command_reach_now, plain_text};
 use crate::agents::ask::{live, state_of};
 use crate::agents::handover::handovers_of;
 use crate::agents::held::{hold, words};
-use crate::agents::owed::{owe_asked, owe_from_at, seen, Asked};
+use crate::agents::owed::{owe_sent, seen, Asked};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{authorize_send, is_mine, label, reg};
 use crate::provider::Provider;
@@ -440,7 +440,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
         if placed == Placed::Queued || interrupted {
             baseline += 1;
         }
-        if !owe_from_at(caller, id, baseline, cursor, handovers, &Asked { text, key, reply }) {
+        if !owe_sent(caller, id, baseline, cursor, Some(handovers), &Asked { text, key, reply }, (queued, qid.clone(), false)) {
             return Err(format!(
                 "the person took {id} over as their own chat as this was sent: the text did not go in, and your next notice \
                  says where it is"
@@ -543,12 +543,7 @@ pub(super) fn put_in(
     // mid-turn, that is the turn running now or the one the CLI starts on
     // the text after it, whichever the CLI makes of it (QUEUED_GRACE_MS).
     seen(caller, id, baseline);
-    owe_asked(caller, id, baseline, cursor, &Asked { text, key, reply });
-    if queued {
-        if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&(caller.to_string(), id.to_string())) {
-            o.queued = true;
-        }
-    }
+    owe_sent(caller, id, baseline, cursor, None, &Asked { text, key, reply }, (queued, None, started));
     Ok(Some(Sent {
         ok: true,
         state_before: "",
@@ -591,7 +586,7 @@ pub(super) fn type_text(
 /// images. So a Codex chat's draft is never typed over: the text is held until
 /// the composer is empty (held.rs `deliver_held`, notifier/mod.rs
 /// `drawn_for_notice`).
-fn puts_draft_aside(provider: Option<Provider>) -> bool {
+pub(super) fn puts_draft_aside(provider: Option<Provider>) -> bool {
     provider == Some(Provider::Claude)
 }
 

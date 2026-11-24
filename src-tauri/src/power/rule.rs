@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// Whether a rule is held up: by an active session (`Life::active`, not known
 /// included), or by an agent's call that may yet start one.
 fn held_up(st: &State, summary: &Summary) -> bool {
-    summary.busy > 0 || st.admitted > 0 || crate::agents::places_pending(&summary.sessions)
+    summary.busy > 0 || st.admitted > 0 || crate::agents::places_pending(&summary.sessions, crate::throttle::now_ms())
 }
 
 /// The last activity a board says, a board made before any read being no
@@ -460,7 +460,7 @@ mod tests {
         use crate::activity::{Life, Phase, SessionLife};
         use crate::agents::{
             forget, register,
-            test_support::{refusal_for_power_test, silent_answer_for_power_test},
+            test_support::{expire_refusal_for_test, notifier_tick_for_test, refusal_for_power_test, silent_answer_for_power_test},
         };
         use crate::provider::Provider;
         let (chat, lead) = ("power-refusal-chat", "power-refusal-lead");
@@ -469,13 +469,35 @@ mod tests {
         silent_answer_for_power_test(chat, lead);
         let summary = Summary::of(vec![SessionLife::of(chat, Life { phase: Phase::Ended, ..Life::default() })], at(0));
         let now = at(1_000);
-        let mut quiet = armed(Action::Shutdown, 0);
-        assert!(advance(&mut quiet, false, &summary, now).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+        let countdown =
+            || advance(&mut armed(Action::Shutdown, 0), false, &summary, now).iter().any(|e| matches!(e, Effect::Countdown { .. }));
+        let terminal = crate::pty::notice_terminal(chat, Provider::Codex, false);
+        assert!(countdown(), "unread answers are not active");
         refusal_for_power_test(lead);
-        let mut with_refusal = armed(Action::Shutdown, 0);
-        assert!(!advance(&mut with_refusal, false, &summary, now).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+        assert!(!countdown(), "a live top chat can still take the refusal");
+        notifier_tick_for_test(chat);
+        assert!(terminal.input.try_iter().collect::<String>().contains("No place was left"));
+        assert!(countdown(), "the notifier delivered it");
+        refusal_for_power_test(lead);
+        crate::pty::manager().set_draft(chat, 1);
+        notifier_tick_for_test(chat);
+        assert!(terminal.input.try_recv().is_err() && countdown(), "the draft holds the notice only");
+        crate::pty::manager().set_draft(chat, 0);
+        expire_refusal_for_test(chat);
+        assert!(countdown(), "the hold has a deadline");
+        drop(terminal);
+        notifier_tick_for_test(chat);
+        let terminal = crate::pty::notice_terminal(chat, Provider::Codex, false);
+        assert!(countdown(), "a closed chat's refusal expired");
+        notifier_tick_for_test(chat);
+        assert!(terminal.input.try_recv().is_err());
+        refusal_for_power_test(lead);
         forget(lead);
+        assert!(countdown(), "the line has no chat to notify for this refusal");
+        notifier_tick_for_test(chat);
+        assert!(terminal.input.try_recv().is_err());
         forget(chat);
+        crate::activity::forget(chat);
     }
 
     #[test]

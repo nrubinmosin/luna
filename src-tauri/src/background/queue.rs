@@ -358,6 +358,10 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
 
 /// What never reached it that `caller` is to hear of (`Entry::undelivered`):
 /// what it sent, and for its parent what no session did.
+pub fn delivery_lost(id: &str, qid: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.undelivered.iter().any(|q| q.id == qid))
+}
+
 pub fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
     let mine = |q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller);
     let told = |q: &Queued| {

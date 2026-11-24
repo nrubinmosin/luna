@@ -358,13 +358,14 @@ fn message_of(line: &str, with_tools: bool) -> Option<Line> {
     }
     let role = match v["type"].as_str() {
         Some("user") => "user",
+        Some("attachment") if v["attachment"]["type"] == "queued_command" => "user",
         // The CLI's own stand-in reads `<synthetic>` ("No response requested."
         // on a resume after an interrupt).
         Some("assistant") if v["message"]["model"] == "<synthetic>" => return None,
         Some("assistant") => "assistant",
         _ => return None,
     };
-    let content = &v["message"]["content"];
+    let content = if v["type"] == "attachment" { &v["attachment"]["prompt"] } else { &v["message"]["content"] };
     let mut text = String::new();
     if let Some(s) = content.as_str() {
         text.push_str(s);

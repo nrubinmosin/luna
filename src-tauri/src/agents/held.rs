@@ -6,7 +6,7 @@
 use crate::agents::ask::{ask_of, live};
 use crate::agents::delivery::{put_in, spill_sent, still_starting, TypingInto, SEND_TYPING_MS};
 use crate::agents::notifier::NOTIFY_EVERY;
-use crate::agents::owed::{owe_asked, seen, Asked, Owed};
+use crate::agents::owed::{owe_asked, seen, Asked};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{transcript_end, transcript_path, Message};
 use crate::agents::registry::{is_dev, label, reg, Registry};
@@ -156,13 +156,20 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
             if reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&id).is_some_and(|k| returning(k, core_up_ms())) {
                 continue;
             }
-            drop_it(&mut reg().lock().unwrap_or_else(|e| e.into_inner()));
-            if !is_dev(&caller) {
-                let ended = crate::activity::turn_state(&id).map_or(0, |t| t.turns_ended);
-                let cursor = transcript_end(&id);
-                let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                r.owed.entry((caller.clone(), id.clone())).or_insert_with(|| Owed::from(ended, cursor)).lost = true;
+            let who = label(&id);
+            let saved = !is_dev(&caller);
+            let line = saved.then(|| {
+                let file = crate::agents::said::note_file(&id, &text);
+                let where_or_text = file.map_or_else(|| format!("Undelivered text: {text}"), |path| format!("File {}", path.display()));
+                format!("{who} exited before your held send went in. {where_or_text}")
+            });
+            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            drop_it(&mut r);
+            if let Some(line) = line {
+                r.news.push((caller.clone(), line));
             }
+            drop(r);
+            crate::background::save();
             continue;
         }
         // One at a time per session, so they go in the order they came.
