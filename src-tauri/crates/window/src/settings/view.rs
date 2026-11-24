@@ -642,7 +642,7 @@ impl SettingsPanel {
             .child(ui::row(
                 p,
                 "Delegates' auto-compaction",
-                Some("Set in tokens for each helper and lead turn. Off uses the CLI's own settings.".into()),
+                Some("Set in tokens at each delegate CLI start. Off uses the CLI's own settings.".into()),
                 compaction,
             ))
             .child(ui::row(

@@ -44,14 +44,16 @@ ranks none of the CLIs' modes.
 
 ## How a session gets Luna
 
-Each delegate turn reads `Settings::delegate_auto_compact_tokens` before
+Each delegate CLI start reads `Settings::delegate_auto_compact_tokens` before
 `background/command.rs` builds its launch. Claude Code gets
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in its environment, subject to settings-file
-`env` overrides. Codex gets `-c model_auto_compact_token_limit=<n>` on its
-app-server command line, including on cold resume. Off omits the override.
-The turn records what Luna applied and keeps its launch inputs for the
-estimate in `background/rows.rs`, together with token usage from the transcript
-or rollout. Claude Code's settings are reread when they change. Codex's
+`env` overrides. Follow-up turns in the same Claude Code process retain its
+launch environment (`background/events.rs`, `LISTEN_MS`). Codex gets
+`-c model_auto_compact_token_limit=<n>` on its app-server command line each
+turn, including on cold resume. Off omits the override. Luna records what it
+applied and keeps the launch inputs for the estimate in `background/rows.rs`,
+which reads token usage from the transcript or rollout. Claude Code's
+settings are reread when they change. Codex's
 snapshot layers the limit above account and project config and below managed
 config. A delegate restored after a core restart refreshes its snapshot on
 the next turn. PTY chats, including handed-over delegates, start with
