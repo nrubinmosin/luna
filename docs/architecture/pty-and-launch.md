@@ -254,9 +254,24 @@ Any change to a launch path shows up as a reviewed diff of the expected values.
 
 ## Hooks
 
-Every Claude Code session but a login starts with a `--settings` file adding hooks that post
-to the hub with `curl.exe` (elsewhere `curl`). Hooks print nothing: Claude Code
-adds the stdout of a hook exiting 0 to the context. The one settings file also
+Every Claude Code chat starts with a `--settings` file adding status hooks
+that run a Codex chat's curl command (`claude/launch.rs` `hook_command`,
+`codex/hooks.rs` `command`): the curl at an absolute path found at the launch
+(`codex_hook_curl`), with `-q` and `--noproxy "*"`. Curl reads the URL and
+the chat's secret from `LUNA_HOOK_URL` with `--variable`, keeping the secret
+out of command lines and files. Claude Code takes exit 2 as a block, so the
+command ends with `; exit 0` and gives curl `--stderr` before any option it
+may refuse. On Windows, Git Bash or PowerShell runs curl directly with
+`--stderr NUL`. If curl is deleted after discovery or killed during the hook,
+the shell may print a diagnostic on stderr while the hook still exits 0.
+Claude Code 2.1.330 takes model-facing success content from stdout alone.
+On Unix, `sh` redirects both streams before starting curl.
+The `onFailure: "continue"` setting
+lets the event proceed if the hook fails before that exit. `Notification` runs only for
+`permission_prompt|elicitation_dialog`, the two Luna reads. A settings `env`
+that sets `LUNA_HOOK_URL` sends these hooks elsewhere; accepted as the
+project's own reach (threat model R12). The hub answers every hook it lets in
+204, a body it reads nothing in too. The one settings file also
 carries the library's `skillOverrides` and `claudeMdExcludes`
 (`claude_settings_file`), since only one `--settings` flag is taken. With the
 library's instructions, a helper's `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`
@@ -275,10 +290,18 @@ and a Codex helper's `app-server` gets none. A Codex chat gets Luna's status hoo
 hooks.state` entry of its key and the hash Codex computes for it
 (`codex/hooks.rs`), their URL in `LUNA_HOOK_URL` rather than on the command
 line, posted by the curl at an absolute path found at the launch
-(`codex_hook_curl`: on Windows `%SystemRoot%\System32\curl.exe`, elsewhere the
-first `curl` on PATH; none, or a path that cannot stand bare in a shell, and
-no hooks), with `-q`, `--noproxy "*"` and its output to the null
-device; Luna never passes `--dangerously-bypass-hook-trust`, so Codex asks for the
+(`codex_hook_curl`), with `-q`, `--noproxy "*"` and its output and errors to
+the null device: Codex takes a hook's exit 2 as a block only with a reason on
+its stderr. The curl is, for both, curl 8.3 or later: on Windows
+`%SystemRoot%\System32\curl.exe` alone, elsewhere the first that will do in
+the absolute entries of PATH, resolving symlinks to regular executable files
+with paths that can stand bare in a shell. The version probe
+(`curl -q --version`) gets a clean environment, with only `SystemRoot` set on
+Windows. Discovery has a three-second deadline and budgets one second
+per candidate. A verdict is reused while file identity, modification time and
+size match, and a failure is retried after 30 seconds. No such curl and
+a chat of either CLI gets no hooks, its status read off its files and screen;
+`luna.log` says so once. Luna never passes `--dangerously-bypass-hook-trust`, so Codex asks for the
 trust of the hooks a project brings as it would started by hand. The wait guard Luna had until 0.19 (a PreToolUse hook refusing `tail -f`
 without a deadline) is gone with the bypass it needed on Codex.
 

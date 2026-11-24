@@ -123,7 +123,7 @@ rollout says a turn runs (below). What a CLI does not say is not seen.
   looked for while the rollout says a turn runs) is asking too, whatever hooks
   came: the `PermissionRequest` post may be the one lost. Hooks that do not
   run at all (the listener down, `features.hooks` off in the account, no curl
-  or one older than 8.3) leave the rollout and the screen, as before them.
+  8.3 or later) leave the rollout and the screen, as before them.
   Which lines are this process's is told by position, never by the clock:
   for the thread it resumed, the file's length at the spawn
   (`codex::session::note_spawn`); a line past it is new whatever its date.
