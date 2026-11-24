@@ -36,6 +36,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The pane meter and session get diagnostics show the share of the CLI's estimated
   auto-compaction limit when known, or the model window otherwise.
   `context.window` gives the denominator and `context.basis` names it.
+- Account quota, breaker details, folder-skills and places notices go to the
+  person's chat at the top of the line. A lead still hears its delegates'
+  outcomes, including failures on a usage limit.
 
 - Luna notices use compact request headers, status tags and report pointers.
   The spawn result returns the ID and a same-folder count, and list rows show

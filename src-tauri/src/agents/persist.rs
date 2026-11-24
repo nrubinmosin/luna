@@ -4,6 +4,7 @@
 //! core takes both up.
 
 use crate::agents::held::{GoingIn, Held};
+use crate::agents::notifier::system::{read_saved, SystemNews};
 use crate::agents::owed::{Owed, Requests};
 use crate::agents::read::transcripts;
 use crate::agents::registry::{account_name, is_dev, label, reg, register, without_retired, Known, Registry, CODEX_TRUST};
@@ -187,6 +188,8 @@ pub(super) struct SavedChats {
     /// took over is told of once, whatever comes between.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) news: Vec<(String, String)>,
+    #[serde(default, deserialize_with = "read_saved", skip_serializing_if = "Vec::is_empty")]
+    pub(super) system_news: Vec<SystemNews>,
     /// Written by a core with no handoff (0.20 on): nothing in it is 0.19's
     /// handoff's to sort out (`of_retired_handoff`).
     #[serde(default)]
@@ -621,7 +624,7 @@ fn freeze(last: &Mutex<Vec<u8>>, frozen: &std::sync::atomic::AtomicBool) {
 /// What there is to keep of the sessions the window runs, and the rest the next
 /// core is to tell. A chat also keeps the person's Codex trust choice.
 pub(super) fn chats_now() -> SavedChats {
-    let (mut chats, sends, mut spawns, news) = {
+    let (mut chats, sends, mut spawns, news, system_news) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let sends: Vec<SavedSend> = r
             .held
@@ -650,7 +653,8 @@ pub(super) fn chats_now() -> SavedChats {
                 })
             })
             .collect();
-        (chats, sends, r.spawns.values().cloned().collect::<Vec<SpawnTaken>>(), r.news.clone())
+        let system_news = r.system_news.iter().filter(|n| n.survives_restart()).cloned().collect();
+        (chats, sends, r.spawns.values().cloned().collect::<Vec<SpawnTaken>>(), r.news.clone(), system_news)
     };
     for c in &mut chats {
         c.turns_ended = crate::activity::turns_counted(&c.id).unwrap_or(0);
@@ -660,7 +664,7 @@ pub(super) fn chats_now() -> SavedChats {
     }
     chats.sort_by(|a, b| a.id.cmp(&b.id));
     spawns.sort_by_key(|s| s.request);
-    SavedChats { chats, sends, spawns, news, no_handoff: true }
+    SavedChats { chats, sends, spawns, news, system_news, no_handoff: true }
 }
 
 /// Writes `chats_now` out if it changed since the last write (background/persist.rs
@@ -800,14 +804,22 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         r.next_request = r.next_request.max(s.request.saturating_add(1));
         r.spawns.insert(s.request, s);
     }
+    let mut legacy_skills = BTreeMap::new();
     for line in saved.news {
         // 0.19's handoff and move lines, an ask, a lapse or a failure with
         // the continuation it carried, are dropped: they point at a tool, a
         // document and a conversation there no longer are (ADR-0030).
         if !saved.no_handoff && of_retired_handoff(&line.1) {
             retired += 1;
+        } else if let Some(news) = SystemNews::old_skills(&line.1) {
+            legacy_skills.insert(news.subject().to_string(), news);
         } else if !r.news.contains(&line) {
             r.news.push(line);
+        }
+    }
+    for news in saved.system_news.into_iter().rev().chain(legacy_skills.into_values()) {
+        if news.survives_restart() && !r.system_news.iter().any(|n| n.survives_restart() && n.subject() == news.subject()) {
+            r.system_news.push(news);
         }
     }
     drop(r);

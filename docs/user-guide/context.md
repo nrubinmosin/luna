@@ -120,8 +120,9 @@ them. Each costs the session a turn as well as its tokens.
 | A question or a permission prompt, with its askId (plus the question) | 30 + the question |
 | Stopped on a prompt Luna cannot read, with how to see it | 45 |
 | A lead's delegates have finished (to the lead itself) | 60 |
-| An account at 90% or 95% of a usage window | 35 |
-| The breaker: Luna stops telling of a session's turns (added once) | 40 |
+| An account at 90% or 95% of a usage window (top chat only) | 35 |
+| A lead's last turn notice before the breaker stops it (added once) | 12 |
+| Breaker details (top chat only) | 30 |
 
 `luna_session_list` gives compact rows with ID, name, state, turn count, ask ID and parent when different.
 The pane meter and session get diagnostics show the share of the estimated

@@ -1,7 +1,7 @@
 //! News of an account's quota at 90% and 95%.
 
 use crate::agents::ask::live;
-use crate::agents::registry::{is_dev, reg, Registry};
+use crate::agents::registry::{persons_chat_in, reg, top_chat, Registry};
 use crate::throttle::now_ms;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -101,42 +101,19 @@ fn windows_of(r: &Registry) -> HashMap<String, Vec<Window>> {
         .collect()
 }
 
-/// Every helper's account, under every session above it: (that session,
-/// `provider/name`, the helper).
+/// Every helper's account under its top chat: (chat, `provider/name`, helper).
 fn accounts_below(r: &Registry) -> Vec<(String, String, String)> {
-    let mut helpers = Vec::new();
-    for (id, k) in &r.known {
-        let account = format!("{}/{}", k.provider.as_str(), k.account);
-        let mut above = k.parent.clone();
-        while let Some(caller) = above {
-            above = r.known.get(&caller).and_then(|p| p.parent.clone());
-            if !is_dev(&caller) && r.known.contains_key(&caller) {
-                helpers.push((caller, account.clone(), id.clone()));
+    r.known
+        .iter()
+        .filter_map(|(id, k)| {
+            k.parent.as_ref()?;
+            let chat = top_chat(r, id)?;
+            if !r.known.contains_key(&chat) {
+                return None;
             }
-        }
-    }
-    helpers
-}
-
-/// Whether `caller` has a usage window to hear of (`quota_news`) by the usage
-/// as it stands now, not as the notifier's last look read it: what the window
-/// has published since is said at its next look, and wakes the caller.
-pub(in crate::agents) fn quota_due(pty: &crate::pty::PtyManager, caller: &str) -> bool {
-    let (windows, helpers) = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let below: Vec<(String, String)> = accounts_below(&r).into_iter().filter(|(c, ..)| c == caller).map(|(_, a, h)| (a, h)).collect();
-        (windows_of(&r), below)
-    };
-    // Off the registry's lock, as `quota_news` asks.
-    let accounts: Vec<String> = helpers.into_iter().filter(|(_, h)| live(pty, h)).map(|(a, _)| a).collect();
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let now = now_ms();
-    accounts.iter().any(|account| {
-        windows.get(account).into_iter().flatten().any(|(label, pct, resets_at)| {
-            let key = (caller.to_string(), account.clone(), label.clone());
-            quota_step(r.quota_told.get(&key), *pct, resets_at.as_deref(), now).1
+            Some((chat, format!("{}/{}", k.provider.as_str(), k.account), id.clone()))
         })
-    })
+        .collect()
 }
 
 /// A usage window a caller is yet to hear of.
@@ -146,7 +123,7 @@ pub(in crate::agents) struct QuotaNews {
     pub(in crate::agents) line: String,
 }
 
-/// What each caller is yet to hear of the usage windows of the accounts its
+/// What each top chat is yet to hear of the usage windows of the accounts its
 /// live helpers run on, all generations counted, as `account_usage` last showed
 /// them. It is told only once the notice has gone in (`quota_told`); what has
 /// reset or come down is settled here.
@@ -165,6 +142,11 @@ pub(in crate::agents) fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<Str
     let now = now_ms();
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let before = quota_bytes(&r.quota_told);
+    // Older cores also told leads. Keep unknown IDs in case a chat has yet to
+    // register, but drop rows for known delegates.
+    let mut told = std::mem::take(&mut r.quota_told);
+    told.retain(|(caller, ..), _| !r.known.contains_key(caller) || persons_chat_in(&r, caller));
+    r.quota_told = told;
     let mut pairs: Vec<&(String, String)> = live_ones.iter().collect();
     pairs.sort();
     pairs.dedup();
@@ -175,7 +157,7 @@ pub(in crate::agents) fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<Str
             let told = QuotaTold { level, resets_at: resets_at.clone() };
             if say {
                 let resets = resets_at.as_deref().map(|t| format!(" (resets {t})")).unwrap_or_default();
-                let line = format!("Account {account}, which your helpers run on, has used {pct:.0}% of its \"{label}\" window{resets}.");
+                let line = format!("Delegate account {account}: {pct:.0}% of \"{label}\" window used{resets}.");
                 news.entry(caller.clone()).or_default().push(QuotaNews { key, told, line });
             } else if level == 0 {
                 r.quota_told.remove(&key);
@@ -236,49 +218,70 @@ mod tests {
     }
 
     #[test]
-    fn quota_news_goes_to_whoever_a_live_helper_runs_under() {
+    fn only_the_top_chat_hears_quota_for_live_delegates_at_every_depth() {
         let none = serde_json::json!({});
+        let bg = serde_json::json!({ "background": true });
         let acc = "C:/acc/anthropic/qn-hot";
-        register("qn-top", Provider::Claude, "C:/p", "C:/acc/anthropic/qn-cold", None, true, none.clone());
-        register("qn-mid", Provider::Claude, "C:/p", "C:/acc/anthropic/qn-cold", Some("qn-top"), true, none.clone());
-        register("qn-low", Provider::Claude, "C:/p", acc, Some("qn-mid"), false, none.clone());
-        register("qn-dead", Provider::Claude, "C:/p", "C:/acc/anthropic/qn-idle", Some("qn-top"), false, none);
-        crate::background::test_helper("qn-low", acc, None, false);
+        let top_acc = "C:/acc/anthropic/qn-own";
+        register("qn-mid", Provider::Claude, "C:/p", "C:/acc/anthropic/qn-cold", Some("qn-top"), true, bg.clone());
+        register("qn-lead", Provider::Claude, "C:/p", "C:/acc/anthropic/qn-inner", Some("qn-mid"), true, bg.clone());
+        register("qn-low", Provider::Claude, "C:/p", acc, Some("qn-lead"), false, bg.clone());
+        register("qn-peer", Provider::Claude, "C:/p", acc, Some("qn-mid"), false, bg.clone());
+        register("qn-dead", Provider::Claude, "C:/p", "C:/acc/anthropic/qn-idle", Some("qn-top"), false, bg);
+        for id in ["qn-low", "qn-peer"] {
+            crate::background::test_helper(id, acc, None, false);
+        }
         let pty = crate::pty::manager();
         let limits = |pct: u8| serde_json::json!({ "limits": [{ "label": "week", "usedPct": pct, "resetsAt": null }] });
         let set = |pct: u8| {
             let mut r = reg().lock().unwrap();
             r.usage.insert("claude/qn-hot".into(), limits(pct));
             r.usage.insert("claude/qn-idle".into(), limits(99));
+            r.usage.insert("claude/qn-own".into(), limits(99));
         };
         set(92);
-        let news = quota_news(pty);
-        for caller in ["qn-top", "qn-mid"] {
-            let lines = &news[caller];
-            let hot: Vec<&QuotaNews> = lines.iter().filter(|n| n.key.1 == "claude/qn-hot").collect();
-            assert_eq!(hot.len(), 1, "{caller}");
-            assert!(hot[0].line.contains("has used 92% of its \"week\" window"), "{}", hot[0].line);
+        assert!(!quota_news(pty).values().flatten().any(|n| n.key.1 == "claude/qn-hot"), "the top is missing");
+
+        register("qn-top", Provider::Claude, "C:/p", top_acc, None, true, none);
+        let old = ("qn-mid".into(), "claude/qn-hot".into(), "week".into());
+        reg().lock().unwrap().quota_told.insert(old, QuotaTold { level: 95, resets_at: None });
+
+        // A known chat without a live terminal has news pending until it returns.
+        assert!(!live(pty, "qn-top"));
+        let mut news = quota_news(pty);
+        for delegate in ["qn-mid", "qn-lead", "qn-low", "qn-peer"] {
+            assert!(!news.contains_key(delegate));
         }
-        assert!(!news.values().flatten().any(|n| n.key.1 == "claude/qn-idle"), "no live helper of its runs there");
-        assert!(!news.contains_key("qn-low"), "a session does not hear of its own account");
+        let lines = &news["qn-top"];
+        assert_eq!(lines.len(), 1, "one shared delegate account, excluding the chat's own and the dead delegate's");
+        assert_eq!(lines[0].key.1, "claude/qn-hot");
+        assert!(lines[0].line.contains("92% of \"week\" window used"), "{}", lines[0].line);
+        assert!(!reg().lock().unwrap().quota_told.keys().any(|(c, _, _)| c == "qn-mid"));
 
         // Not told until the notice has gone in: asked again until it has.
         assert!(quota_news(pty).contains_key("qn-top"));
-        for n in news.into_values().flatten() {
+        for n in news.remove("qn-top").unwrap() {
             reg().lock().unwrap().quota_told.insert(n.key, n.told);
         }
         assert!(!quota_news(pty).contains_key("qn-top"), "once");
+
         set(96);
         assert_eq!(quota_news(pty)["qn-top"][0].told.level, 95, "the next level");
         forget("qn-top");
-        forget("qn-mid");
+        assert!(reg().lock().unwrap().known["qn-mid"].orphan);
+        assert!(!quota_news(pty).values().flatten().any(|n| n.key.1 == "claude/qn-hot"), "the orphaned line has no chat");
         assert!(!reg().lock().unwrap().quota_told.keys().any(|(c, _, _)| c == "qn-top" || c == "qn-mid"));
-        crate::background::remove("qn-low");
-        forget("qn-low");
-        forget("qn-dead");
+        for id in ["qn-low", "qn-peer"] {
+            crate::background::remove(id);
+            forget(id);
+        }
+        for id in ["qn-dead", "qn-lead", "qn-mid"] {
+            forget(id);
+        }
         let mut r = reg().lock().unwrap();
         r.usage.remove("claude/qn-hot");
         r.usage.remove("claude/qn-idle");
+        r.usage.remove("claude/qn-own");
     }
 
     #[test]

@@ -610,12 +610,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             applied,
         )
     };
-    // A turn that starts without the folder skills its folder gives it: its
-    // parent hears so with its next notice, off the helpers' lock (the
-    // registry's is never taken under it).
-    if let Some(off) = applied.iter().find(|a| a.key == crate::applied::Item::LibrarySkillsOff.key()) {
-        crate::agents::turn_without_skills(id, &off.value);
-    }
+    // The top chat hears of a change in the folder-skills failure, off the
+    // helpers' lock (the registry's is never taken under it).
+    let skills_off = applied.iter().find(|a| a.key == crate::applied::Item::LibrarySkillsOff.key()).map(|a| a.value.as_str());
+    crate::agents::turn_folder_skills(id, skills_off);
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
     }

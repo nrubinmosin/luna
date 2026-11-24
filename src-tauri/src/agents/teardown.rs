@@ -4,6 +4,7 @@
 //! the window runs is the person's, and goes only by their hand.
 
 use crate::agents::ask::live;
+use crate::agents::notifier::system::skills_result;
 use crate::agents::notifier::usage::save_quota_told;
 use crate::agents::read::{transcript_path, transcripts};
 use crate::agents::registry::{authorize, descendants, label, named, persons_chat_in, reg, top_of, Known, Registry};
@@ -251,17 +252,11 @@ pub fn queued_refused(id: &str, refused: &[(String, String)]) {
     }
 }
 
-/// A turn of helper `id` started without the folder skills the library gives
-/// its folder, because the plugin it reads them from would not write (`why`,
-/// library/session_plugin.rs): the helper does not know, so its parent hears
-/// so in its next notice, as `library.skills-off` is said in what the turn
-/// applied. A helper with no parent (an orphan) has none to tell.
-pub fn turn_without_skills(id: &str, why: &str) {
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let Some(parent) = r.known.get(id).and_then(|k| k.parent.clone()) else { return };
-    let line = format!("Your helper {id} started a turn without the folder skills the library gives its folder: {why}");
-    if !r.news.iter().any(|(to, l)| *to == parent && *l == line) {
-        r.news.push((parent, line));
+/// What applying the library's folder skills did on this delegate turn.
+pub fn turn_folder_skills(id: &str, failure: Option<&str>) {
+    let changed = skills_result(&mut reg().lock().unwrap_or_else(|e| e.into_inner()), id, failure);
+    if changed {
+        crate::agents::save_chats();
     }
 }
 
@@ -299,6 +294,7 @@ pub fn forget(id: &str) {
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
     r.places_refused.remove(id);
+    r.system_news.retain(|n| !n.about(id));
     r.hook_asks.remove(id);
     r.notice_turns.remove(id);
     r.woken.remove(id);
@@ -358,23 +354,6 @@ mod tests {
     use crate::agents::registry::{authorize, authorize_view, descendants, parent_of, reg, register};
     use crate::provider::Provider;
     use std::sync::Mutex;
-
-    #[test]
-    fn a_helper_turn_without_its_folder_skills_is_told_to_its_parent() {
-        let (chat, helper) = ("rpw-a", "rpw-h");
-        let account = "C:/acc/anthropic/one";
-        register(chat, Provider::Claude, "C:/p", account, None, true, serde_json::json!({}));
-        register(helper, Provider::Claude, "C:/p", account, Some(chat), false, serde_json::json!({ "background": true }));
-        turn_without_skills(helper, "disk full");
-        turn_without_skills(helper, "disk full");
-        let told = news_for(chat);
-        assert_eq!(told.len(), 1, "{told:?}");
-        assert!(told[0].contains(helper) && told[0].contains("disk full"), "{}", told[0]);
-        turn_without_skills("rpw-nobody", "disk full");
-        reg().lock().unwrap().news.retain(|(c, _)| c != chat);
-        forget(helper);
-        forget(chat);
-    }
 
     #[test]
     fn an_auto_delete_helper_counts_idle_only_once_its_answer_is_out() {
