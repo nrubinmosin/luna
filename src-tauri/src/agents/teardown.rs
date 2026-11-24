@@ -6,7 +6,7 @@
 use crate::agents::ask::live;
 use crate::agents::notifier::system::skills_result;
 use crate::agents::notifier::usage::save_quota_told;
-use crate::agents::read::{transcript_path, transcripts};
+use crate::agents::read::{forget_transcript, transcript_path};
 use crate::agents::registry::{authorize, descendants, label, named, persons_chat_in, reg, top_of, Known, Registry};
 use crate::agents::said::replies_since;
 use crate::throttle::now_ms;
@@ -330,7 +330,7 @@ pub fn forget(id: &str) {
     if quota_now {
         save_quota_told();
     }
-    transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    forget_transcript(id);
     if spawned {
         crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
     }

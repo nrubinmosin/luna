@@ -90,6 +90,43 @@ pub(crate) fn observe_transcript(id: &str) {
     transcript_seen(crate::pty::manager(), id);
 }
 
+/// Claude can announce its resume before the live registry names the new
+/// transcript. Remember the offset, and use it only if the registry later
+/// confirms that same file. The hook supplies an ID, never a path to read.
+pub(crate) fn observe_claude_switch(id: &str, session: &str) {
+    if session.len() != 36 || uuid::Uuid::parse_str(session).is_err() {
+        return;
+    }
+    let pty = crate::pty::manager();
+    let Some(chat) = pty.probe(id).filter(|chat| chat.provider == Provider::Claude) else { return };
+    let path = crate::claude::session::transcript_file(&chat.account_path, &chat.cwd, session);
+    remember_destination(id, path);
+    observe_transcript(id);
+}
+
+type Destinations = HashMap<String, (std::path::PathBuf, u64)>;
+
+fn destinations() -> &'static Mutex<Destinations> {
+    static OFFSETS: OnceLock<Mutex<Destinations>> = OnceLock::new();
+    OFFSETS.get_or_init(Default::default)
+}
+
+fn remember_destination(id: &str, path: std::path::PathBuf) {
+    let known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
+    if known.get(id).is_some_and(|was| *was != path) {
+        let mut pending = destinations().lock().unwrap_or_else(|e| e.into_inner());
+        if pending.get(id).is_none_or(|(p, _)| *p != path) {
+            let offset = std::fs::metadata(&path).map_or(0, |m| m.len());
+            pending.insert(id.to_string(), (path, offset));
+        }
+    }
+}
+
+pub(super) fn forget_transcript(id: &str) {
+    transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    destinations().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+}
+
 pub(super) fn transcript_path(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
     transcript_seen(pty, id).0
 }
@@ -133,7 +170,12 @@ fn answer_context(
 fn moved_to(id: &str, was: &std::path::Path, now: &std::path::Path) -> u64 {
     let born = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.created()).ok();
     let fresh = matches!((born(now), born(was)), (Some(now), Some(was)) if now > was);
-    let from = if fresh { 0 } else { std::fs::metadata(now).map_or(0, |m| m.len()) };
+    let saved = destinations().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    let from = if fresh {
+        0
+    } else {
+        saved.filter(|(p, _)| p == now).map_or_else(|| std::fs::metadata(now).map_or(0, |m| m.len()), |(_, from)| from)
+    };
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let generation = super::owed::next_rev();
     r.transcript_generations.insert(id.to_string(), generation);
@@ -576,9 +618,16 @@ mod tests {
         let first = reg().lock().unwrap().owed[&key].rev;
         owe_asked(caller, id, 1, 40_000, &Asked { text: "And this", key: None, reply: true });
         reg().lock().unwrap().owed.get_mut(&key).unwrap().held_to = Some(45_000);
-        let from = moved_to(id, &was, &now);
+        // The hook arrived while the live registry still pointed at the
+        // current transcript. Its destination was already an older file.
+        let (was, now) = (now, was);
+        transcripts().lock().unwrap().insert(id.into(), was.clone());
+        remember_destination(id, now.clone());
+        let before_reply = std::fs::metadata(&now).unwrap().len();
         use std::io::Write as _;
         std::fs::OpenOptions::new().append(true).open(&now).unwrap().write_all(b"new reply").unwrap();
+        let from = moved_to(id, &was, &now);
+        assert_eq!(from, before_reply);
         let o = reg().lock().unwrap().owed[&key];
         assert!(o.cursor == from && o.held_to == Some(from), "{} {:?} {from}", o.cursor, o.held_to);
         told_before(&mut reg().lock().unwrap(), &key, first);

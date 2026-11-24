@@ -2005,6 +2005,7 @@ mod tests {
             &Asked { text: "waiting for a place", reply: true, key: None },
             (true, Some("queued-id".into()), false),
         );
+        crate::background::set_session_for_test(id, "failure-queue-thread");
         crate::background::cut_for_test(id);
         let pty = crate::pty::manager();
         let o = held(reg().lock().unwrap().owed[&key], 1, QUEUED_GRACE_MS.max(REPLY_GRACE_MS));
@@ -2753,7 +2754,11 @@ mod tests {
             reg().lock().unwrap().stopped.insert((id.into(), id.into()), now_ms());
             std::fs::write(&path, &silent).unwrap();
             crate::background::idle_for_test(id, provider, 2, false);
-            reg().lock().unwrap().owed.insert((top.into(), id.into()), Owed::from(0, 0));
+            let mut r = reg().lock().unwrap();
+            let key = (top.into(), id.into());
+            let upto = r.owed.get(&key).map_or(1, |o| o.upto);
+            r.owed.insert(key, Owed { upto, ..Owed::from(0, 0) });
+            drop(r);
             assert!(matches!(look(top, id, &known), Some((None, Settled::Hold(2)))));
             let Some((Some(plain), Settled::Answered)) = look(top, id, &known) else { panic!("{tag}: its parent hears") };
             assert!(plain.contains("finished its turn with 1 message since you asked, #1: \"Helper is running"), "{tag}: {plain}");

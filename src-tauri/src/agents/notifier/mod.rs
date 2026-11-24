@@ -2262,7 +2262,7 @@ mod tests {
     /// counted as it was, with what was decided of it as it came (`queued`).
     #[test]
     fn a_no_reply_send_crossing_a_notice_of_two_merged_requests_repeats_neither() {
-        use crate::agents::owed::{owe_asked, requests_of, Asked};
+        use crate::agents::owed::{owe_asked, owe_sent, requests_of, Asked};
         let (a, id) = ("nx2-caller", "nx2-helper");
         register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
         register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({ "background": true }));
@@ -2287,8 +2287,7 @@ mod tests {
         run_between(
             a,
             Box::new(move || {
-                owe_asked(a, id, 2, end, &Asked { text: "FYI: main moved", key: None, reply: false });
-                reg().lock().unwrap().owed.get_mut(&(a.to_string(), id.to_string())).unwrap().queued = true;
+                owe_sent(a, id, 2, end, None, &Asked { text: "FYI: main moved", key: None, reply: false }, (true, None, false));
             }),
         );
         let text = format!("{NOTICE_TAG} {line}");

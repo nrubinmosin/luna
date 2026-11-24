@@ -433,7 +433,8 @@ fn hand_over_of(
                 {
                     let uncovered = r.requests.get(&key).is_some_and(|qs| qs.open.iter().any(|q| !scope.covered.contains(&q.n)));
                     if now.rev != scope.debt.rev || uncovered {
-                        if scope.covered.is_empty() {
+                        let matches = r.requests.get(&key).is_some_and(|qs| qs.open.iter().any(|q| scope.covered.contains(&q.n)));
+                        if !matches {
                             return None;
                         }
                         partial = Some((scope, now));
@@ -1142,6 +1143,8 @@ mod tests {
         let t0 = now_ms() - 60_000;
         let (thread, kid) = (format!("cxp{t0}"), format!("cxk{t0}"));
         crate::codex::session::cut_off_pair_for_test(&root, t0, &thread, &kid, true);
+        register(parent, Provider::Codex, ".", "acc", None, true, serde_json::json!({}));
+        register(id, Provider::Codex, ".", &root.to_string_lossy(), Some(parent), true, serde_json::json!({ "background": true }));
         crate::background::codex_in_turn_for_test(id, &root.to_string_lossy(), &thread, t0);
         owe_from(parent, id, 0, 0);
         crate::background::turn_over_for_test(id, Some(0));
@@ -1154,7 +1157,8 @@ mod tests {
         drop(hand_over_said(parent, id, 1, None, said));
         assert!(!crate::background::background_stopped(id), "everyone it concerned has had it");
         crate::background::gone_for_test(id);
-        reg().lock().unwrap().owed.retain(|(_, s), _| s != id);
+        forget(id);
+        forget(parent);
         let _ = std::fs::remove_dir_all(&root);
     }
 

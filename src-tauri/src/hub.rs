@@ -278,14 +278,20 @@ fn on_hook(chat_id: &str, body: &str) -> u16 {
         HEARD.lock().unwrap_or_else(|e| e.into_inner()).push((chat_id.to_string(), event));
     }
     crate::agents::on_hook(chat_id, body);
-    if crate::pty::manager().provider(chat_id) == Some(crate::provider::Provider::Claude)
-        && serde_json::from_str::<serde_json::Value>(body)
-            .is_ok_and(|v| v["agent_id"].is_null() && matches!(v["hook_event_name"].as_str(), Some("SessionStart" | "UserPromptSubmit")))
-    {
-        // Resolve through the live registry, never a path supplied by the hook.
-        crate::agents::observe_transcript(chat_id);
-        if crate::activity::HookEvent::parse(body).is_none() {
-            return 204;
+    if crate::pty::manager().provider(chat_id) == Some(crate::provider::Provider::Claude) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+            if v["agent_id"].is_null() {
+                match v["hook_event_name"].as_str() {
+                    Some("SessionStart") => {
+                        if let Some(session) = v["session_id"].as_str() {
+                            crate::agents::observe_claude_switch(chat_id, session);
+                            return 204;
+                        }
+                    }
+                    Some("UserPromptSubmit") => crate::agents::observe_transcript(chat_id),
+                    _ => {}
+                }
+            }
         }
     }
     if let Some(ev) = crate::activity::HookEvent::parse(body) {
