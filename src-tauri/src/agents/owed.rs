@@ -97,6 +97,11 @@ pub(super) struct Owed {
 #[serde(default, rename_all = "camelCase")]
 pub(super) struct WakeState {
     pub(super) status: Option<Status>,
+    /// The newest reply-requesting send can start inside the unread range.
+    pub(super) task_from: Option<u64>,
+    /// What a mid-turn notice has already told, with its last prompt match.
+    /// A wait or read of the ended turn still starts at the answer cursor.
+    pub(super) reported_to: Option<(u64, Option<u32>)>,
     pub(super) plan_through: Option<u32>,
     pub(super) stalled: bool,
     /// The latest turn skipped while work was still running.
@@ -180,6 +185,10 @@ impl Owed {
     /// The session went on in another transcript (read.rs `moved_to`): what
     /// came after each debt taken in is read there from `from`.
     pub(super) fn rebase_since(&mut self, from: u64) {
+        self.wake.task_from = self.wake.task_from.map(|_| from);
+        if let Some((at, _)) = &mut self.wake.reported_to {
+            *at = from;
+        }
         for s in self.since.iter_mut().flatten() {
             s.cursor = from;
         }
@@ -187,6 +196,10 @@ impl Owed {
 
     pub(super) fn active(self) -> bool {
         self.wake.silent.is_none()
+    }
+
+    pub(super) fn notice_read(self) -> (u64, Option<u32>) {
+        self.wake.reported_to.filter(|(at, _)| *at > self.cursor).unwrap_or((self.cursor, self.request_match))
     }
 
     pub(super) fn notice_baseline(self) -> u32 {
@@ -571,6 +584,10 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
     wake.skipped = None;
     wake.silent = None;
     wake.quiet_send = own_no_reply;
+    if !own_no_reply {
+        wake.task_from = Some(asked_from);
+        wake.reported_to = before.and_then(|o| o.wake.reported_to);
+    }
     // The debt before may be told this very moment, by a notice that settles
     // it only as it was (notifier `settle_told`): what this ask owes of its own
     // is kept, to be all that is left once that one is told.

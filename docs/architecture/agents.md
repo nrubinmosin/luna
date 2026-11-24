@@ -575,18 +575,12 @@ turn, stopped on a prompt (once per stop) or exited.
 - A `wait` still out for that answer (`waits`) delivers it instead; if it has
   not within 10 s the notice goes (Claude Code moves an MCP call past 120 s to
   the background and may drop it).
-- A turn after which the helper still runs processes waits up to 20 s, then
-  says "NOT done yet" once per debt (`Owed::told_pending`), with a short tag
-  naming the pending work (`[helpers pending]`, `[job running]` or a subagent count).
-  After that the caller hears only of a turn no notice started (`notice_turn`,
-  `real_turn_past`) or the job's end (`Verdict::JobOver`), however long the
-  job does nothing: what it does is not measured, and idle is no proof of an
-  end. "What is left" and "the job's end" are the session's record's
-  (`activity::Life`, `TurnState::children_busy`): Claude Code's shells, crons
-  and subagents by its hooks and registry, a Codex chat's shells in its job, a
-  helper's processes in its job. A job's end is clocked on the debt
-  itself (`Owed::held`): the notifier and a `wait` go by the same 20 s
-  (`held_for_wait`, `job_end_stood`), so the end reaches the caller once.
+- After a turn leaves work running, a status notice can name it with
+  `[helpers pending]`, `[job running]` or a subagent count. Activity comes from
+  the session record (`activity::Life`, `TurnState::children_busy`): shells,
+  crons, subagents and the helper job's processes. The notifier and `wait`
+  share a 20-second grace on the debt for a job's end
+  (`held_for_wait`, `job_end_stood`).
 - A notice is an ordinary turn of the caller; a dev caller with no terminal gets
   none, its lines going to the log. Typing one takes seconds and the turn it
   starts may ask again meanwhile, so the notifier changes the debt only if it is
@@ -601,7 +595,9 @@ turn, stopped on a prompt (once per stop) or exited.
   no status wakes once per task, along with what the session said. A 30-minute
   quiet turn can use that stall early. After a status or stall, a quiet idle
   end settles silently. A plan covers its own turn. A later independent turn
-  can stall. Session ties save `WakeState` and the answer cursor per caller.
+  can stall. Mid-turn reports advance a separate notice cursor so waits and
+  reads still see the turn's full answer. Ties save both cursors and
+  `WakeState` per caller.
 - **Riders.** Resume and later quiet lines accompany another notice. A place
   refusal can go alone once the top chat has no active debt to bring a wake,
   since only it can free the places. Suppressed news holds no power-off

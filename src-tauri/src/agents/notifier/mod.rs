@@ -98,7 +98,7 @@ pub(super) enum Settled {
     /// owed on from this turn count and transcript end, for that job's end or
     /// a turn of its own. Keep the last prompt match across that cursor.
     Pending(u32, u64, Option<u32>, Option<Status>, bool),
-    Reported(u64, Option<u32>, Status, u32),
+    Reported(u64, Option<u32>, Option<Status>, u32),
     /// A turn ended but is not settled — processes still at work, or no
     /// reply in the transcript yet: nothing to say, start the grace from now.
     Hold(u32),
@@ -480,14 +480,14 @@ fn notify_once(
                 }
                 Some((None, Settled::Hold(ended))) => {
                     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())) {
-                        o.held = Some((ended, now_ms()));
+                    if let Some(now) = r.owed.get_mut(&(caller.clone(), id.clone())).filter(|now| now.rev == o.rev) {
+                        now.held = Some((ended, now_ms()));
                     }
                 }
                 Some((None, Settled::Unhold)) => {
                     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())) {
-                        o.held = None;
+                    if let Some(now) = r.owed.get_mut(&(caller.clone(), id.clone())).filter(|now| now.rev == o.rev) {
+                        now.held = None;
                     }
                 }
                 Some((None, how @ (Settled::Skip(..) | Settled::Silent(..)))) => {
@@ -945,16 +945,18 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
             wake.skipped = None;
             wake.silent = None;
             wake.unread_since = None;
+            wake.reported_to = None;
             wake.quiet_send = false;
             r.owed.insert(key, Owed { request_match, wake, no_reply: told.no_reply, ..Owed::pending(ended, cursor) });
         }
         Settled::Reported(cursor, request_match, status, turn) => {
             let o = r.owed.get_mut(&key).unwrap();
-            o.wake.reported(status, turn);
+            if let Some(status) = status {
+                o.wake.reported(status, turn);
+            }
             o.wake.silent = None;
             o.wake.unread_since = None;
-            o.cursor = cursor;
-            o.request_match = request_match;
+            o.wake.reported_to = Some((cursor, request_match));
             o.resumed = false;
         }
         Settled::Asked(ask) => {
@@ -1010,12 +1012,11 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
 fn carry_delivery(o: &mut Owed, how: &Settled, told: Owed) {
     let Some(same_task) = o.no_task_since(told.rev) else { return };
     match *how {
-        Settled::Reported(cursor, request_match, status, turn) | Settled::Pending(turn, cursor, request_match, Some(status), _) => {
-            if cursor > o.cursor {
-                o.cursor = cursor;
-                o.request_match = request_match;
+        Settled::Reported(cursor, request_match, status, turn) | Settled::Pending(turn, cursor, request_match, status, _) => {
+            if cursor > o.notice_read().0 {
+                o.wake.reported_to = Some((cursor, request_match));
             }
-            if same_task {
+            if let Some(status) = status.filter(|_| same_task) {
                 o.wake.reported(status, turn);
             }
         }
@@ -1199,6 +1200,8 @@ mod tests {
         ended.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
         let Some((Some(text), Settled::Answered)) = line(ended) else { panic!("the job's end") };
         assert!(text.contains("has nothing left running now"), "{text}");
+        ended.wake.reported(Status::Done, 3);
+        assert!(matches!(line(ended), Some((None, Settled::Silent(3, false)))), "a told status leaves no stall or unread text");
         crate::background::gone_for_test("lj-s");
         forget("lj-s");
         let _ = std::fs::remove_file(&path);
@@ -1291,6 +1294,8 @@ mod tests {
         use crate::agents::owed::{owe_asked, Asked};
         let key = ("renew-stall-caller".to_string(), "renew-stall-helper".to_string());
         let (caller, id) = (&key.0, &key.1);
+        register(caller, Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, serde_json::json!({}));
+        register(id, Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some(caller), false, serde_json::json!({}));
         owe_from(caller, id, 0, 0);
         let debt = || reg().lock().unwrap().owed[&key];
         assert!(debt().can_stall());
@@ -1304,7 +1309,8 @@ mod tests {
         assert!(!debt().active() && debt().wake.stalled, "a plain idle end is quiet after the stall");
         owe_asked(caller, id, 2, 0, &Asked { text: "Try again", key: None, reply: true });
         assert!(debt().can_stall(), "a new task");
-        reg().lock().unwrap().owed.remove(&key);
+        forget(id);
+        forget(caller);
     }
 
     #[test]

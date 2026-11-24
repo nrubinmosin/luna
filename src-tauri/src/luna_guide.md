@@ -158,9 +158,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   and its file ends on it (`undelivered` in reads and waits).
 - A helper stopped before it had a conversation "never got started": the file holds its prompt,
   then that text; a send starts it afresh.
-- `resumeOnRestart` has it go on by itself (afresh on its prompt if it never got started); one
-  the next notice can say so. Else the plain notice, also where Luna cannot tell the
-  old turn ended, or where you wrote to it first.
+- `resumeOnRestart` has it go on by itself (afresh on its prompt if it never started).
+  The next notice can mention the restart. If it cannot resume, the failure notice says so.
 - The user's chats you wrote to come back when the window starts them, with text held for them;
   failure news comes then, or after a minute saying they have not.
 - A spawn a restart cut off errors. Wait for the notice before spawning again: no helper came of
@@ -176,7 +175,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - Relaying a report, keep its caveats ("possibly a false flag", "not tested live") with the
   claim. Ask reviewers and implementers to say which findings they think wrong, and why.
 - Before ending a turn on "a notice will come", for anything long or overnight: a wait with a
-  timeout, or a look at `luna_session_list` when the user is back. "NOT done yet" comes once.
+  timeout, or check `luna_session_list` when the user is back.
 - `luna_run_list`: past spawns, newest first, deleted helpers too, yours and your helpers'
   (`scope: "all"`: everyone's): `id`, `at`, `ended`, `how`, `name`, `account`, the start of the
   prompt and of the last reply, `transcript`. `q` searches names and prompts; `limit` (10).

@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(crate::activity::turns_counted("cs-chat"), Some(4), "so its end reads as one");
         let (line, how) = notice_for("cs-caller", "cs-chat", 4);
         let line = line.unwrap();
-        assert!(matches!(how, Settled::Answered));
+        assert!(matches!(how, Settled::Failed));
         assert!(line.contains("did NOT finish") && line.contains("cannot tell whether your last message reached it"), "{line}");
         forget("cs-chat");
         crate::activity::forget("cs-chat");
