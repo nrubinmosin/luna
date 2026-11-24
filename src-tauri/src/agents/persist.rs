@@ -4,7 +4,7 @@
 //! core takes both up.
 
 use crate::agents::held::{GoingIn, Held};
-use crate::agents::owed::Owed;
+use crate::agents::owed::{Owed, Requests};
 use crate::agents::read::transcripts;
 use crate::agents::registry::{account_name, is_dev, label, reg, register, without_retired, Known, Registry, CODEX_TRUST};
 use crate::agents::spawn::SpawnTaken;
@@ -12,6 +12,7 @@ use crate::agents::teardown::Auto;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
 /// How long into a core's life a chat the last core knew (`restore_chats`) is
@@ -38,6 +39,9 @@ pub struct Ties {
     pub orphan: bool,
     /// (caller, baseline, cursor) of every answer owed by it (see `Owed`).
     pub owed: Vec<(String, u32, u64)>,
+    /// Numbering by caller, with prompt heads only while an answer is owed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) requests: BTreeMap<String, Requests>,
     /// (caller, turns ended) each caller was last shown of it (see `seen`).
     pub seen: Vec<(String, u32)>,
     /// The callers among `owed` whose turn went with a core (`Owed::cut_short`):
@@ -76,6 +80,16 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         auto_delete: r.auto.contains_key(id),
         orphan: k.orphan,
         owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
+        requests: r
+            .requests
+            .iter()
+            .filter(|((_, s), _)| s == id)
+            .filter_map(|(key, requests)| {
+                let owed = r.owed.contains_key(key);
+                (owed || requests.made > 0)
+                    .then(|| (key.0.clone(), Requests { made: requests.made, open: if owed { requests.open.clone() } else { Vec::new() } }))
+            })
+            .collect(),
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
         told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
@@ -110,6 +124,7 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
         let o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));
         r.owed.insert((caller, id.to_string()), o);
     }
+    r.requests.extend(ties.requests.into_iter().map(|(caller, requests)| ((caller, id.to_string()), requests)));
     for (caller, n) in ties.seen {
         r.seen.insert((caller, id.to_string()), n);
     }
@@ -609,7 +624,10 @@ pub(super) fn chats_now() -> SavedChats {
             .filter(|(id, k)| {
                 k.settings["background"] != true
                     && !is_dev(id.as_str())
-                    && (k.codex_trust.is_some() || r.owed.keys().any(|(_, s)| s == *id) || sends.iter().any(|h| h.id == **id))
+                    && (k.codex_trust.is_some()
+                        || r.owed.keys().any(|(_, s)| s == *id)
+                        || r.requests.iter().any(|((_, s), requests)| s == *id && requests.made > 0)
+                        || sends.iter().any(|h| h.id == **id))
             })
             .filter_map(|(id, k)| {
                 Some(SavedChat {
@@ -759,6 +777,7 @@ pub(super) fn take_up_chats(saved: SavedChats) {
             }
             r.owed.insert((caller, c.id.clone()), o);
         }
+        r.requests.extend(ties.requests.into_iter().map(|(caller, requests)| ((caller, c.id.clone()), requests)));
         for (caller, n) in ties.seen {
             r.seen.insert((caller, c.id.clone()), n);
         }
@@ -1340,6 +1359,55 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(older.task, None);
+    }
+
+    #[test]
+    fn request_numbers_survive_a_core_with_and_without_an_open_answer() {
+        use crate::agents::owed::{owe_asked, requests_of, Asked};
+        let (caller, id) = ("persist-request-caller", "persist-request-helper");
+        let folder = "C:/p";
+        let account = "C:/acc/anthropic/one";
+        let ask = |text, key| owe_asked(caller, id, 0, 0, &Asked { text, key, reply: true });
+        let round_trip = || {
+            let saved = serde_json::to_vec(&ties_of(id).unwrap()).unwrap();
+            forget(id);
+            tie_back(id, Provider::Claude, folder, account, serde_json::from_slice(&saved).unwrap());
+        };
+        register(id, Provider::Claude, folder, account, Some(caller), false, serde_json::json!({ "background": true }));
+        ask("first", None);
+        round_trip();
+        ask("second", Some("follow-up"));
+        let open = requests_of(caller, id);
+        assert_eq!(open.iter().map(|q| q.n).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(open[0].head, "first");
+        assert_eq!(open[1].key.as_deref(), Some("follow-up"));
+        reg().lock().unwrap().owed.remove(&(caller.into(), id.into()));
+        assert!(ties_of(id).unwrap().requests[caller].open.is_empty(), "settled prompt heads need no save");
+        round_trip();
+        ask("third", None);
+        assert_eq!(requests_of(caller, id)[0].n, 3);
+        forget(id);
+    }
+
+    #[test]
+    fn a_legacy_chat_debt_stays_unnumbered_when_another_request_joins_it() {
+        use crate::agents::owed::{owe_asked, requests_of, Asked};
+        let (caller, id) = ("legacy-request-caller", "legacy-request-chat");
+        take_up(vec![owed_chat(id, caller, 3, 120)], Vec::new(), Vec::new());
+        let ask = || owe_asked(caller, id, 4, 140, &Asked { text: "new request", key: None, reply: true });
+        ask();
+        assert!(requests_of(caller, id).is_empty(), "the old count is unknown");
+        reg().lock().unwrap().owed.remove(&(caller.into(), id.into()));
+        ask();
+        reg().lock().unwrap().owed.remove(&(caller.into(), id.into()));
+        let chat = chats_now().chats.into_iter().find(|c| c.id == id).unwrap();
+        let saved = serde_json::to_vec(&chat).unwrap();
+        forget(id);
+        take_up(vec![serde_json::from_slice(&saved).unwrap()], Vec::new(), Vec::new());
+        ask();
+        assert_eq!(requests_of(caller, id).iter().map(|q| q.n).collect::<Vec<_>>(), [2]);
+        forget(id);
+        crate::activity::forget(id);
     }
 
     #[test]

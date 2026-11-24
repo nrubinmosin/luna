@@ -70,8 +70,8 @@ pub(super) fn tools_as(persons: bool) -> Value {
         {
             "name": "luna_session_list",
             "description": say(
-                "Rows: id, name, state, turnsEnded, askId (others: scope all). Default: yours. scope all: every session. nextCursor goes in cursor.",
-                "Rows: id, name, state, turnsEnded, askId. nextCursor goes in cursor."
+                "Rows: id, name, state, turnsEnded, askId, parent if different (others: scope all). Default: yours. scope all: every session. nextCursor goes in cursor.",
+                "Rows: id, name, state, turnsEnded, askId, parent if different. nextCursor goes in cursor."
             ),
             "inputSchema": s(json!({
                 "scope": scope, "ids": strings, "state": strings, "provider": provider, "account": string,
@@ -94,7 +94,7 @@ pub(super) fn tools_as(persons: bool) -> Value {
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a background helper. Returns id and sameFolder count. First turn: wait with afterTurn 0 or omit it. See luna_guide_get for spawn rules.",
+            "description": "Start a background helper. Returns id, sameFolder count, modeFrom if defaulted. First turn: wait with afterTurn 0 or omit it. See luna_guide_get for spawn rules.",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,

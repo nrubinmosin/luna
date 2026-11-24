@@ -40,7 +40,7 @@ ranks none of the CLIs' modes.
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `folder.rs` (where the caller works, who else is there), `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and context news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
-| `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic the offered topic names |
+| `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic the offered topics by section |
 
 ## How a session gets Luna
 
@@ -292,7 +292,8 @@ spawn on disk (`SpawnUnderWay`), registers the helper with its parent
 (`spawn_is` notes its task), starts its first turn and returns its `id` and
 `sameFolder` (a count of other live sessions in reach working in the same
 directory). Wait uses turn 0 as the initial baseline, which spawn records
-on the debt. An account list also returns `accountChoice`. Luna makes,
+on the debt. An account list returns `accountChoice`, and an omitted mode
+returns its source in `modeFrom`. Luna makes,
 inspects and removes no worktree
 ([ADR-0030](../adr/0030-scope-of-0-20.md)): a caller that wants isolation
 makes one with `git worktree add` and passes it as `folder`, and `luna_session_spawn`
@@ -534,7 +535,8 @@ Invariants:
 ## Session tool results
 
 `luna_session_list` returns `me` and rows with `id`, `name`, `state`, `turnsEnded`
-and `askId` when available, plus `nextCursor` and unknown IDs when applicable.
+and `askId` when available. `parent` names an owner other than the caller.
+The page includes `nextCursor` and unknown IDs when applicable.
 Filters still read the registry fields before checking state and paging.
 
 `luna_session_get` returns identity, state, `turnsEnded`, and the caller-visible
@@ -691,8 +693,9 @@ turn, stopped on a prompt (once per stop) or exited.
   notice says it answers several and which the quoted report is for
   (`answering`, `begins_re`), and `answer_text` sets each request's part apart
   under `Re request N`, the latest first, as do `luna_report_get` and
-  `luna_session_wait` (`report_text`). Kept in memory only: after a core
-  restart an answer names no request.
+  `luna_session_wait` (`report_text`). A preview with no prompt match is
+  marked `[unmatched]`. Session ties save the count and the open request
+  heads across cores. Older debts without a saved count stay unnumbered.
 - **No reply asked.** A send with `expectReply: false` sets `Owed::no_reply`
   (a later send that asks for one clears it). A turn that answers it wakes the
   caller only with a status word or a message of 400 characters or more;

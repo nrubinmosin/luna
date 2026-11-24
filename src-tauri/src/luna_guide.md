@@ -21,7 +21,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   can open it as a chat between its turns. Opening hands it to the user for good: no longer yours
   to send to, wait on, read, stop or delete; nothing more is owed by it; text still queued for it
   is not delivered; one notice tells you so, and where that text is.
-- `luna_session_list` rows have `id`, `name`, `state`, `turnsEnded` and `askId` where available.
+- `luna_session_list` rows have `id`, `name`, `state`, `turnsEnded` and `askId` where available, plus `parent` if different from you.
   Yours by default; `scope: "all"` lists every session; `ids` selects sessions. Filter by
   state, provider, account, group (I = 1, or `"mine"`) or q (name, folder, account, id).
   Pass `nextCursor` as `cursor` for the next page (50 rows by default).
@@ -82,16 +82,19 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - Helpers and leads use Luna's delegate auto-compaction setting.
 - Use Luna helpers for work that must outlive your turn. Give a standalone prompt and the
   least mode needed. For edits, create a worktree, pass it as `folder` and remove it later.
-  Git refs/config are shared. Folder defaults to yours and must stay outside Luna's tree.
+  Git refs/config are shared. Folder defaults to yours; keep it outside, and never above, Luna's data folder.
 - Wait on the returned `id` (first `afterTurn: 0`, also the default) or end your turn.
-  `sameFolder` counts peers in reach.
-- Use exact modes and see `luna_account_get` for defaults. Codex commits need
-  `danger-full-access`. Windows proxies allow some traffic. `readOnly` still allows Claude
+  `sameFolder` counts peers in reach sharing those files and the git index.
+- Exact mode → CLI config → Luna Auto or Auto-review; unreadable Codex config → closed (`modeFrom`).
+- Codex commits need `danger-full-access`. `readOnly` still allows Claude
   Bash writes and conflicts with write modes and auto-review. `agent` must name an existing Claude agent.
+- Codex `read-only-net` allows reads and network; Windows schannel TLS fails.
+- Codex sandboxing does not prevent data egress; Windows proxies leave some traffic open.
 - Codex loads project config and runs trusted hooks only. `connectors: true` retains account
   integrations. Otherwise unreadable Codex config or managed integrations block the spawn.
   Provider memories are off.
-- Constraints append down the tree (4 KB per spawn, 16 KB total). Identical
+- Constraints are instructions, not permissions; they append (4 KB/spawn, 16 KB total).
+- Identical
   `requestKey` and args replay spawn/send/delete success for an hour in this core
   (128 characters, 64 keys). Failures retry. Changed args are refused.
 - `budgetPct` adds context to notices (0 off); 85% alerts once. `budgetTokens` is deprecated.
@@ -99,17 +102,23 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 ## Getting the answer
 - End your turn for a Luna notice or wait. Short replies are quoted. `Report <path>:1–N` locates
   the report in the full file, with a first-line preview on success. Headers give the count
-  and latest `#N (key)`. An extra #N labels an older preview. `Re request N` sections are newest first.
+  and latest `#N (key)`. An extra #N labels an older preview; `[unmatched]` means no prompt matched.
+  `Re request N` sections are newest first.
 - `[idle; send to resume]` means only a send wakes it. `[send to resume]` follows interruption
   or error. `[resumed after core restart]` means it resumed automatically.
 - `[helpers pending]`, `[job running]` (possibly named) and `[N subagents running]` mean work
   continues; expect news at completion or a fresh turn. Pending leads can signal sooner
   with `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` first (then colon or space).
-  A silent lead gets one wake after its delegates finish.
+  A silent lead gets one wake when delegates finish; silence again is reported as stuck.
+- A helper saying it is waiting proves nothing; check its `state`.
 - Quiet and background-wait notices come once per turn. After 12 turn/job notices per pair
   in 15 min, use waits or reads until a person types.
   Asks still arrive. Recover interrupted native work before relying on it.
 - Wait takes up to 16 ids. Use `turnsEnded` for `afterTurn`. For a helper, exit means deletion.
+  `outcome` is `turn_done`, `waiting`, `exit`, `job_done` (background ended), or `timeout`.
+  With multiple ids, `finished` lists completed ids; `pending` leaves that answer owed.
+  `failed` is a turn error; `stopped` is a Luna stop; `transcriptMissing` means reply unknown.
+  `reportGuessed` marks a report picked without the CLI's final-answer marker.
   Cancellation leaves the answer owed. Read HTML-escaped Claude wait code via `luna_message_list`.
 - A completed wait, `luna_report_get` with `ack: true`, or a full uncut read collects the
   finished answer. Follow cursors for cut messages. Requests before collection share the answer.

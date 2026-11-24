@@ -423,10 +423,11 @@ pub(super) fn owe_from_at(caller: &str, id: &str, baseline: u32, cursor: u64, ha
 /// A caller's requests to one session, by (caller, session): how many it has
 /// made, a spawn being the first, and those the debt that stands now covers,
 /// oldest first. What answers which is read off them (said.rs `Said::asked`).
-/// Kept in memory only: after a core restart an answer names no request.
-#[derive(Default)]
+/// Saved with the session's ties.
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 pub(super) struct Requests {
-    made: u32,
+    pub(super) made: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) open: Vec<Request>,
 }
 
@@ -489,12 +490,17 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
         }
     }
     r.owed.insert(key.clone(), Owed { resumed, no_reply, by_send, since, ..Owed::from(baseline.max(floor), cursor) });
-    let requests = r.requests.entry(key).or_default();
-    // A debt of its own: what earlier ones covered has been answered.
-    if before.is_none() {
+    let requests = if before.is_none() {
+        // What earlier debts covered has been answered.
+        let requests = r.requests.entry(key).or_default();
         requests.open.clear();
-    }
-    if let Some(a) = asked {
+        Some(requests)
+    } else {
+        // Older saves can have a debt with no request history. Keep that
+        // whole debt unnumbered rather than assign a new number partway in.
+        r.requests.get_mut(&key)
+    };
+    if let (Some(a), Some(requests)) = (asked, requests) {
         requests.made += 1;
         requests.open.push(Request { n: requests.made, key: a.key.map(str::to_owned), head: request_head(a.text) });
     }

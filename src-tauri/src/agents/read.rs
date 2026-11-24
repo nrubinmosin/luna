@@ -462,7 +462,7 @@ fn cut_to_max(text: &str) -> Option<String> {
     (n > MAX_TEXT).then(|| {
         let more = n - MAX_TEXT;
         format!(
-            "{}\n\n[cut: {more} more characters; the transcript luna_session_get names has it whole]",
+            "{}\n\n[cut: {more} more characters; transcript via luna_session_get include:[\"paths\"]]",
             text.chars().take(MAX_TEXT).collect::<String>()
         )
     })
@@ -610,6 +610,7 @@ mod tests {
         assert_eq!(r.messages.len(), 1);
         assert!(r.messages[0].text.starts_with("REPORT "), "the report");
         assert!(r.messages[0].text.contains("[cut: 507 more characters;"), "cut at MAX_TEXT like any read");
+        assert!(r.messages[0].text.contains(r#"luna_session_get include:["paths"]"#));
         assert_eq!(r.rest, 1, "the other message it said");
         assert_eq!(r.cursor, whole.len() as u64, "before the line still being written, not the file's end");
 

@@ -676,8 +676,8 @@ Ctrl+Shift+W finds nothing. Nothing redraws when a round brings nothing new.
 
 **Names for the core.** The core knows sessions by id only; the workspace
 tells it every chat's name and board (`chat_names` `{ names, groups }`,
-boards from 0, as the page's bridge sent them), which `luna_session_list`
-names and groups the person's chats by: once the list is read, at every
+boards from 0, as the page's bridge sent them) for names and group filters
+in `luna_session_list`: once the list is read, at every
 change that alters a name or a board (a change that alters neither sends
 nothing), and again to each new core. One the core did not take is sent at
 the next change, or to the next core.

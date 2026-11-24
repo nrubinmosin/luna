@@ -77,7 +77,7 @@ pub(super) struct Said {
 /// A request of a caller's that a debt covers: its number among the caller's
 /// requests to that session (a spawn 1, each send one more), the `requestKey`
 /// it came with, and how its text began, to find the turn it started by.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub(super) struct Request {
     pub(super) n: u32,
     pub(super) key: Option<String>,
@@ -114,15 +114,14 @@ impl Said {
         Said { texts, last_turn: 0, starts: vec![0], ..Said::default() }
     }
 
-    /// These messages as answers to the caller's `requests`: with more than
-    /// one, each message is put down to the latest request whose text started
+    /// These messages as answers to the caller's `requests`: each message is put down to the latest request whose text started
     /// a turn at or before it, found among the prompts by its head, in order.
     /// A message before any found is the request's before the first found (a
     /// spawn's, whose prompt may lie before what was read). None found, none
     /// is put down to any: the requests are still named, not whose is which.
     pub(super) fn asked(mut self, requests: Vec<Request>) -> Said {
         self.re.clear();
-        if requests.len() > 1 {
+        if !requests.is_empty() {
             let mut from = 0;
             let found: Vec<Option<usize>> = requests
                 .iter()

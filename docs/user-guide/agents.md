@@ -447,6 +447,7 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   and then 95% of a usage window, once each per window.
 
 `luna_session_list` shows each helper's ID, name, state, turn count and any ask ID.
+It includes the parent's ID when the parent differs from the caller.
 `luna_session_get` adds the full ask and other core fields. Use `include` with
 `paths` for the transcript, `diagnostics` for activity, context, model and CLI
 details, `settings` for effective flags, and `places` for the caller's line capacity.

@@ -772,11 +772,11 @@ fn quiet_line(who: &str, quiet_ms: u64, past_due_ms: Option<u64>) -> String {
     let quiet = quiet_ms / 60_000;
     match past_due_ms {
         Some(past) => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang; Check luna_message_list with screen: true.",
+            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang. Check luna_message_list with screen: true.",
             past / 60_000
         ),
         None => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min: a command it runs may hang, or simply take long; Check luna_message_list with screen: true."
+            "{who} is mid-turn and has written nothing for {quiet} min: a command it runs may hang, or simply take long. Check luna_message_list with screen: true."
         ),
     }
 }
@@ -839,15 +839,14 @@ fn answering(replies: &Said) -> String {
     }
 }
 
-/// Label the quote only if its report answers an earlier request.
+/// Mark previews whose request is unknown or differs from the header.
 fn begins_re(replies: &Said) -> String {
     let quoted = begins(replies);
-    match replies
-        .re_of(replies.len().saturating_sub(1))
-        .filter(|q| !quoted.is_empty() && replies.requests().last().is_some_and(|latest| latest.n != q.n))
-    {
+    let Some(latest) = replies.requests().last().filter(|_| !quoted.is_empty()) else { return quoted };
+    match replies.re_of(replies.len().saturating_sub(1)) {
+        Some(q) if q.n == latest.n => quoted,
         Some(q) => format!(" #{}{quoted}", q.n),
-        None => quoted,
+        None => format!(" [unmatched]{quoted}"),
     }
 }
 
@@ -978,6 +977,22 @@ mod tests {
     use crate::agents::teardown::forget;
     use crate::agents::test_support::{job_over_helper, notice_for};
     use crate::agents::wait::{reply_text, REPLY_GRACE_MS};
+
+    #[test]
+    fn a_preview_labels_earlier_and_unmatched_requests() {
+        use crate::agents::read::Message;
+        use crate::agents::said::{said_of, Request};
+        let request = |n, head: &str| Request { n, key: None, head: head.into() };
+        let message = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let preview =
+            |prompt, requests| begins_re(&said_of(vec![message("user", prompt), message("assistant", "DONE: first pass")]).asked(requests));
+        let requests = || vec![request(4, "review"), request(5, "merge")];
+        assert_eq!(preview("review", requests()), " #4 \"DONE: first pass\"");
+        assert_eq!(preview("unknown", requests()), " [unmatched] \"DONE: first pass\"");
+        assert_eq!(preview("merge", requests()), " \"DONE: first pass\"");
+        assert_eq!(preview("unknown", vec![request(5, "merge")]), " [unmatched] \"DONE: first pass\"");
+        assert_eq!(preview("unknown", vec![]), " \"DONE: first pass\"");
+    }
 
     #[test]
     fn request_headers_count_and_name_only_the_latest() {

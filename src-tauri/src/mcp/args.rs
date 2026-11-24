@@ -81,12 +81,15 @@ fn fits(key: &str, spec: &Value, v: &Value) -> Result<(), String> {
         }
         return Err(format!("`{key}` takes {}", any.iter().map(kind_of).collect::<Vec<_>>().join(" or ")));
     }
+    if spec["type"] == "array" {
+        let items = v.as_array().ok_or_else(|| format!("`{key}` takes {}", kind_of(spec)))?;
+        return items.iter().try_for_each(|item| fits(key, &spec["items"], item));
+    }
     let ok = match spec["type"].as_str() {
         Some("string") => v.is_string(),
         Some("boolean") => v.is_boolean(),
         Some("integer") => v.is_u64(),
         Some("object") => v.is_object(),
-        Some("array") => v.as_array().is_some_and(|items| items.iter().all(|x| fits(key, &spec["items"], x).is_ok())),
         _ => true,
     };
     if !ok {
@@ -108,7 +111,10 @@ fn kind_of(spec: &Value) -> String {
         Some("boolean") => "true or false".into(),
         Some("integer") => "a whole number, 0 or more".into(),
         Some("object") => "an object".into(),
-        Some("array") if spec["items"]["type"] == "string" => "a list of strings".into(),
+        Some("array") if spec["items"]["type"] == "string" => match spec["items"]["enum"].as_array() {
+            Some(allowed) => format!("a list of: {}", allowed.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")),
+            None => "a list of strings".into(),
+        },
         Some("array") => "a list".into(),
         _ => "a value".into(),
     }

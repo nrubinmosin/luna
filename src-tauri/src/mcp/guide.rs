@@ -55,14 +55,22 @@ pub(super) fn guide_text(topic: Option<&str>) -> Result<String, String> {
     guide_text_as(topic, true)
 }
 
-/// The topic's section, or the offered topics with none. Leads only see
+/// The topic's section, or the offered topics by section with none. Leads only see
 /// topics and guidance for tools they may call.
 pub(super) fn guide_text_as(topic: Option<&str>, persons: bool) -> Result<String, String> {
     let offered: Vec<&str> = TOPICS.iter().map(|(topic, _)| *topic).filter(|t| persons || !PERSONS_ONLY.contains(t)).collect();
-    let Some(topic) = topic.map(str::trim).filter(|t| !t.is_empty()) else {
-        return Ok(format!("Pick a topic: {}", offered.join(", ")));
-    };
     let sections = sections();
+    let Some(topic) = topic.map(str::trim).filter(|t| !t.is_empty()) else {
+        let groups: Vec<String> = sections
+            .iter()
+            .map(|(title, _)| {
+                let topics: Vec<&str> =
+                    TOPICS.iter().filter(|(topic, section)| section == title && offered.contains(topic)).map(|(topic, _)| *topic).collect();
+                format!("{title}: {}", topics.join(", "))
+            })
+            .collect();
+        return Ok(format!("Pick a topic:\n{}", groups.join("\n")));
+    };
     let title = TOPICS.iter().find(|(t, _)| *t == topic && offered.contains(t)).map(|(_, title)| *title);
     let text = title.and_then(|title| sections.iter().find(|(t, _)| *t == title).map(|(_, text)| *text));
     let text = text.ok_or_else(|| format!("no topic {topic:?}; the topics: {}", offered.join(", ")))?;

@@ -381,6 +381,8 @@ pub struct Spawned {
     pub id: String,
     /// Other live sessions in reach working in the same directory, the caller aside.
     pub same_folder: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode_from: Option<&'static str>,
     /// With `account` as a list: the one taken, and why not the ones before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_choice: Option<AccountChoice>,
@@ -632,8 +634,12 @@ mod tests {
 
     #[test]
     fn a_spawn_result_is_an_id_and_count_for_one_account() {
-        let spawned = Spawned { id: "helper".into(), same_folder: 0, account_choice: None };
+        let mut spawned = Spawned { id: "helper".into(), same_folder: 0, mode_from: None, account_choice: None };
         assert_eq!(serde_json::json!(spawned), serde_json::json!({ "id": "helper", "sameFolder": 0 }));
+        for mode in ["cli", "closed", "luna"] {
+            spawned.mode_from = Some(mode);
+            assert_eq!(serde_json::json!(spawned), serde_json::json!({ "id": "helper", "sameFolder": 0, "modeFrom": mode }));
+        }
     }
 
     #[test]

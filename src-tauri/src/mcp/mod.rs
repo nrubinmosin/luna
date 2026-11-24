@@ -616,7 +616,9 @@ mod tests {
         for field in ["folder", "places", "settings", "turnStartedAt"] {
             assert!(core.get(field).is_none() && full.get(field).is_some(), "{field}: {full}");
         }
-        assert_eq!(call(json!({ "id": "include-me", "include": ["unknown"] }))["isError"], true);
+        let invalid = call(json!({ "id": "include-me", "include": ["unknown"] }));
+        assert_eq!(invalid["isError"], true);
+        assert!(invalid["content"][0]["text"].as_str().unwrap().contains("places, settings, paths, diagnostics"), "{invalid}");
         agents::forget("include-me");
     }
 
@@ -852,10 +854,15 @@ mod tests {
             assert!(TOPICS.iter().any(|(topic, _)| *topic == name), "{name} has no topic");
         }
         assert!(INSTRUCTIONS.contains("luna_guide_get") && !INSTRUCTIONS.contains("topics "));
-        // With no topic the index is just the topic names.
+        // With no topic, each line lists the topics that share a section.
         let index = guide_text(None).unwrap();
-        let topics: Vec<&str> = TOPICS.iter().map(|(topic, _)| *topic).collect();
-        assert_eq!(index, format!("Pick a topic: {}", topics.join(", ")));
+        let groups = index.strip_prefix("Pick a topic:\n").unwrap();
+        assert_eq!(groups.lines().count(), sections.len());
+        for (title, _) in &sections {
+            let line = groups.lines().find_map(|l| l.strip_prefix(*title)).unwrap().strip_prefix(": ").unwrap();
+            let topics: Vec<_> = TOPICS.iter().filter(|(_, section)| section == title).map(|(topic, _)| *topic).collect();
+            assert_eq!(line, topics.join(", "));
+        }
         assert!(index.len() < GUIDE.len() / 4);
         assert!(guide_text(Some("weather")).unwrap_err().contains("luna_session_spawn"));
         // Nothing a caller is told names a tool there is not.

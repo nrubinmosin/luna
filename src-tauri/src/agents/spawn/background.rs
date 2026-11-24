@@ -273,7 +273,8 @@ pub(in crate::agents) fn spawn_background(
     if spec.connectors {
         settings["connectors"] = serde_json::json!(true);
     }
-    if let Some(source) = mode_source(&params, &spec) {
+    let mode_from = mode_source(&params, &spec);
+    if let Some(source) = mode_from {
         settings["modeFrom"] = serde_json::json!(source);
     }
     // Kept in the registry too, where `luna_session_get` shows them and every
@@ -329,7 +330,7 @@ pub(in crate::agents) fn spawn_background(
     let same_folder = count_neighbors(&run_in, caller, &[caller, &id]);
     shown(caller, &id, 0);
     owe_asked(caller, &id, 0, 0, &Asked { text: &params.prompt, key: params.request_key.as_deref(), reply: true });
-    Ok(Spawned { id, same_folder, account_choice: None })
+    Ok(Spawned { id, same_folder, mode_from, account_choice: None })
 }
 
 #[cfg(test)]

@@ -117,6 +117,9 @@ pub struct SessionSummary {
     /// What it waits on, by id, for `luna_session_answer`: a background helper's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ask_id: Option<String>,
+    /// The owner if it cannot be inferred from the caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     pub turns_ended: u32,
 }
 
@@ -211,24 +214,26 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
                     return None;
                 }
                 let told = all || is_self(&r, caller, &id) || is_descendant(&r, caller, &id);
-                Some((id, name, told))
+                let parent = k.parent.as_ref().filter(|p| p.as_str() != caller).cloned();
+                Some((id, name, parent, told))
             })
             .collect()
     };
     let wanted = q.state.as_ref().filter(|s| !s.is_empty());
-    let mut matched = rows.into_iter().filter_map(|(id, name, told)| {
+    let mut matched = rows.into_iter().filter_map(|(id, name, parent, told)| {
         let (state, ask) = state_of(&id);
         if wanted.is_some_and(|w| !w.iter().any(|s| s == state)) {
             return None;
         }
-        Some((id, name, told, state, ask))
+        Some((id, name, parent, told, state, ask))
     });
     let mut sessions = Vec::new();
-    for (id, name, told, state, ask) in matched.by_ref().skip(from).take(limit) {
+    for (id, name, parent, told, state, ask) in matched.by_ref().skip(from).take(limit) {
         sessions.push(SessionSummary {
             ask_id: ask.and_then(|a| a.id).filter(|_| told),
             turns_ended: crate::activity::turn_state(&id).map(|t| t.turns_ended).unwrap_or(0),
             name,
+            parent,
             state,
             id,
         });
@@ -494,6 +499,10 @@ mod tests {
             session_list("grp-me", &SessionQuery { ids: Some(vec!["grp-far".into(), "grp-gone".into()]), ..Default::default() }).unwrap();
         assert_eq!(named.sessions.len(), 1);
         assert_eq!(named.unknown, ["grp-gone"]);
+        register("grp-grandkid", Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("grp-kid-0"), false, json!({}));
+        let nested = session_list("grp-me", &SessionQuery { ids: Some(vec!["grp-grandkid".into()]), ..Default::default() }).unwrap();
+        assert_eq!(json!(nested.sessions[0])["parent"], "grp-kid-0");
+        crate::agents::teardown::forget("grp-grandkid");
         for i in 0..3 {
             crate::agents::teardown::forget(&format!("grp-kid-{i}"));
         }
