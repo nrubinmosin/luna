@@ -341,10 +341,16 @@ pub fn session_args(provider: Provider, account_path: &str, folder: &str, role: 
 /// in lies in — in a worktree, the same folder of the project it belongs to
 /// (`<worktree>/src` is `<project>/src`), wherever the worktree itself lies.
 fn folders_of<'a>(lib: &'a LibrarySettings, folder: &str) -> Vec<(&'a LibraryFolder, String)> {
-    let work = crate::checkout::root_of(folder)
-        .and_then(|(root, project)| Path::new(folder).strip_prefix(&root).ok().map(|rel| Path::new(&project).join(rel)))
-        .unwrap_or_else(|| PathBuf::from(folder));
-    folder_slugs(&lib.folders).into_iter().filter(|(f, _)| within(&work, Path::new(&f.path))).collect()
+    let work = crate::checkout::root_of_in_settings(folder, lib.folders.iter().map(|f| f.path.as_str()))
+        .and_then(|(root, project)| Path::new(folder).strip_prefix(&root).ok().map(|rel| Path::new(&project).join(rel)));
+    folder_slugs(&lib.folders)
+        .into_iter()
+        .filter(|(f, _)| {
+            let chosen = Path::new(&f.path);
+            let path = work.as_deref().unwrap_or_else(|| Path::new(folder));
+            within(path, chosen) || crate::checkout::within_settings_root(path, chosen)
+        })
+        .collect()
 }
 
 pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, folder: &str, role: Role) -> SessionSkills {
@@ -555,6 +561,17 @@ mod tests {
         let repo = f.base.join(name);
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         (repo.clone(), LibraryFolder { path: repo.to_string_lossy().into_owned(), skills: given(skills), ..Default::default() })
+    }
+
+    /// The registration Git writes for a worktree in the Codex account.
+    fn codex_worktree(f: &Fixture, repo: &Path) -> PathBuf {
+        let wt = f.account(1).join("worktrees/0a1b/repo");
+        let marker = wt.join(".git");
+        let gitdir = repo.join(".git/worktrees/repo");
+        write_file(&marker, format!("gitdir: {}\n", gitdir.display()).as_bytes()).unwrap();
+        write_file(&gitdir.join("commondir"), b"../..\n").unwrap();
+        write_file(&gitdir.join("gitdir"), format!("{}\n", marker.display()).as_bytes()).unwrap();
+        wt
     }
 
     #[test]
@@ -850,13 +867,28 @@ mod tests {
         let empty = LibrarySettings { folders: vec![LibraryFolder { path: repo_s.clone(), ..Default::default() }], ..Default::default() };
         assert!(folder_args(&f.dirs, &empty, &f.accounts[2], &repo_s).plugins.is_empty(), "a folder giving nothing, no plugin");
 
-        // Codex, in a worktree it made of the repository: known by its `.git` file.
-        let wt = f.account(1).join("worktrees/0a1b/repo");
-        write_file(&wt.join(".git"), format!("gitdir: {}\n", repo.join(".git").join("worktrees").join("repo").display()).as_bytes())
-            .unwrap();
+        // Codex, in a registered worktree it made of the repository.
+        let wt = codex_worktree(&f, &repo);
         let codex = ["-c".to_string(), "plugins.repo@rm-luna.enabled=true".to_string()];
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &repo_s).args, codex);
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &wt.to_string_lossy()).args, codex);
+        #[cfg(windows)]
+        if let Some(short) = crate::checkout::short_alias(&f.base) {
+            let short = short.join(repo.file_name().unwrap());
+            let mut alternate = lib.clone();
+            alternate.folders[0].path = short.to_string_lossy().into_owned();
+            assert_eq!(folder_args(&f.dirs, &alternate, &f.accounts[1], &repo_s).args, codex);
+            assert_eq!(folder_args(&f.dirs, &alternate, &f.accounts[1], &wt.to_string_lossy()).args, codex);
+        }
+        #[cfg(any(unix, windows))]
+        {
+            let alias = f.base.join("repo-parent-alias");
+            link_dir(&alias, repo.parent().unwrap());
+            let mut aliased = lib.clone();
+            aliased.folders[0].path = alias.join(repo.file_name().unwrap()).to_string_lossy().into_owned();
+            assert_eq!(folder_args(&f.dirs, &aliased, &f.accounts[1], &wt.join("src").to_string_lossy()).args, codex);
+            unlink_dir(&alias);
+        }
         f.run(&empty, &mut ledger, true);
         codex_manifests(&empty, &f.accounts, &mut ledger);
         assert!(folder_args(&f.dirs, &empty, &f.accounts[1], &repo_s).args.is_empty(), "no plugin, nothing to turn on");
@@ -1100,9 +1132,7 @@ mod tests {
         let lib = LibrarySettings { skills: skills(&["review"]), folders: vec![src], ..Default::default() };
         f.run(&lib, &mut Ledger::default(), true);
         // A Codex worktree of it, in the account's own folder.
-        let wt = f.account(1).join("worktrees/0a1b/repo");
-        write_file(&wt.join(".git"), format!("gitdir: {}\n", repo.join(".git").join("worktrees").join("repo").display()).as_bytes())
-            .unwrap();
+        let wt = codex_worktree(&f, &repo);
         std::fs::create_dir_all(wt.join("src")).unwrap();
         let review = f.account(1).join("skills/review/SKILL.md").to_string_lossy().replace('\\', "/");
         let hide = ["-c".to_string(), format!("skills.config=[{{path=\"{review}\",enabled=false}}]")];

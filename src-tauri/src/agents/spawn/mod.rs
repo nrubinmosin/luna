@@ -445,9 +445,9 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     }
     // A folder inside a CLI-made worktree files the helper under the
     // worktree's project, like the chat it came from; it runs in that
-    // worktree. The project its `.git` file leads to is never a share the
-    // worktree is not on (`checkout::repo_of_linked`), and is refused in
-    // Luna's folder in turn.
+    // worktree. Classification checks the Git registration on plain local
+    // paths (`checkout::project_of`), and the project is refused in Luna's
+    // folder in turn.
     let mut in_worktree = None;
     if let Some(project) = params.folder.as_deref().and_then(crate::checkout::project_of) {
         refuse_luna(&project)?;

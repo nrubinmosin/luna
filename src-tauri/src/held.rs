@@ -65,6 +65,25 @@ impl Dir {
         Ok(Dir { file })
     }
 
+    /// Starts an identity walk at a validated filesystem root.
+    pub(crate) fn comparison_root(path: &Path) -> io::Result<Dir> {
+        let file = sys::comparison_root(path)?;
+        sys::plain_dir(&file).map_err(|_| not_plain(&path.to_string_lossy()))?;
+        Ok(Dir { file })
+    }
+
+    /// Opens a single normal path component with only the access needed to
+    /// walk and compare directories. The caller supplies the component.
+    pub(crate) fn comparison_child(&self, name: &str) -> io::Result<Dir> {
+        let file = sys::comparison_child(&self.file, name)?;
+        sys::plain_dir(&file).map_err(|_| not_plain(name))?;
+        Ok(Dir { file })
+    }
+
+    pub(crate) fn same_directory(&self, other: &Dir) -> bool {
+        sys::same_directory(&self.file, &other.file)
+    }
+
     /// The folder's identity on its drive.
     pub fn id(&self) -> io::Result<String> {
         sys::id(&self.file)
@@ -207,6 +226,35 @@ mod sys {
     pub fn open_path(path: &Path, follow: bool) -> io::Result<File> {
         let flags = FILE_FLAG_BACKUP_SEMANTICS.0 | if follow { 0 } else { FILE_FLAG_OPEN_REPARSE_POINT.0 };
         std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0).custom_flags(flags).open(path)
+    }
+
+    pub fn comparison_root(path: &Path) -> io::Result<File> {
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_TRAVERSE.0 | FILE_READ_ATTRIBUTES.0)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+            .open(path)
+    }
+
+    pub fn comparison_child(parent: &File, name: &str) -> io::Result<File> {
+        create(
+            parent,
+            &wide(name),
+            FILE_TRAVERSE.0 | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            None,
+        )
+    }
+
+    pub fn same_directory(a: &File, b: &File) -> bool {
+        use crate::desktop::volume;
+        match (volume::directory_stamp(a), volume::directory_stamp(b)) {
+            (Some((_, Some(a))), Some((_, Some(b)))) => a == b,
+            (Some((a, _)), Some((b, _))) => a == b,
+            _ => false,
+        }
     }
 
     fn attributes(file: &File) -> io::Result<u32> {
@@ -561,6 +609,26 @@ mod sys {
         std::fs::OpenOptions::new().read(true).custom_flags(flags).open(path)
     }
 
+    #[cfg(target_os = "linux")]
+    const COMPARISON_ACCESS: libc::c_int = libc::O_PATH;
+    #[cfg(not(target_os = "linux"))]
+    const COMPARISON_ACCESS: libc::c_int = libc::O_RDONLY;
+    const COMPARISON_FLAGS: libc::c_int = COMPARISON_ACCESS | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+
+    pub fn comparison_root(path: &Path) -> io::Result<File> {
+        std::fs::OpenOptions::new().read(true).custom_flags(COMPARISON_FLAGS).open(path)
+    }
+
+    pub fn comparison_child(parent: &File, name: &str) -> io::Result<File> {
+        let name = c(name)?;
+        // SAFETY: the held folder's descriptor and a NUL-terminated name.
+        own(unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), COMPARISON_FLAGS) })
+    }
+
+    pub fn same_directory(a: &File, b: &File) -> bool {
+        matches!((a.metadata(), b.metadata()), (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino())
+    }
+
     pub fn plain_dir(file: &File) -> io::Result<()> {
         if !file.metadata()?.is_dir() {
             return Err(io::Error::other("not a plain folder"));
@@ -769,6 +837,15 @@ mod sys {
     }
     pub fn open_path(_: &Path, _: bool) -> io::Result<File> {
         none()
+    }
+    pub fn comparison_root(_: &Path) -> io::Result<File> {
+        none()
+    }
+    pub fn comparison_child(_: &File, _: &str) -> io::Result<File> {
+        none()
+    }
+    pub fn same_directory(_: &File, _: &File) -> bool {
+        false
     }
     pub fn plain_dir(_: &File) -> io::Result<()> {
         none()

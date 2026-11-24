@@ -186,16 +186,16 @@ fn folder_under_root(folder: &str, roots: &[String]) -> bool {
     under_root(project.as_deref().unwrap_or(folder), roots)
 }
 
-/// As Codex compares project keys (`same_project`): either separator and any
-/// case on Windows, the path as it is elsewhere.
+/// Use Codex's project key spelling rules and recognize other spellings
+/// of checked, existing directories by identity.
 fn under_root(folder: &str, roots: &[String]) -> bool {
     let sep = if cfg!(windows) { '\\' } else { '/' };
-    let folder = crate::paths::path_key(folder);
-    roots
-        .iter()
-        .map(|r| crate::paths::path_key(r))
-        .filter(|r| !r.is_empty())
-        .any(|r| folder == r || folder.starts_with(&format!("{r}{sep}")))
+    let key = crate::paths::path_key(folder);
+    roots.iter().map(|root| (root, crate::paths::path_key(root))).filter(|(_, root_key)| !root_key.is_empty()).any(|(root, root_key)| {
+        key == root_key
+            || key.starts_with(&format!("{root_key}{sep}"))
+            || crate::checkout::within_plain_root(Path::new(folder), Path::new(root))
+    })
 }
 
 pub fn codex_trusted_roots() -> Vec<String> {
@@ -238,6 +238,37 @@ mod tests {
         assert!(!under_root("/home/u/projects\\app", &roots), "a backslash is part of a name");
         assert!(!under_root("/home/u/projects2/app", &roots), "a sibling that shares the prefix");
         assert!(!under_root("/home/u/projects/app", &[String::new()]));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_directory_replaced_by_a_link_during_the_trust_check_is_refused() {
+        use crate::checkout::{before_comparison_open, link_dir};
+
+        for (name, swap_root, use_child) in [("folder", false, false), ("ancestor", false, true), ("root", true, false)] {
+            let base = temp(name);
+            let trusted = base.join("trusted");
+            let outside = base.join("outside");
+            std::fs::create_dir_all(trusted.join("child")).unwrap();
+            std::fs::create_dir_all(outside.join("child")).unwrap();
+            let candidate = if use_child { outside.join("child") } else { outside.clone() };
+            let roots = [trusted.to_str().unwrap().to_owned()];
+            let (entry, target) = if swap_root { (trusted, outside) } else { (outside, trusted) };
+            let swapped = entry.clone();
+            before_comparison_open(entry, move || {
+                std::fs::rename(&swapped, swapped.with_extension("before")).unwrap();
+                link_dir(&swapped, &target);
+            });
+
+            assert!(!under_root(candidate.to_str().unwrap(), &roots), "{name}");
+            let link = base.join(if swap_root { "trusted" } else { "outside" });
+            assert!(crate::boundary::is_link(&std::fs::symlink_metadata(&link).unwrap()), "{name}: the swap ran");
+            #[cfg(windows)]
+            std::fs::remove_dir(link).unwrap();
+            #[cfg(unix)]
+            std::fs::remove_file(link).unwrap();
+            std::fs::remove_dir_all(base).unwrap();
+        }
     }
 
     #[test]
@@ -293,8 +324,14 @@ mod tests {
         assert!(!folder_under_root(&worktree, &trusted_roots), "a one-way pointer cannot borrow the Settings grant");
         std::fs::write(gitdir.join("gitdir"), format!("{worktree}/.git\n")).unwrap();
         assert!(folder_under_root(&worktree, &trusted_roots));
-        assert_eq!(granted_key(&grant, &sub), Some(native(&repo)));
-        assert_eq!(override_key(&sub), override_key(&repo));
+        let granted = granted_key(&grant, &sub).expect("the worktree uses the approved repository");
+        assert!(crate::checkout::same_place(&granted, &repo));
+        assert!(crate::checkout::same_place(&override_key(&sub), &override_key(&repo)));
+        #[cfg(windows)]
+        if let Some(short_root) = crate::checkout::short_alias(&root) {
+            let short_repo = short_root.join("repo");
+            assert!(folder_under_root(&worktree, &[short_repo.to_string_lossy().into_owned()]));
+        }
         assert!(Decisions::of(&acc, &sub, Some(&override_key(&sub))).layer_trusted(&worktree, &worktree, &sub));
         let _ = std::fs::remove_dir_all(&root);
     }

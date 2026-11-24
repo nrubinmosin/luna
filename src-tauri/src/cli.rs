@@ -49,6 +49,7 @@ mod canary;
 mod choice;
 mod in_use;
 mod probe;
+pub(crate) use probe::Tree as ProbeTree;
 mod state;
 
 #[cfg(test)]

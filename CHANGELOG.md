@@ -218,6 +218,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- The core checks ignore rules for a linked worktree using a private Git
+  directory with an empty index and object directory. A tracked path in
+  an ignored directory counts as ignored. An absent sparse `.gitignore`
+  from the index is not seen. A repository override of `core.ignoreCase`
+  can differ from Luna's platform default. The core caps copied `info/exclude`
+  and personal excludes at 4 MiB each. Ordinary Git may also
+  take `core.excludesFile` from repository or system config. A scrubbed
+  `GIT_CONFIG_GLOBAL` override or refused Windows network home makes ignore
+  classification fall back to the checkout.
+- Worktree classification verifies Git registration with bounded, no-follow
+  marker reads and compares registered directories by identity, including
+  Windows short names. Rollout matching and library skills can resolve aliases
+  along explicitly configured accounts and project roots. On Windows,
+  Luna checks that each target is on a local drive.
 - `luna_account_get` and `luna_session_spawn` hold the `folder` they are
   given to the checks a window's folder gets, absolute with no `.` or `..`
   part and no device or verbatim prefix, before anything there is read or
