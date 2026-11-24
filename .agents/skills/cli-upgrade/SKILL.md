@@ -63,6 +63,7 @@ it from running.
 | Headless stream events (Claude Code's `-p` stream) | `background/events.rs` | recorded events in its tests |
 | Transcripts / rollouts | `claude/session/` (`transcript.rs`, `ending.rs`, `titles.rs`), `codex/session/` (`read.rs`, `rollouts.rs`, `scan.rs`) | fixtures "as version X writes it" |
 | Screen: dialogs, lists, composer, title | `pty/screen.rs`, `agents/ask.rs` | screen fixtures |
+| The composer's draft-stash mark and toast (2.1.330: `draft stashed`, `draft restored`; 2.1.325: `› stashed`, `Draft restored`) | `pty/screen.rs` `composer_on`, `agents/delivery.rs` `stash_and_type` | screen fixtures; grep the new binary for both phrases (`grep -a -o`), as a reworded mark makes Luna miss a person's stash and a later Ctrl+S overwrites it (`docs/cli-compatibility.md` has the row) |
 | Trust prompts, defaults, models, limits | `*/trust.rs`, `*/defaults.rs`, `*/models.rs`, `*/limits.rs` | unit tests |
 | Words a session dies of that are not the version's (a sign-in, a usage limit, the network, a worktree outside git) | `cli/canary.rs` `NOT_THE_VERSION`, `OUTSIDE_ANYWHERE` | canary tests, each line as the binary carries it; grep the new binary for every phrase (`grep -a -o`), as a reworded one makes the canary roll back a sound version |
 | Download, layout and the floor | `claude/cli.rs`, `codex/cli.rs`, `cli.rs` (`floor`) | unit tests |
