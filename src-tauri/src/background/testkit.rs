@@ -115,30 +115,6 @@ pub fn hold_question_for_test(id: &str) {
     });
 }
 
-/// `luna_session_stop`: what was queued is dropped.
-#[cfg(test)]
-pub fn killed_for_test(id: &str) {
-    stop(lock().entries.get_mut(id).unwrap());
-}
-
-/// What `helpers.json` keeps of it, written and read back as a core started later
-/// finds it.
-#[cfg(test)]
-pub fn across_a_core_for_test(id: &str) {
-    let bytes = serde_json::to_vec(&snapshot().into_iter().filter(|s| s.id == id).collect::<Vec<Saved>>()).unwrap();
-    let saved: Vec<Saved> = serde_json::from_slice(&bytes).unwrap();
-    let e = taken_up(saved.into_iter().next().unwrap());
-    lock().entries.insert(id.to_string(), e);
-}
-
-/// `resume`: what was kept undelivered goes on in a turn by itself.
-#[cfg(test)]
-pub fn resume_for_test(id: &str) {
-    let mut r = lock();
-    let e = r.entries.get_mut(id).unwrap();
-    e.in_flight = std::mem::take(&mut e.undelivered);
-}
-
 #[cfg(test)]
 pub fn lose_for_test(id: &str, from: &str, text: &str) {
     lock().entries.get_mut(id).unwrap().undelivered.push(Queued::new(Some(from.to_string()), text.to_string()));

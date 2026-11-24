@@ -697,8 +697,8 @@ turn, stopped on a prompt (once per stop) or exited.
 - **Quota news.** An account a caller's live helpers run on reaching 90%, then
   95%, of a window, once per level per window, kept in
   `<data>/quota-told.json`.
-- **Context.** The pane meter and `luna_session_get` share the same context
-  reading (`background::Context`). Its basis is the CLI's estimated
+- **Context.** The pane meter and on-demand `luna_session_get` are the two
+  places Luna shows context use (`background::Context`). Its basis is the CLI's estimated
   auto-compaction point where resolved, and otherwise the model window.
 - **The log.** Each notice's line names, per session told of, what became of
   it (`kind_of`, the `Settled` variant) and how long it was held for company

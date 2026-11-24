@@ -74,7 +74,12 @@ pub struct Context {
 
 impl Context {
     /// The transcript or rollout's context, once it has recorded an answer.
-    pub(crate) fn read(path: &std::path::Path, id: &str, provider: Provider, launch: Option<&crate::to_compact::Launch>) -> Option<(Self, Option<u64>)> {
+    pub(crate) fn read(
+        path: &std::path::Path,
+        id: &str,
+        provider: Provider,
+        launch: Option<&crate::to_compact::Launch>,
+    ) -> Option<(Self, Option<u64>)> {
         use crate::to_compact::Sample;
         let (tokens, window, sample) = match provider {
             Provider::Claude => {
@@ -545,7 +550,11 @@ mod tests {
             "\n",
         );
         std::fs::write(&codex, started).unwrap();
-        assert_eq!(Context::read(&codex, "context-test", Provider::Codex, None).map(|(c, _)| c), None, "a count of rate limits alone: no turn yet");
+        assert_eq!(
+            Context::read(&codex, "context-test", Provider::Codex, None).map(|(c, _)| c),
+            None,
+            "a count of rate limits alone: no turn yet"
+        );
         // Reasoning is not kept in the window, as Codex itself counts it.
         let count = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":90000},"last_token_usage":{"input_tokens":64000,"output_tokens":700,"reasoning_output_tokens":100,"total_tokens":64700},"model_context_window":258400}}}"#;
         std::fs::write(&codex, format!("{started}{count}\n")).unwrap();

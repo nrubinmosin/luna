@@ -129,6 +129,8 @@ auto-compaction limit when Luna can resolve it, and the share of the model
 window otherwise. The meter tooltip names the basis and shows estimated
 tokens to auto-compaction when available. `luna_session_get` names the
 basis as `autoCompact` or `model` and gives the denominator in `window`.
+Codex reads compaction settings at launch. Claude Code can reload them
+during the session.
 
 None of the text can be changed: a notice is status, and its words are what a
 model acts on. What arrives can be shaped: `expectReply: false` on a send, a
