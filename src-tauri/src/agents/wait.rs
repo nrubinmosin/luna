@@ -386,10 +386,8 @@ fn wait_for(
             // Read from where the caller's question found the transcript, once
             // a move to another is seen to (`moved_to`).
             transcript_path(pty, id);
-            let (asked_at, debt_cut) = {
-                let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                r.owed.get(&key).map_or((None, false), |o| (Some(o.cursor), o.cut_short))
-            };
+            let debt = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
+            let debt_cut = debt.is_some_and(|o| o.cut_short);
             // A core's going stopped the turn (the helper's word or the debt's, a
             // chat brought back): as the notice says it, and with what it said.
             let cut = says && (crate::background::cut_short(id) || debt_cut);
@@ -406,9 +404,12 @@ fn wait_for(
             // A turn that stopped on an error has said all it will.
             // Which of the caller's requests each answer is to, as a notice says it.
             let requests = crate::agents::owed::requests_of(caller, id);
-            let reply_now = |stopped: bool| reply_of(pty, id, known.provider, asked_at, alone, stopped, requests.clone());
+            let reply_now = |stopped: bool| reply_of(pty, id, known.provider, debt, alone, stopped, requests.clone());
             let mut reply = if outcome == "job_done" {
-                asked_at.and_then(|at| reply_with_report(id, &said_since(pty, id, known.provider, at).asked(requests.clone()), alone))
+                debt.and_then(|o| {
+                    let replies = said_since(pty, id, known.provider, o.cursor).asked_after(requests.clone(), o.request_match);
+                    reply_with_report(id, &replies, alone)
+                })
             } else if says {
                 reply_now(failed.is_some() || halted.is_some())
             } else {
@@ -765,13 +766,13 @@ fn reply_of(
     pty: &crate::pty::PtyManager,
     id: &str,
     provider: Provider,
-    asked_at: Option<u64>,
+    debt: Option<Owed>,
     cut: bool,
     stopped: bool,
     requests: Vec<crate::agents::said::Request>,
 ) -> Option<(String, ReportPart)> {
-    let replies = match asked_at {
-        Some(at) => replies_since(pty, id, provider, at, stopped).asked(requests),
+    let replies = match debt {
+        Some(o) => replies_since(pty, id, provider, o.cursor, stopped).asked_after(requests, o.request_match),
         None => Said::one_turn(replies_since(pty, id, provider, 0, false).texts.pop().into_iter().collect()),
     };
     reply_with_report(id, &replies, cut)

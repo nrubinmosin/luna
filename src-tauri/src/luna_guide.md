@@ -94,15 +94,14 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   integrations. Otherwise unreadable Codex config or managed integrations block the spawn.
   Provider memories are off.
 - Constraints are instructions, not permissions; they append (4 KB/spawn, 16 KB total).
-- Identical
-  `requestKey` and args replay spawn/send/delete success for an hour in this core
+- Identical `requestKey` and args replay spawn/send/delete success for an hour in this core
   (128 characters, 64 keys). Failures retry. Changed args are refused.
 - `budgetPct` adds context to notices (0 off); 85% alerts once. `budgetTokens` is deprecated.
 
 ## Getting the answer
 - End your turn for a Luna notice or wait. Short replies are quoted. `Report <path>:1–N` locates
   the report in the full file, with a first-line preview on success. Headers give the count
-  and latest `#N (key)`. An extra #N labels an older preview; `[unmatched]` means no prompt matched.
+  and latest `#N (key)`. An extra #N labels an older preview; `[unmatched]` means no ordinary prompt matched.
   `Re request N` sections are newest first.
 - `[idle; send to resume]` means only a send wakes it. `[send to resume]` follows interruption
   or error. `[resumed after core restart]` means it resumed automatically.

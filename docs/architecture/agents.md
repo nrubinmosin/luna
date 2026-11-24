@@ -694,8 +694,10 @@ turn, stopped on a prompt (once per stop) or exited.
   (`answering`, `begins_re`), and `answer_text` sets each request's part apart
   under `Re request N`, the latest first, as do `luna_report_get` and
   `luna_session_wait` (`report_text`). A preview with no prompt match is
-  marked `[unmatched]`. Session ties save the count and the open request
-  heads across cores. Older debts without a saved count stay unnumbered.
+  marked `[unmatched]` when there are multiple ordinary prompts. A pending
+  reply carries its prompt match past the read cursor. Session ties save the
+  count, open request heads, and pending match. A legacy debt stays
+  unnumbered until settled. Legacy or downgraded numbering may repeat once.
 - **No reply asked.** A send with `expectReply: false` sets `Owed::no_reply`
   (a later send that asks for one clears it). A turn that answers it wakes the
   caller only with a status word or a message of 400 characters or more;

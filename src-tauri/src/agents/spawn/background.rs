@@ -240,6 +240,7 @@ pub(in crate::agents) fn spawn_background(
     in_worktree: Option<String>,
     request: u64,
     constraints: Vec<crate::agents::Constraint>,
+    start: impl FnOnce(&str, crate::background::Spec, &str, Option<u64>) -> Result<(), String>,
 ) -> Result<Spawned, String> {
     let provider = if params.provider.as_deref() == Some("codex") { Provider::Codex } else { Provider::Claude };
     let project = params.folder.clone().unwrap_or_default();
@@ -310,7 +311,7 @@ pub(in crate::agents) fn spawn_background(
         forget(&id);
         return Err(e);
     }
-    if let Err(e) = crate::background::start_on(&id, spec, &params.prompt, Some(request)) {
+    if let Err(e) = start(&id, spec, &params.prompt, Some(request)) {
         forget(&id);
         return Err(e);
     }
@@ -337,6 +338,43 @@ pub(in crate::agents) fn spawn_background(
 mod tests {
     use super::*;
     use crate::agents::spawn::SpawnParams;
+
+    #[test]
+    fn the_spawn_result_echoes_the_mode_that_reaches_launch() {
+        use crate::agents::test_support::{spawn_taken, spawns_to_myself};
+        let _spawns = spawns_to_myself();
+        crate::codex::config::use_empty_machine_layers_for_test();
+        let root = std::env::temp_dir().join(format!("luna-spawn-mode-result-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (caller, request) = ("spawn-mode-result", 9_811_020);
+        for (config, echo, mode) in [
+            ("", "luna", "workspace-write"),
+            ("sandbox_mode = \"read-only\"\n", "cli", "codex"),
+            ("approval_policy = \"sometimes\"\n", "closed", "read-only"),
+        ] {
+            std::fs::write(root.join("config.toml"), config).unwrap();
+            reg().lock().unwrap().spawns.insert(request, spawn_taken(request, caller, None, false));
+            let params = SpawnParams { provider: Some("codex".into()), prompt: "review".into(), ..Default::default() };
+            let spawned = spawn_background(
+                caller,
+                params,
+                root.to_string_lossy().into_owned(),
+                None,
+                request,
+                Vec::new(),
+                |id, spec, prompt, promise| {
+                    assert_eq!((spec.mode.as_str(), prompt, promise), (mode, "review", Some(request)));
+                    assert_eq!(reg().lock().unwrap().known[id].settings["modeFrom"], echo);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(serde_json::json!(spawned)["modeFrom"], echo);
+            forget(&spawned.id);
+            reg().lock().unwrap().spawns.remove(&request);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn read_only_net_goes_with_never_and_not_with_auto_review() {

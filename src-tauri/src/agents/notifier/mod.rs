@@ -91,8 +91,8 @@ pub(super) enum Settled {
     Answered,
     /// A turn ended, but the session left a job running in the background;
     /// owed on from this turn count and transcript end, for that job's end or
-    /// a turn of its own.
-    Pending(u32, u64),
+    /// a turn of its own. Keep the last prompt match across that cursor.
+    Pending(u32, u64, Option<u32>),
     /// A turn ended but is not settled — processes still at work, or no
     /// reply in the transcript yet: nothing to say, start the grace from now.
     Hold(u32),
@@ -910,8 +910,8 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
                 o.told_waiting = true;
             }
         }
-        Settled::Pending(ended, cursor) => {
-            r.owed.insert(key, Owed::pending(ended, cursor));
+        Settled::Pending(ended, cursor, request_match) => {
+            r.owed.insert(key, Owed { request_match, ..Owed::pending(ended, cursor) });
         }
         Settled::Asked(ask) => {
             if let Some(o) = r.owed.get_mut(&key) {
@@ -1101,7 +1101,7 @@ mod tests {
         crate::background::left_for_test("lj-s", &[("tail.exe", 22104)]);
         let mut first = Owed { rev: o.rev, ..Owed::from(2, o.cursor) };
         first.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
-        let Some((Some(text), Settled::Pending(3, _))) = line(first) else { panic!("not done yet") };
+        let Some((Some(text), Settled::Pending(3, ..))) = line(first) else { panic!("not done yet") };
         assert!(text.contains("NOT done yet [job running: tail.exe (pid 22104)]"), "{text}");
         // Told: still a job, nothing more to say, and no end for a wait either.
         let told = Owed { told_pending: true, ..o };
@@ -1286,7 +1286,7 @@ mod tests {
     #[test]
     fn the_breaker_counts_turn_ends_and_not_prompts() {
         assert!(counts_for_breaker(&Settled::Answered));
-        assert!(counts_for_breaker(&Settled::Pending(1, 0)));
+        assert!(counts_for_breaker(&Settled::Pending(1, 0, None)));
         assert!(!counts_for_breaker(&Settled::Waiting), "a busy helper asks often, and holds until answered");
         assert!(!counts_for_breaker(&Settled::Asked(1)));
         assert!(!counts_for_breaker(&Settled::Exited));

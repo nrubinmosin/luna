@@ -181,8 +181,8 @@ included. Checked by `context_page.rs`.
 | `guide-index` | 449 | 112 |
 | `guide-sessions` | 4,793 | 1,198 |
 | `guide-accounts` | 1,284 | 321 |
-| `guide-spawning` | 1,540 | 385 |
-| `guide-getting` | 1,905 | 476 |
+| `guide-spawning` | 1,538 | 385 |
+| `guide-getting` | 1,914 | 479 |
 | `guide-answering` | 2,705 | 676 |
 | `guide-restart` | 1,073 | 268 |
 | `guide-working` | 2,246 | 562 |

@@ -427,8 +427,8 @@ pub(in crate::agents) fn notice_line(
                 if o.no_reply && plain && !worth_waking(&said, false, true) {
                     return Some((None, Settled::Unasked));
                 }
-                let said = said.asked(requests_of(caller, id));
-                let quoted = if failed.is_some() { String::new() } else { begins_re(&said) };
+                let said = said.asked_after(requests_of(caller, id), o.request_match);
+                let quoted = if failed.is_some() { String::new() } else { begins_re(&said, o.told_pending) };
                 let n = said.len();
                 let messages = if n == 1 { "1 message".to_string() } else { format!("{n} messages") };
                 // Short enough, what it said is the notice's, and no file.
@@ -457,8 +457,8 @@ pub(in crate::agents) fn notice_line(
         let failed = if cut { None } else { failure_of(pty, id, k.provider) };
         // Stopped by Luna (a stop, an interrupt): no error, and not finished.
         let halted = if cut { None } else { crate::background::stop_of(id) };
-        let replies =
-            replies_since(pty, id, k.provider, o.cursor, cut || failed.is_some() || halted.is_some()).asked(requests_of(caller, id));
+        let replies = replies_since(pty, id, k.provider, o.cursor, cut || failed.is_some() || halted.is_some())
+            .asked_after(requests_of(caller, id), o.request_match);
         let settle_ms = if background {
             BACKGROUND_GRACE_MS
         } else if replies.is_empty() {
@@ -482,7 +482,11 @@ pub(in crate::agents) fn notice_line(
         // caller asked is still the caller's. A lead's wake below goes by that
         // last turn.
         let silent = replies.is_empty();
-        let replies = if silent { replies_since(pty, id, k.provider, o.cursor, true).asked(requests_of(caller, id)) } else { replies };
+        let replies = if silent {
+            replies_since(pty, id, k.provider, o.cursor, true).asked_after(requests_of(caller, id), o.request_match)
+        } else {
+            replies
+        };
         let parent = k.parent.as_deref() == Some(caller);
         let lost = undelivered_for(id, caller, parent);
         let text = match (replies.is_empty(), lost.is_empty()) {
@@ -545,7 +549,7 @@ pub(in crate::agents) fn notice_line(
                 Settled::Answered,
             ));
         }
-        let reply = if inline.is_some() { reply } else { format!("{reply}{}", begins_re(&replies)) };
+        let reply = if inline.is_some() { reply } else { format!("{reply}{}", begins_re(&replies, o.told_pending)) };
         let lead = is_lead(k);
         if background || waits {
             if lead {
@@ -578,7 +582,7 @@ pub(in crate::agents) fn notice_line(
             } else {
                 format!("{who} is NOT done yet {what}. It ended a turn{reply}.")
             };
-            return Some((Some(line), Settled::Pending(ended, transcript_end(id))));
+            return Some((Some(line), Settled::Pending(ended, transcript_end(id), replies.last_request().or(o.request_match))));
         }
         // Woken to go on (`wake_lead`) and not a word since: it is stuck, or
         // takes no notice of Luna's; once, as this settles the debt.
@@ -840,13 +844,27 @@ fn answering(replies: &Said) -> String {
 }
 
 /// Mark previews whose request is unknown or differs from the header.
-fn begins_re(replies: &Said) -> String {
+fn begins_re(replies: &Said, already_pending: bool) -> String {
     let quoted = begins(replies);
-    let Some(latest) = replies.requests().last().filter(|_| !quoted.is_empty()) else { return quoted };
-    match replies.re_of(replies.len().saturating_sub(1)) {
-        Some(q) if q.n == latest.n => quoted,
-        Some(q) => format!(" #{}{quoted}", q.n),
-        None => format!(" [unmatched]{quoted}"),
+    let requests = replies.requests();
+    if quoted.is_empty() || requests.len() <= 1 {
+        return quoted;
+    }
+    match replies.last_request() {
+        Some(n) if requests.last().is_some_and(|q| q.n != n) => format!(" #{n}{quoted}"),
+        // Claude's reader skips native command records, so their absence
+        // cannot tell us whether the reply belongs to the command. A pending
+        // reply may also begin past its prompt, especially after an old save.
+        None if !already_pending
+            && !requests.iter().any(|q| {
+                q.head.starts_with("<command-name")
+                    || q.head.starts_with("<local-command")
+                    || crate::agents::command_prefix(&q.head).is_some()
+            }) =>
+        {
+            format!(" [unmatched]{quoted}")
+        }
+        _ => quoted,
     }
 }
 
@@ -984,14 +1002,77 @@ mod tests {
         use crate::agents::said::{said_of, Request};
         let request = |n, head: &str| Request { n, key: None, head: head.into() };
         let message = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
-        let preview =
-            |prompt, requests| begins_re(&said_of(vec![message("user", prompt), message("assistant", "DONE: first pass")]).asked(requests));
+        let preview = |prompt, requests| {
+            begins_re(&said_of(vec![message("user", prompt), message("assistant", "DONE: first pass")]).asked(requests), false)
+        };
         let requests = || vec![request(4, "review"), request(5, "merge")];
         assert_eq!(preview("review", requests()), " #4 \"DONE: first pass\"");
         assert_eq!(preview("unknown", requests()), " [unmatched] \"DONE: first pass\"");
         assert_eq!(preview("merge", requests()), " \"DONE: first pass\"");
-        assert_eq!(preview("unknown", vec![request(5, "merge")]), " [unmatched] \"DONE: first pass\"");
+        assert_eq!(preview("unknown", vec![request(5, "merge")]), " \"DONE: first pass\"");
+        assert_eq!(preview("unknown", vec![request(4, "review"), request(5, "<command-name>/brief")]), " \"DONE: first pass\"");
         assert_eq!(preview("unknown", vec![]), " \"DONE: first pass\"");
+    }
+
+    #[test]
+    fn a_pending_answer_keeps_its_request_past_the_prompt() {
+        use crate::agents::notifier::settle_told;
+        use crate::agents::owed::{owe_asked, shown, Asked};
+        for delivery in ["notice", "wait", "restart"] {
+            let [caller, id, child] = ["caller", "helper", "child"].map(|s| format!("pending-match-{delivery}-{s}"));
+            let (caller, id, child) = (caller.as_str(), id.as_str(), child.as_str());
+            let folder = "C:/p";
+            let account = "C:/acc/anthropic/one";
+            register(caller, Provider::Claude, folder, account, None, true, serde_json::json!({}));
+            register(id, Provider::Claude, folder, account, Some(caller), false, serde_json::json!({ "background": true }));
+            crate::background::idle_for_test(id, Provider::Claude, 3, false);
+            let path = std::env::temp_dir().join(format!("luna-{id}-{}.jsonl", std::process::id()));
+            let before = format!("{}{}", prompt_line("review the patch"), said_line("Still reviewing."));
+            std::fs::write(&path, &before).unwrap();
+            transcripts().lock().unwrap().insert(id.into(), path.clone());
+            owe_asked(caller, id, 2, 0, &Asked { text: "review the patch", key: None, reply: true });
+            owe_asked(caller, id, 2, 0, &Asked { text: "check the other patch", key: None, reply: true });
+            let key = (caller.to_string(), id.to_string());
+            let debt = || reg().lock().unwrap().owed[&key];
+            let pty = crate::pty::manager();
+            let look = |o| {
+                let known = reg().lock().unwrap().known[id].clone();
+                notice_line(pty, caller, "Your helper", id, &known, held(o, 3, BACKGROUND_GRACE_MS))
+            };
+            if delivery == "wait" {
+                register(child, Provider::Claude, folder, account, Some(id), false, serde_json::json!({}));
+                owe_from(id, child, 0, 0);
+                shown(caller, id, 3);
+                forget(child);
+            } else {
+                crate::background::left_for_test(id, &[("gate", 22104)]);
+                let first = debt();
+                let Some((Some(_), how @ Settled::Pending(3, _, Some(1)))) = look(first) else {
+                    panic!("{delivery}: the first reply is pending")
+                };
+                settle_told(&mut reg().lock().unwrap(), key.clone(), how, &first);
+                crate::background::left_for_test(id, &[]);
+            }
+            if delivery == "restart" {
+                let saved = serde_json::to_vec(&ties_of(id).unwrap()).unwrap();
+                forget(id);
+                tie_back(id, Provider::Claude, folder, account, serde_json::from_slice(&saved).unwrap());
+                transcripts().lock().unwrap().insert(id.into(), path.clone());
+            }
+            assert_eq!(debt().request_match, Some(1), "{delivery}");
+            assert_eq!(debt().cursor, before.len() as u64, "{delivery}");
+            let report = format!("DONE: Reviewed the patch. {}", "Review details. ".repeat(40));
+            std::fs::write(&path, format!("{before}{}", said_line(&report))).unwrap();
+            let Some((Some(line), Settled::Answered)) = look(debt()) else { panic!("{delivery}: job done") };
+            assert!(line.contains("2 requests, latest #2") && line.contains(" #1 \"DONE: Reviewed"), "{delivery}: {line}");
+            assert!(!line.contains("[unmatched]"), "{delivery}: {line}");
+            let file = line.split("Report ").nth(1).and_then(|tail| tail.split(":1–").next()).unwrap();
+            let _ = std::fs::remove_file(file);
+            crate::background::gone_for_test(id);
+            forget(id);
+            forget(caller);
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]
@@ -1060,7 +1141,7 @@ mod tests {
                         reg().lock().unwrap().owed.get_mut(&key(caller, id)).unwrap().baseline = ended;
                         continue;
                     }
-                    Verdict::TurnOver if job => Settled::Pending(ended, 0),
+                    Verdict::TurnOver if job => Settled::Pending(ended, 0, None),
                     Verdict::TurnOver | Verdict::JobOver => Settled::Answered,
                     Verdict::Nothing | Verdict::AtWork => continue,
                 };
@@ -1068,7 +1149,7 @@ mod tests {
                 let mut r = reg().lock().unwrap();
                 notice_turn(&mut r, caller, turns[caller] + 1, &[id.to_string()], false);
                 match settled {
-                    Settled::Pending(n, c) => {
+                    Settled::Pending(n, c, _) => {
                         r.owed.insert(key(caller, id), Owed::pending(n, c));
                     }
                     _ => {
@@ -1234,7 +1315,7 @@ mod tests {
         };
         let report = format!("BLOCKED: Phase 1 is in: kill the core before 12:35 UTC. {}", "Evidence. ".repeat(45));
 
-        let Some((Some(text), Settled::Pending(2, cursor))) = line("ir-top", &format!("{notice}{}", said(&report))) else {
+        let Some((Some(text), Settled::Pending(2, cursor, _))) = line("ir-top", &format!("{notice}{}", said(&report))) else {
             panic!("its parent hears")
         };
         assert!(text.contains("ended another turn") && text.contains("[helpers pending]"), "{text}");
@@ -1919,7 +2000,7 @@ mod tests {
         // A status word gets through at once, delegates or not, and is no NOT done yet.
         for word in ["DONE", "BLOCKED: the gate", "QUESTION which branch?", "FAILED:", "PLAN: three lanes", "**DONE**: all of it"] {
             std::fs::write(&path, said_line(&format!("{word}\nmore"))).unwrap();
-            let Some((Some(text), Settled::Pending(1, _))) = line(first) else { panic!("{word} goes at once") };
+            let Some((Some(text), Settled::Pending(1, ..))) = line(first) else { panic!("{word} goes at once") };
             assert!(text.contains("ended a turn") && !text.contains("NOT done yet"), "{text}");
             assert!(text.contains("[job running"), "{text}");
         }
@@ -1930,7 +2011,7 @@ mod tests {
         // Its parent asked it something: the answer is no interim report.
         std::fs::write(&path, said_line("Lane 2 of 3; the gate is still out.")).unwrap();
         let sent = Owed { by_send: true, ..first };
-        let Some((Some(text), Settled::Pending(1, _))) = line(sent) else { panic!("an answer to a send goes") };
+        let Some((Some(text), Settled::Pending(1, ..))) = line(sent) else { panic!("an answer to a send goes") };
         assert!(text.contains("Lane 2 of 3") && !text.contains("NOT done yet"), "{text}");
         let quiet = Owed { no_reply: true, ..sent };
         assert!(matches!(line(quiet), Some((None, Settled::Skip(1, _)))), "unless the send asked for no reply");

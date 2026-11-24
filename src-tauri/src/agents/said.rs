@@ -114,12 +114,16 @@ impl Said {
         Said { texts, last_turn: 0, starts: vec![0], ..Said::default() }
     }
 
-    /// These messages as answers to the caller's `requests`: each message is put down to the latest request whose text started
-    /// a turn at or before it, found among the prompts by its head, in order.
-    /// A message before any found is the request's before the first found (a
-    /// spawn's, whose prompt may lie before what was read). None found, none
-    /// is put down to any: the requests are still named, not whose is which.
-    pub(super) fn asked(mut self, requests: Vec<Request>) -> Said {
+    /// These messages as answers to requests, with no known match before the read.
+    #[cfg(test)]
+    pub(super) fn asked(self, requests: Vec<Request>) -> Said {
+        self.asked_after(requests, None)
+    }
+
+    /// Match prompts in order, with the last request in a batch taking its
+    /// reply. For text before the first match, prefer the match from a
+    /// previous notice or wait, if that request is still open.
+    pub(super) fn asked_after(mut self, requests: Vec<Request>, previous: Option<u32>) -> Said {
         self.re.clear();
         if !requests.is_empty() {
             let mut from = 0;
@@ -129,14 +133,16 @@ impl Said {
                     let at = self.prompts.iter().skip(from).position(|(_, text)| !q.head.is_empty() && flat(text).contains(&q.head));
                     let at = at.map(|i| i + from);
                     if let Some(i) = at {
-                        from = i + 1;
+                        from = i;
                     }
                     at.map(|i| self.prompts[i].0)
                 })
                 .collect();
-            if let Some(first) = found.iter().position(Option::is_some) {
+            let prior = previous.and_then(|n| requests.iter().position(|q| q.n == n)).or_else(|| (requests.len() == 1).then_some(0));
+            let before_first = prior.or_else(|| found.iter().position(Option::is_some).map(|i| i.saturating_sub(1)));
+            if let Some(before_first) = before_first {
                 self.re = (0..self.texts.len())
-                    .map(|i| (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| at <= i)).unwrap_or(first.saturating_sub(1)))
+                    .map(|i| (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| at <= i)).unwrap_or(before_first))
                     .collect();
             }
         }
@@ -152,6 +158,11 @@ impl Said {
     /// The request message `i` answers, where that is known.
     pub(super) fn re_of(&self, i: usize) -> Option<&Request> {
         self.requests.get(*self.re.get(i)?)
+    }
+
+    /// The request the final run of messages belongs to.
+    pub(super) fn last_request(&self) -> Option<u32> {
+        self.re_of(self.texts.len().checked_sub(1)?).map(|q| q.n)
     }
 
     /// Messages `from..to` alone, their turns as they were.
@@ -482,6 +493,18 @@ pub(super) fn begins(replies: &Said) -> String {
 mod tests {
     use super::*;
     use crate::agents::read::Message;
+
+    #[test]
+    fn the_last_request_in_a_batch_owns_the_reply() {
+        let request = |n, head: &str| Request { n, key: None, head: head.into() };
+        let queued = ["check the warnings", "check the tests"]
+            .map(|text| crate::background::Queued::new(Some("caller".into()), text.into(), Vec::new()));
+        let message = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
+        let said = said_of(vec![message("user", crate::background::joined(&queued)), message("assistant", "Both checks passed.".into())])
+            .asked(vec![request(2, "check the warnings"), request(3, "check the tests")]);
+        assert_eq!(said.last_request(), Some(3));
+        assert!(answer_text(&said).starts_with("Re request 3:"));
+    }
 
     #[test]
     fn a_status_word_opens_the_first_line_as_written() {

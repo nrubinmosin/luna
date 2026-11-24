@@ -516,7 +516,8 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
 
     let account_choice = picked.map(|(_, choice)| choice);
     let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces)?;
-    spawn_background(caller, params, account.path, in_worktree, taken.0, constraints).map(|s| Spawned { account_choice, ..s })
+    spawn_background(caller, params, account.path, in_worktree, taken.0, constraints, crate::background::start_on)
+        .map(|s| Spawned { account_choice, ..s })
 }
 
 /// The helper a spawn came to, as soon as it is registered and before its CLI is
