@@ -52,6 +52,12 @@ pub fn queue_for_test(id: &str, text: &str) {
     lock().entries.get_mut(id).unwrap().queue.push(Queued::from(text));
 }
 
+#[cfg(test)]
+pub fn fail_next_launch_for_test(id: &str, queued: Queued) {
+    lock().entries.get_mut(id).unwrap().queue.push(queued);
+    turn_over_with(id, Some(0), |id, _| run_turn_with(id, None, || Err("Launch failed before the prompt opened".into())));
+}
+
 /// A turn begins on what is queued, as `turn_over` starts the next.
 #[cfg(test)]
 pub fn start_queued_for_test(id: &str) {

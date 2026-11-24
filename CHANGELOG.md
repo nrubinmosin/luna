@@ -166,6 +166,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- Helper losses still reach the caller after its answer settles. A queued
+  launch failure reports its own batch, and late transcript writes stay
+  readable after the caller's notice expires.
 - Codex chats show how many library skills stay visible when their command
   line runs out of room. Codex helpers also send the full hide list with
   their thread request and keep the capped command-line override.

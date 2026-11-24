@@ -344,13 +344,7 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
         save();
     }
     if placed == Placed::Started {
-        if let Err(err) = run_turn(id, &text) {
-            // Failed, as its sender is told: not kept to start later.
-            if let Some(e) = lock().entries.get_mut(id) {
-                e.in_flight.retain(|q| q.id != qid);
-            }
-            return Err(err);
-        }
+        run_turn_for(id, &text, Some(&qid))?;
     }
     changed();
     Ok((placed, kept_open))

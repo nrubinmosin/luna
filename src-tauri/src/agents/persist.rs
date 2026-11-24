@@ -168,10 +168,10 @@ fn told_job_went(told_pending: &[String], caller: &str, baseline: u32, cursor: u
 
 /// A helper a previous core saved is known again, as it was. Returns the
 /// token for its MCP config, a fresh one: the old core's went with it.
-pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, ties: Ties) -> Option<String> {
-    let token = register(id, provider, folder, account_path, ties.parent.as_deref(), ties.tools, ties.settings);
+pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, mut ties: Ties) -> Option<String> {
+    let token = register(id, provider, folder, account_path, ties.parent.as_deref(), ties.tools, std::mem::take(&mut ties.settings));
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(name) = ties.name {
+    if let Some(name) = ties.name.take() {
         r.names.insert(id.to_string(), name);
     }
     if let Some(k) = r.known.get_mut(id) {
@@ -181,7 +181,15 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     if ties.auto_delete {
         r.auto.insert(id.to_string(), Auto::default());
     }
-    for (caller, baseline, cursor) in ties.owed.into_iter().chain(ties.silent_owed) {
+    restore_answers(&mut r, id, &mut ties);
+    if let Some(task) = ties.task {
+        r.tasks.insert(id.to_string(), task);
+    }
+    token
+}
+
+pub(super) fn restore_answers(r: &mut Registry, id: &str, ties: &mut Ties) {
+    for (caller, baseline, cursor) in std::mem::take(&mut ties.owed).into_iter().chain(std::mem::take(&mut ties.silent_owed)) {
         let mut o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));
         if let Some(notice) = ties.notices.get(&caller) {
             notice.restore(&mut o);
@@ -193,14 +201,10 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
         }
         r.owed.insert((caller, id.to_string()), o);
     }
-    r.requests.extend(ties.requests.into_iter().map(|(caller, requests)| ((caller, id.to_string()), requests)));
-    for (caller, n) in ties.seen {
+    r.requests.extend(std::mem::take(&mut ties.requests).into_iter().map(|(caller, requests)| ((caller, id.to_string()), requests)));
+    for (caller, n) in std::mem::take(&mut ties.seen) {
         r.seen.insert((caller, id.to_string()), n);
     }
-    if let Some(task) = ties.task {
-        r.tasks.insert(id.to_string(), task);
-    }
-    token
 }
 
 /// A chat of the person's, as `<data>/chat-ties.json` keeps it for the core

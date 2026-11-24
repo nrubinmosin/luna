@@ -419,7 +419,7 @@ pub(super) fn says_status(text: &str) -> bool {
     status_word(text).is_some()
 }
 
-fn status_word(text: &str) -> Option<Status> {
+pub(super) fn status_word(text: &str) -> Option<Status> {
     let first = text.trim_start().lines().next().unwrap_or("");
     let bare = first.trim_start_matches(|c: char| matches!(c, '#' | '*' | '_') || c.is_whitespace());
     STATUS_WORDS.iter().find_map(|(word, status)| {

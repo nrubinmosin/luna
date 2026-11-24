@@ -122,10 +122,18 @@ pub(super) struct WakeState {
     /// Transcript end of the unread text, when observed before delivery.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) unread_to: Option<u64>,
+    /// The confirmed notice's text boundary, even if a pending request or
+    /// a canceled read still needs an earlier transcript cursor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reported_to: Option<u64>,
     /// Delivery expired while the caller was away. Keep the report's record
     /// through its unread deadline, including while a read can be canceled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) delivery_expired: Option<u64>,
+    /// An ended turn may still have a partial transcript line when delivery
+    /// expires. Hold the report until the observer can reconcile it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) reconciling: bool,
     /// Work of the session itself that a core restart would cut off.
     pub(super) job_running: bool,
 }
@@ -200,6 +208,7 @@ impl Owed {
     pub(super) fn rebase_since(&mut self, from: u64, generation: u64) {
         self.transcript_rev = generation;
         self.wake.unread_to = None;
+        self.wake.reported_to = None;
         for s in self.since.iter_mut().flatten() {
             s.cursor = from;
         }
@@ -220,6 +229,10 @@ impl Owed {
             .max(self.wake.skipped.unwrap_or(0))
             .max(self.wake.silent.unwrap_or(0))
             .max(self.wake.unused_turn.unwrap_or(0))
+    }
+
+    pub(super) fn notice_cursor(self) -> u64 {
+        self.cursor.max(self.wake.reported_to.unwrap_or(0))
     }
 
     pub(super) fn legacy_can_stall(self) -> bool {
@@ -440,7 +453,7 @@ fn hand_over_of(
 ) -> Option<impl FnOnce() + Send + 'static> {
     let key = (caller.to_string(), id.to_string());
     let (scope, lost) = expected.map_or((None, None), |(scope, lost)| (Some(scope), Some(lost)));
-    let (taken, seen_before, receipt, goes_on, stop, partial) = {
+    let (taken, seen_before, receipt, goes_on, partial) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let current = r.owed.get(&key).copied();
         let mut partial = None;
@@ -508,10 +521,7 @@ fn hand_over_of(
                 (n, taken, take_debt(&mut r, &key, turns_ended, job_debt), None)
             }
         };
-        // Who the helper still owes once this debt goes: a loss all of them
-        // have had is done with.
-        let stop = (now.is_some() && !said.is_empty()).then(|| callers_on(&r, id));
-        (taken, seen_before, n, goes_on, stop, partial)
+        (taken, seen_before, n, goes_on, partial)
     };
     owed_on_for(key.clone(), turns_ended, goes_on, taken);
     seen(caller, id, turns_ended);
@@ -519,7 +529,7 @@ fn hand_over_of(
     // longer finds it, so the receipt below says nothing of it.
     let parent = parent_of(id).as_deref() == Some(caller);
     let taken = take_undelivered_ids(id, caller, parent, lost.as_deref());
-    let stop_told = stop.map(|owed| crate::background::losses_told(id, caller, &said, &owed)).unwrap_or_default();
+    let stop_told = crate::background::losses_told(id, caller, &said);
     let id = id.to_string();
     Some(move || {
         put_undelivered_back(&id, taken);
@@ -532,7 +542,7 @@ fn hand_over_of(
         let transcript_rev = r.transcript_generations.get(&key.1).map_or(0, |(rev, _)| *rev);
         let Some(record) = r.receipts.get_mut(&key) else { return };
         if let Some(before) = partial {
-            let Some((_, mut removed)) = record.partials.remove(&receipt) else { return };
+            let Some((_, removed)) = record.partials.remove(&receipt) else { return };
             let current = r.owed.get(&key).copied();
             if transcript_rev == before.transcript_rev
                 && current.is_none_or(|o| o.transcript_rev == before.transcript_rev)
@@ -542,20 +552,8 @@ fn hand_over_of(
                 if current.is_none() {
                     qs.open.clear();
                 }
-                removed.retain(|q| !qs.open.iter().any(|open| open.n == q.n));
-                let Some(cursor) = removed.iter().map(|q| q.cursor).min() else { return };
-                let baseline = removed.iter().map(|q| q.baseline).min().unwrap();
-                qs.open.extend(removed);
-                qs.open.sort_by_key(|q| q.n);
-                let no_reply = qs.open.iter().all(|q| !q.reply);
-                let queued = qs.open.iter().any(|q| q.queued);
                 let o = r.owed.entry(key.clone()).or_insert(before);
-                o.cursor = o.cursor.min(cursor);
-                o.no_reply = no_reply;
-                o.queued = queued;
-                o.wake.after = Some(o.wake.after.unwrap_or(o.baseline).min(baseline));
-                o.wake.unused_turn = o.wake.unused_turn.min(before.wake.unused_turn);
-                o.wake.silent = o.wake.silent.min(before.wake.silent);
+                restore_requests(o, before, qs, removed);
             }
         } else if record.n != receipt {
             return;
@@ -566,26 +564,20 @@ fn hand_over_of(
             if current.is_some_and(|now| now.transcript_rev != o.transcript_rev) || o.upto != 0 && restored.is_empty() {
                 return;
             }
-            if !restored.is_empty() {
+            let now = r.owed.entry(key.clone()).or_insert(o);
+            // What was put in the place of the debt it stands for
+            // (`owed_on`) goes, and that debt is back as it was.
+            if Some(now.rev) == put_in && now.delivery_rev == o.delivery_rev {
+                *now = Owed { resumed: now.resumed, restart_rev: now.restart_rev, job_went: now.job_went, ..o };
+            }
+            if restored.is_empty() {
+                now.cursor = now.cursor.min(o.cursor);
+            } else {
                 let qs = r.requests.entry(key.clone()).or_default();
                 if current.is_none() {
                     qs.open.clear();
                 }
-                let missing: Vec<_> = restored.into_iter().filter(|q| !qs.open.iter().any(|open| open.n == q.n)).collect();
-                qs.open.extend(missing);
-                qs.open.sort_by_key(|q| q.n);
-            }
-            match r.owed.get_mut(&key) {
-                // What was put in the place of the debt it stands for
-                // (`owed_on`) goes, and that debt is back as it was.
-                Some(now) if Some(now.rev) == put_in && now.delivery_rev == o.delivery_rev => {
-                    *now = Owed { resumed: now.resumed, restart_rev: now.restart_rev, job_went: now.job_went, ..o };
-                }
-                Some(now) if now.transcript_rev == o.transcript_rev => now.cursor = now.cursor.min(o.cursor),
-                Some(_) => {}
-                None => {
-                    r.owed.insert(key.clone(), o);
-                }
+                restore_requests(now, o, qs, restored);
             }
         }
         if r.seen.get(&key) == Some(&turns_ended) {
@@ -597,6 +589,32 @@ fn hand_over_of(
         drop(registry);
         crate::background::save();
     })
+}
+
+pub(super) fn restore_requests(now: &mut Owed, before: Owed, qs: &mut Requests, mut restored: Vec<Request>) {
+    restored.retain(|q| !qs.open.iter().any(|open| open.n == q.n));
+    let Some(cursor) = restored.iter().map(|q| q.cursor).min() else { return };
+    let baseline = restored.iter().map(|q| q.baseline).min().unwrap();
+    qs.open.extend(restored);
+    qs.open.sort_by_key(|q| q.n);
+    now.cursor = now.cursor.min(before.cursor.max(cursor));
+    now.baseline = qs.open.iter().map(|q| q.baseline).max().unwrap();
+    now.upto = now.upto.max(before.upto);
+    now.no_reply = qs.open.iter().all(|q| !q.reply);
+    now.queued = qs.open.iter().any(|q| q.queued);
+    now.wake.task = qs.open.iter().rev().find(|q| q.reply).map(|q| q.n);
+    // Reopen the earlier answer without replaying a turn already reported
+    // before the canceled response. A later FYI has no wake state of its own.
+    let after = now.wake.after.unwrap_or(now.baseline);
+    now.wake.after = Some(after.min(baseline.max(before.notice_baseline())));
+    now.wake.unused_turn = now.wake.unused_turn.min(before.wake.unused_turn);
+    now.wake.skipped = now.wake.skipped.min(before.wake.skipped);
+    now.wake.silent = now.wake.silent.min(before.wake.silent);
+    now.wake.status = now.wake.status.or(before.wake.status);
+    now.wake.plan_through = now.wake.plan_through.max(before.wake.plan_through);
+    now.wake.unread_since = now.wake.unread_since.or(before.wake.unread_since);
+    now.wake.unread_to = now.wake.unread_to.max(before.wake.unread_to);
+    now.wake.reported_to = now.wake.reported_to.max(before.wake.reported_to);
 }
 
 /// The callers `id` owes an answer, whatever turn each is owed.
@@ -616,9 +634,6 @@ pub fn callers_owed(id: &str) -> Vec<String> {
 /// `background_stopped_line`), and the turns of the losses it says: what
 /// `hand_over_said` acknowledges, and nothing that came after.
 pub(super) fn background_stopped_note(caller: &str, id: &str) -> (Option<String>, Vec<u32>) {
-    if !reg().lock().unwrap_or_else(|e| e.into_inner()).owed.contains_key(&(caller.to_string(), id.to_string())) {
-        return (None, Vec::new());
-    }
     match crate::agents::notifier::lines::background_stopped_line(id, caller) {
         Some((line, turns)) => (Some(line.trim().to_string()), turns),
         None => (None, Vec::new()),
@@ -781,7 +796,15 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
     owed
 }
 
-fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64>, asked: Option<&Asked>) -> bool {
+pub(super) fn owe_in(
+    r: &mut Registry,
+    caller: &str,
+    id: &str,
+    baseline: u32,
+    cursor: u64,
+    handovers: Option<u64>,
+    asked: Option<&Asked>,
+) -> bool {
     if is_dev(caller) {
         return true;
     }
@@ -802,6 +825,7 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
     let mut wake = before.map_or_else(WakeState::default, |o| o.wake);
     if wake.delivery_expired.take().is_some() {
         wake.plan_through = None;
+        wake.reconciling = false;
     }
     if !own_no_reply && asked.is_none() {
         wake.status = None;
@@ -884,10 +908,17 @@ pub(super) fn settle_requests(r: &mut Registry, key: &(String, String), told: Ow
     else {
         return Vec::new();
     };
-    take_requests(r, key, now, told, covered, ended)
+    take_requests(r, key, now, told, covered, Some(ended))
 }
 
-pub(super) fn take_requests(r: &mut Registry, key: &(String, String), now: Owed, told: Owed, covered: &[u32], ended: u32) -> Vec<Request> {
+pub(super) fn take_requests(
+    r: &mut Registry,
+    key: &(String, String),
+    now: Owed,
+    told: Owed,
+    covered: &[u32],
+    ended: Option<u32>,
+) -> Vec<Request> {
     let Some(qs) = r.requests.get_mut(key) else { return Vec::new() };
     let mut taken = Vec::new();
     qs.open.retain(|q| {
@@ -901,14 +932,16 @@ pub(super) fn take_requests(r: &mut Registry, key: &(String, String), now: Owed,
     if let Some(first) = qs.open.first() {
         let left = r.owed.get_mut(key).unwrap();
         if !taken.is_empty() {
-            left.cursor = if now.wake.unread_since.is_some() { now.cursor.min(first.cursor) } else { first.cursor };
+            // An outstanding request may have queued before words already
+            // reported to the caller. Its cursor cannot replay those words.
+            left.cursor = if now.wake.unread_since.is_some() { now.cursor.min(first.cursor) } else { now.cursor.max(first.cursor) };
             left.baseline = qs.open.iter().map(|q| q.baseline).max().unwrap_or(first.baseline);
             left.wake.after = qs.open.iter().map(|q| q.baseline).min();
             left.queued = qs.open.iter().any(|q| q.queued);
             left.no_reply = qs.open.iter().all(|q| !q.reply);
             left.request_match = left.request_match.filter(|n| qs.open.iter().any(|q| q.n == *n));
         }
-        if now.rev == told.rev {
+        if let Some(ended) = ended.filter(|_| now.rev == told.rev) {
             left.wake.unused_turn = Some(left.wake.unused_turn.unwrap_or(0).max(ended));
             left.held = None;
             left.cut_short = false;
@@ -920,7 +953,7 @@ pub(super) fn take_requests(r: &mut Registry, key: &(String, String), now: Owed,
     } else if !taken.is_empty() {
         let left = r.owed.get_mut(key).unwrap();
         if left.wake.unread_since.is_some() && left.wake.unread_to.is_some() {
-            left.wake.silent = Some(ended);
+            left.wake.silent = Some(ended.unwrap_or_else(|| now.notice_baseline()));
             left.wake.plan_through = None;
             left.cut_short = false;
         } else {
@@ -1307,6 +1340,26 @@ mod tests {
             forget(&caller);
             forget(&child);
         }
+    }
+
+    #[test]
+    fn canceling_a_whole_wait_reopens_the_earlier_reply_across_an_fyi() {
+        let (caller, id) = ("whole-wait-caller", "whole-wait-helper");
+        let key = (caller.into(), id.into());
+        owe_asked(caller, id, 0, 10, &Asked { text: "Get the answer", key: None, reply: true });
+        let debt = reg().lock().unwrap().owed[&key];
+        let cancel = hand_over_scope(caller, id, 1, None, Some(AnswerScope { debt, covered: vec![1] }), vec![], vec![]).unwrap();
+        owe_asked(caller, id, 1, 100, &Asked { text: "For your information", key: None, reply: false });
+        assert!(reg().lock().unwrap().owed[&key].no_reply);
+        cancel();
+        let r = reg().lock().unwrap();
+        let o = r.owed[&key];
+        assert!(!o.no_reply && o.active());
+        assert_eq!((o.baseline, o.notice_baseline(), o.cursor, o.quiet_target()), (1, 0, 10, Some(1)));
+        assert_eq!(r.requests[&key].open.iter().map(|q| (q.n, q.reply)).collect::<Vec<_>>(), [(1, true), (2, false)]);
+        drop(r);
+        forget(caller);
+        forget(id);
     }
 
     #[test]

@@ -589,7 +589,9 @@ turn, stopped on a prompt (once per stop) or exited.
   request numbers it covered, scoped to the transcript and each request's
   delivery state. A notice acknowledges restart interruptions and losses
   carried in its rendered text after delivery succeeds. A queued request
-  keeps its own turn baseline and cursor.
+  keeps its own turn baseline and cursor. A terminal write without evidence
+  of a new turn waits for its prompt in the transcript. Caller notice expiry
+  leaves a report cursor available for a transcript line still being written.
 - Lines no debt brings (a helper taken over, an auto-delete, a queued text
   refused, or a system notice) wait for a caller a restart has yet to bring back for as
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
@@ -600,10 +602,10 @@ turn, stopped on a prompt (once per stop) or exited.
   request after the CLI confirms delivery or its transcript shows the prompt. An untold request
   that wants a reply gets one idle stall, carrying what the session said.
   Work, queued inputs and due replies keep that stall back. A peer's due
-  reply holds it even while the peer is idle, except when the peer's
-  notice is itself held by pending replies leading back to this session.
-  Each caller in an idle cycle
-  can still get its own stall. A draft holds only its
+  reply holds it even while the peer is idle. Callers inside the same idle
+  cycle can get their own stalls. Callers outside the cycle wait for those
+  due replies. The notifier samples the dependency graph once per tick and
+  reuses transcript, failure, and activity checks across notices. A draft holds only its
   own notice. Interim and suppressed text
   stays readable. After a PLAN, the idle stall stays covered through that
   turn and later turns started by FYIs. A joined FYI stays part of the
@@ -614,7 +616,8 @@ turn, stopped on a prompt (once per stop) or exited.
   the 30-minute quiet check, including when a turn waits for its own background
   work.
   Ties save request intent and coverage, idle plan state, quiet allowance,
-  and untold restart interruptions. A move to another transcript captures
+  the transcript boundary confirmed by the last notice, and untold restart
+  interruptions. A move to another transcript captures
   the destination offset and invalidates settlements from the old file.
   Silent debts are saved separately so older cores skip them.
 - **Riders.** Later quiet lines accompany another notice. A place refusal
@@ -688,7 +691,10 @@ turn, stopped on a prompt (once per stop) or exited.
   were cut and their work is not done, with no advice on how to work.
   Each turn's loss is its own, with its own cause: a caller hears each it
   has yet to hear of, once, a woken lead's "seems stuck" line included,
-  and a reply acknowledges those it said, never one recorded since.
+  and a reply acknowledges the losses it included. An outstanding loss can
+  wake the caller after the answer has settled. A launch that fails before
+  opening the prompt records the undelivered batch before it publishes the
+  turn end. That failure settles the requests in that batch.
   Claude Code's own stop with none named, and a Codex stop an older
   core saved uncounted, keep their own lines (`BACKGROUND_STOPPED`,
   `SUBAGENTS_INTERRUPTED`).

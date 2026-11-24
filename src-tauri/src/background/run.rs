@@ -68,21 +68,26 @@ pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Res
 
 /// Starts the next turn's process with `prompt` on its stdin, on a run
 /// `claim` has taken; a turn that could not start gives the claim back,
-/// counted as a turn that ended on the error: whoever queued it, or queued
-/// behind it, counts on its end, and `turn_over` never comes for it. Text
-/// queued behind it fails with it, counted as the turn after, so whoever
-/// waits on it hears — rather than starting what would most likely fail the
-/// same way; behind a turn stopped before it started, or one Luna stopped
-/// (`cut_short`), it is kept as undelivered.
+/// counted as a turn that ended on the error. Its batch is kept as
+/// undelivered before that end can be observed.
 pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
-    let started = spawn_turn(id, prompt);
+    run_turn_for(id, prompt, None)
+}
+
+pub(super) fn run_turn_for(id: &str, prompt: &str, reporting_to_send: Option<&str>) -> Result<(), String> {
+    run_turn_with(id, reporting_to_send, || spawn_turn(id, prompt))
+}
+
+pub(super) fn run_turn_with(id: &str, reporting_to_send: Option<&str>, start: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    let claim = claimed_start(id);
+    let started = start();
     // A power-off being decided or an update's stop let none start (the
     // gate, `crate::starts`): the batch waits and goes on
     // once the gate is open again (`resume_waiting`, which it calls then)
     // rather than end as an error whose senders would be told it failed. An
     // update installed meanwhile leaves it queued, and the next core keeps it
     // for its senders.
-    if started.as_ref().is_err_and(|err| crate::starts::refused(err)) && requeue_refused(id) {
+    if started.as_ref().is_err_and(|err| crate::starts::refused(err)) && requeue_refused(id, claim) {
         reg().1.notify_all();
         save();
         changed();
@@ -94,7 +99,7 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     }
     if let Err(err) = &started {
         if let Some(e) = lock().entries.get_mut(id) {
-            if e.run.as_ref().is_some_and(|r| r.pid.is_none()) {
+            if e.run.as_ref().is_some_and(|r| r.pid.is_none() && Some(r.claim) == claim) {
                 let stopped = e.run.as_ref().is_some_and(|r| r.stopped);
                 e.run = None;
                 note(e, &format!("could not start the turn: {err}"));
@@ -104,6 +109,13 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                     Some(why) => Some(why),
                     None => Some(err.clone()),
                 };
+                let mut batch = std::mem::take(&mut e.in_flight);
+                e.observed.unopened =
+                    (!batch.is_empty() && !stopped && !e.cut_short && !crate::starts::refused(err)).then_some(e.turns_ended + 1);
+                // A send that started this turn itself gets the error in
+                // its own response. The already accepted sends need news.
+                batch.retain(|q| reporting_to_send != Some(q.id.as_str()));
+                e.undelivered.splice(0..0, batch);
                 e.turns_ended += 1;
                 if !e.queue.is_empty() {
                     // Behind a claim a stop ended before its process started
@@ -116,19 +128,23 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                         let queued = std::mem::take(&mut e.queue);
                         e.undelivered.extend(queued);
                         note(e, "kept what was queued behind it for its senders");
+                        e.turns_ended += 1;
                     } else {
-                        e.queue.clear();
-                        note(e, "dropped what was queued behind it");
+                        wait_for_place(e);
                     }
-                    e.turns_ended += 1;
                 }
                 e.observed.stopped = e.error.clone().filter(|why| stopped && is_stop(why)).map(|why| (e.turns_ended, why));
             }
         }
         reg().1.notify_all();
+        save();
         changed();
     }
     started
+}
+
+fn claimed_start(id: &str) -> Option<u64> {
+    lock().entries.get(id)?.run.as_ref().filter(|run| run.pid.is_none()).map(|run| run.claim)
 }
 
 /// A turn claimed for a batch and refused at the gate before its process
@@ -136,10 +152,10 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
 /// given back, and the turn counted for nothing. False where there is no batch
 /// to keep (a helper's opening prompt rides on no batch), a stop took the claim,
 /// or Luna is stopping the turn (`cut_short`): the error path keeps those.
-fn requeue_refused(id: &str) -> bool {
+fn requeue_refused(id: &str, claim: Option<u64>) -> bool {
     let mut r = lock();
     let Some(e) = r.entries.get_mut(id) else { return false };
-    let waiting = e.run.as_ref().is_some_and(|run| run.pid.is_none() && !run.stopped);
+    let waiting = e.run.as_ref().is_some_and(|run| run.pid.is_none() && !run.stopped && Some(run.claim) == claim);
     if !waiting || e.in_flight.is_empty() || e.cut_short {
         return false;
     }
@@ -1090,7 +1106,7 @@ mod tests {
         e.in_flight = vec!["flying".into()];
         e.queue = vec!["behind it".into()];
         lock().entries.insert("gate-refused".into(), e);
-        assert!(requeue_refused("gate-refused"));
+        assert!(requeue_refused("gate-refused", claimed_start("gate-refused")));
         {
             let r = lock();
             let e = &r.entries["gate-refused"];
@@ -1102,13 +1118,13 @@ mod tests {
         let mut opening = entry(Provider::Claude);
         opening.run = Some(Run::claimed(None, 0));
         lock().entries.insert("gate-opening".into(), opening);
-        assert!(!requeue_refused("gate-opening"));
+        assert!(!requeue_refused("gate-opening", claimed_start("gate-opening")));
         let mut cut = entry(Provider::Claude);
         cut.run = Some(Run::claimed(None, 0));
         cut.in_flight = vec!["flying".into()];
         cut.cut_short = true;
         lock().entries.insert("gate-cut".into(), cut);
-        assert!(!requeue_refused("gate-cut"));
+        assert!(!requeue_refused("gate-cut", claimed_start("gate-cut")));
         let mut r = lock();
         for id in ["gate-refused", "gate-opening", "gate-cut"] {
             r.entries.remove(id);

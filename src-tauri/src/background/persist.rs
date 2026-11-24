@@ -383,11 +383,6 @@ pub(super) fn resume(id: &str) {
             );
         }
         Err(why) => {
-            if let Some(e) = lock().entries.get_mut(id) {
-                let batch = std::mem::take(&mut e.in_flight);
-                let later = std::mem::take(&mut e.undelivered);
-                e.undelivered = [batch, later].concat();
-            }
             crate::log::warn("background", &format!("{}: could not resume by itself: {why}", crate::agents::label(id)));
         }
     }
@@ -674,6 +669,20 @@ pub fn untold_losses(id: &str, caller: &str) -> Vec<Loss> {
     e.observed.losses.iter().filter(|l| l.owed.iter().any(|c| c == caller) && !l.told.iter().any(|c| c == caller)).cloned().collect()
 }
 
+/// Who still has loss news coming, even after their answers settled.
+pub fn loss_recipients() -> Vec<(String, String)> {
+    let r = lock();
+    let mut pairs = std::collections::HashSet::new();
+    for (id, e) in &r.entries {
+        let callers = e.observed.losses.iter().flat_map(|l| l.owed.iter().filter(|c| !l.told.contains(c)));
+        let senders = e.undelivered.iter().filter_map(|q| q.from.as_ref().or(e.spec.parent.as_ref()));
+        for caller in callers.chain(senders) {
+            pairs.insert((caller.clone(), id.clone()));
+        }
+    }
+    pairs.into_iter().collect()
+}
+
 /// Whether what `caller` is told of it is to say that background work of its
 /// was cut off (`untold_losses`): what the tests look at.
 #[cfg(test)]
@@ -721,10 +730,9 @@ pub fn stop_owed_to(id: &str, turn: u32, callers: Vec<String>) {
 }
 
 /// The losses of `turns` have been said to `caller`, in what settled its
-/// debt: not again, by this core or the next (the notifier saves). A loss
-/// each caller it concerns that is still owed (`owed`) has had is done
-/// with. Returns the turns this marked, for `losses_untold`.
-pub fn losses_told(id: &str, caller: &str, turns: &[u32], owed: &[String]) -> Vec<u32> {
+/// debt: not again, by this core or the next (the notifier saves).
+/// Returns the turns this marked, for `losses_untold`.
+pub fn losses_told(id: &str, caller: &str, turns: &[u32]) -> Vec<u32> {
     let mut r = lock();
     let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
     let mut marked = Vec::new();
@@ -733,12 +741,6 @@ pub fn losses_told(id: &str, caller: &str, turns: &[u32], owed: &[String]) -> Ve
             l.told.push(caller.to_string());
             marked.push(l.turn);
         }
-    }
-    // A caller no longer owed that was never told is no longer to be: once
-    // every caller left has had it, the loss says nothing more, though an
-    // undo may still take a caller's telling back.
-    for l in e.observed.losses.iter_mut().filter(|l| turns.contains(&l.turn)) {
-        l.owed.retain(|c| owed.contains(c) || l.told.contains(c));
     }
     marked
 }

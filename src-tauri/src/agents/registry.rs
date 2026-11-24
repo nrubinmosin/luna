@@ -66,6 +66,7 @@ pub(super) fn top_chat(r: &Registry, id: &str) -> Option<String> {
     (!is_dev(&top) && r.known.get(&top).is_none_or(Known::is_persons_chat)).then_some(top)
 }
 
+#[derive(Default)]
 pub(super) struct Registry {
     /// Sessions by the SHA-256 of their bearer token (`token_key`).
     pub(super) tokens: HashMap<[u8; 32], String>,
@@ -179,49 +180,8 @@ pub(super) struct Registry {
 
 pub(super) fn reg() -> &'static Mutex<Registry> {
     static R: OnceLock<Mutex<Registry>> = OnceLock::new();
-    let r = R.get_or_init(|| {
-        Mutex::new(Registry {
-            tokens: HashMap::new(),
-            known: HashMap::new(),
-            // Above any request a core gone since may have left on disk.
-            next_request: now_ms(),
-            spawns: HashMap::new(),
-            tasks: HashMap::new(),
-            taken_over: HashMap::new(),
-            parent_changes: 0,
-            handovers: HashMap::new(),
-            hands_changed: HashMap::new(),
-            delivery_floors: HashMap::new(),
-            seen: HashMap::new(),
-            names: HashMap::new(),
-            groups: HashMap::new(),
-            answered: HashMap::new(),
-            owed: HashMap::new(),
-            requests: HashMap::new(),
-            waits: HashMap::new(),
-            reserved: HashMap::new(),
-            receipts: HashMap::new(),
-            auto: HashMap::new(),
-            usage: HashMap::new(),
-            usage_seqs: HashMap::new(),
-            notified: HashMap::new(),
-            hook_asks: HashMap::new(),
-            held: Vec::new(),
-            notices_held: HashMap::new(),
-            notice_turns: HashMap::new(),
-            woken: HashMap::new(),
-            delegates: HashMap::new(),
-            notice_times: HashMap::new(),
-            stopped: HashMap::new(),
-            exits: HashMap::new(),
-            quota_told: HashMap::new(),
-            news: Vec::new(),
-            system_news: Vec::new(),
-            transcript_generations: HashMap::new(),
-            failures_told: Default::default(),
-            places_refused: HashMap::new(),
-        })
-    });
+    // Above any request a core gone since may have left on disk.
+    let r = R.get_or_init(|| Mutex::new(Registry { next_request: now_ms(), ..Registry::default() }));
     // Tests assert with this held and all of them share it: one that fails is
     // that test's failure, not that of every test after it.
     #[cfg(test)]

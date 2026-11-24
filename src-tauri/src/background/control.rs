@@ -248,13 +248,7 @@ fn end_left_after_turns(of: &dyn Fn(&str) -> bool, stopped: &[(String, u64)], wa
 /// missing) is often what stopped the turn before.
 fn run_waited(id: &str, text: &str) {
     save();
-    if run_turn(id, text).is_err() {
-        if let Some(e) = lock().entries.get_mut(id) {
-            let batch = std::mem::take(&mut e.in_flight);
-            e.undelivered.extend(batch);
-        }
-        save();
-    }
+    let _ = run_turn(id, text);
 }
 
 /// Between turns, what its turns left running, for `luna_session_get`.
@@ -639,6 +633,10 @@ pub fn claim_delete(id: &str) -> Result<DeleteClaim, String> {
 /// Whether the helper has a turn, queued text, or a pending question or permission.
 pub fn has_work(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty())
+}
+
+pub fn unopened_turn(id: &str, ended: u32) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.observed.unopened == Some(ended))
 }
 
 /// What waited while helper `id` was held (`Entry::held_back`) goes on once it is
