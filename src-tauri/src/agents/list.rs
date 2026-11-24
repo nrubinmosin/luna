@@ -7,7 +7,7 @@ use crate::agents::read::transcript_path;
 use crate::agents::registry::{descendants, is_descendant, is_dev, is_self, persons_chat_in, reg, scope_all, Registry};
 use crate::agents::spawn::account::allowed_account_dirs;
 use crate::agents::spawn::places;
-use crate::agents::teardown::AUTO_DELETE_IDLE_MS;
+use crate::agents::teardown::{unread_until, AUTO_DELETE_IDLE_MS};
 use crate::boundary::AbsPath;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -255,7 +255,10 @@ pub fn session_get(caller: &str, id: &str, all: bool, include: &[String]) -> Res
         let told = all || is_self(&r, caller, id) || is_descendant(&r, caller, id);
         let task = r.tasks.get(id).filter(|_| told).cloned();
         let group = r.groups.get(id).map(|g| g + 1);
-        let left = r.auto.get(id).and_then(|a| a.idle_since);
+        let left = r.auto.get(id).and_then(|a| a.idle_since).map(|since| {
+            let unread = r.owed.iter().filter(|((_, target), _)| target == id).filter_map(|(_, o)| unread_until(o)).max();
+            since.saturating_add(AUTO_DELETE_IDLE_MS).max(unread.unwrap_or(0))
+        });
         (known.clone(), r.names.get(id).cloned().unwrap_or_default(), told, task, group, left)
     };
     let (state, ask) = state_of(id);
@@ -302,8 +305,8 @@ pub fn session_get(caller: &str, id: &str, all: bool, include: &[String]) -> Res
             out.extend(fields);
         }
         out.insert("group".into(), json!(group));
-        if let Some(since) = left {
-            out.insert("deletesInMin".into(), json!(AUTO_DELETE_IDLE_MS.saturating_sub(now_ms().saturating_sub(since)).div_ceil(60_000)));
+        if let Some(until) = left {
+            out.insert("deletesInMin".into(), json!(until.saturating_sub(now_ms()).div_ceil(60_000)));
         }
         if let Some(session_id) =
             crate::background::session_id(id).or_else(|| pty.probe(id).as_ref().and_then(disk_meta).and_then(|m| m.session_id))

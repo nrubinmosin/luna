@@ -455,24 +455,14 @@ mod tests {
 
     const END: u64 = 60_000 + COUNTDOWN_MS;
 
-    /// A line held for a notice to ride with (agents/notifier/mod.rs `riders_go`) keeps its
-    /// debt open, which is nothing to a power-off: whatever lets one start counting
-    /// lets the line through that gate first, and the turn it starts cancels the
-    /// count. Only that gate: a line a draft holds back does not stop a count.
     #[test]
-    fn a_power_off_does_not_go_ahead_of_a_line_held_back() {
+    fn suppressed_news_neither_wakes_nor_delays_power_off() {
         let mut st = armed(Action::Shutdown, 0);
         let now = 1_000_000;
-        let (fresh, rest_owed) = (now - 30_000, false);
-        // Someone at work: nothing fires, and the line may wait.
-        let at_work = board(1, None);
-        assert!(!advance(&mut st, false, &at_work, at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
-        assert!(!crate::agents::riders_go(false, rest_owed, fresh, now, at_work.busy));
-        // All quiet: the count starts, and the line is free to go.
-        let quiet = board(0, Some(now - 1000));
-        assert!(advance(&mut st, false, &quiet, at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
-        assert!(crate::agents::riders_go(false, rest_owed, fresh, now, quiet.busy));
-        assert_eq!(advance(&mut st, false, &at_work, at(now + 1000)), vec![Effect::Canceled], "and its caller's turn stops the count");
+        assert!(!crate::agents::riders_go(false, false, false));
+        assert!(!advance(&mut st, false, &board(1, None), at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+        assert!(!crate::agents::riders_go(false, true, false));
+        assert!(advance(&mut st, false, &board(0, Some(now - 1000)), at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
     }
 
     #[test]

@@ -31,18 +31,31 @@ pub(super) fn said_since(pty: &crate::pty::PtyManager, id: &str, provider: Provi
     own_words(messages_at(&path, provider, moved.unwrap_or(cursor)), false)
 }
 
-/// `said_since` with its words kept when its last turn wrote none (the
-/// transcript ends on a prompt): what it wrote before that turn is still what
-/// the caller has not had.
-pub(super) fn written_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Said {
-    let (Some(path), moved) = transcript_seen(pty, id) else { return Said::default() };
-    own_words(messages_at(&path, provider, moved.unwrap_or(cursor)), true)
+/// Read all newly written words, including earlier turns, with the cursor
+/// after the last complete line the reader saw.
+pub(super) fn written_range(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> (Said, u64) {
+    let (Some(path), moved) = transcript_seen(pty, id) else { return (Said::default(), cursor) };
+    let cursor = moved.unwrap_or(cursor);
+    // The general readers rewind if an offset is past EOF. A notice must
+    // never take that rewind for fresh text.
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() < cursor) {
+        return (Said::default(), cursor);
+    }
+    let (messages, end) = read_at(&path, provider, cursor);
+    if end < cursor {
+        return (Said::default(), cursor);
+    }
+    (own_words(messages, true), end)
 }
 
 pub(super) fn messages_at(path: &std::path::Path, provider: Provider, from: u64) -> Vec<Message> {
+    read_at(path, provider, from).0
+}
+
+fn read_at(path: &std::path::Path, provider: Provider, from: u64) -> (Vec<Message>, u64) {
     match provider {
-        Provider::Claude => crate::claude::session::messages_from(path, from, false).0,
-        Provider::Codex => crate::codex::session::messages_from(path, from).0,
+        Provider::Claude => crate::claude::session::messages_from(path, from, false),
+        Provider::Codex => crate::codex::session::messages_from(path, from),
     }
 }
 
@@ -287,24 +300,56 @@ pub(super) fn report_re(replies: &Said) -> Option<&Request> {
     replies.re_of(report_of(replies))
 }
 
-/// The words a message may open with to say where its writer stands. One
-/// brings a session's notice where it would otherwise wait (notifier
-/// lines.rs): a lead's turn while its delegates work, an answer to a send
-/// that asked for none. They only ever bring a notice sooner.
-pub(super) const STATUS_WORDS: [&str; 5] = ["DONE", "BLOCKED", "QUESTION", "FAILED", "PLAN"];
+/// The opening words that can wake a caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(super) enum Status {
+    Done,
+    Blocked,
+    Question,
+    Failed,
+    Plan,
+}
+
+impl Status {
+    /// A plan covers its own turn. Other statuses cover the rest of the task.
+    pub(super) fn lasting(self) -> bool {
+        self != Self::Plan
+    }
+}
+
+const STATUS_WORDS: [(&str, Status); 5] = [
+    ("DONE", Status::Done),
+    ("BLOCKED", Status::Blocked),
+    ("QUESTION", Status::Question),
+    ("FAILED", Status::Failed),
+    ("PLAN", Status::Plan),
+];
 
 /// Whether `text`'s first line opens with a status word (STATUS_WORDS) as
 /// written, case and all, alone or followed by a colon or a space; markdown's
 /// emphasis or heading marks around it do not count against it.
 pub(super) fn says_status(text: &str) -> bool {
+    status_word(text).is_some()
+}
+
+fn status_word(text: &str) -> Option<Status> {
     let first = text.trim_start().lines().next().unwrap_or("");
     let bare = first.trim_start_matches(|c: char| matches!(c, '#' | '*' | '_' | '>') || c.is_whitespace());
-    STATUS_WORDS.iter().any(|word| {
-        bare.strip_prefix(word).is_some_and(|rest| {
-            let rest = rest.trim_start_matches(['*', '_']);
-            rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ')
-        })
+    STATUS_WORDS.iter().find_map(|(word, status)| {
+        let rest = bare.strip_prefix(word)?.trim_start_matches(['*', '_']);
+        (rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ')).then_some(*status)
     })
+}
+
+/// Prefer the latest lasting status over a plan in the same batch of messages.
+pub(super) fn fresh_status(said: &Said) -> Option<Status> {
+    let mut found = said.iter().rev().filter_map(|text| status_word(text));
+    let latest = found.next()?;
+    if latest.lasting() {
+        Some(latest)
+    } else {
+        found.find(|status| status.lasting()).or(Some(latest))
+    }
 }
 
 /// `text` in a file for a notice to name, under `notes_dir`. Named by what it

@@ -296,7 +296,11 @@ pub fn read(
     // And the session was done with it before the read: a read while it
     // works on has seen a turn on the way, and the answer is still to come.
     let done = ts.is_none_or(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
-    let settles = whole && done && owed.is_some_and(|o| turns_ended > o.baseline && (!o.queued || queue_settled(&key, o, turns_ended)));
+    let settles = whole
+        && done
+        && owed.is_some_and(|o| {
+            (turns_ended > o.baseline || o.wake.silent == Some(turns_ended)) && (!o.queued || queue_settled(&key, o, turns_ended))
+        });
     // Ahead of the hand-over, which takes it off. With an answer still to come
     // it stays for the notice; with none owed this read is all that tells it.
     let undelivered = undelivered_note(caller, id);
@@ -427,9 +431,6 @@ pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &
     let (background_stopped, said) = background_stopped_note(caller, id);
     reading.background_stopped = background_stopped;
     looked(id);
-    if !ack {
-        return Ok(reading);
-    }
     let (Some(owed), ts, end) = before else { return Ok(reading) };
     let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let unmoved = debt().is_some_and(|now| now.rev == owed.rev)
@@ -437,11 +438,19 @@ pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &
         && transcript_end(id) == end;
     let done = ts.is_none_or(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
     let all_of_it = since.is_none_or(|at| at <= owed.cursor)
-        && turns_ended > owed.baseline
+        && (turns_ended > owed.baseline || owed.wake.silent == Some(turns_ended))
         && (!owed.queued || queue_settled(&key, owed, turns_ended))
         && !reading.messages.is_empty()
         && !reading.cut
         && reading.cursor == end;
+    if !ack {
+        if unmoved && done && all_of_it && (reading.rest == 0 || reading.file.is_some()) {
+            if let Some(undo) = super::owed::read_silent(caller, id, owed.rev) {
+                call.commit(undo);
+            }
+        }
+        return Ok(reading);
+    }
     #[cfg(test)]
     if let Some(between) = *BEFORE_ACK.lock().unwrap_or_else(|e| e.into_inner()) {
         between();

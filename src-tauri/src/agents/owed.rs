@@ -5,7 +5,7 @@
 use crate::agents::lost::{put_undelivered_back, take_undelivered};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{is_descendant, is_dev, parent_of, reg, stands, waits_on_helpers_in, Registry};
-use crate::agents::said::{replies_since, request_head, Request};
+use crate::agents::said::{replies_since, request_head, Request, Status};
 use crate::throttle::now_ms;
 
 /// Text typed into a chat's terminal mid-turn is the CLI's to place: into
@@ -67,14 +67,10 @@ pub(super) struct Owed {
     /// background work (lines.rs `background_wait_line`): told apart, so a
     /// plain quiet notice earlier in the turn does not stand for it.
     pub(super) told_background_wait: Option<u32>,
+    pub(super) wake: WakeState,
     /// Every send it stands for asked for no reply (`expectReply: false`): a turn
-    /// that answers them wakes the caller only with a status word or a report
-    /// (lines.rs `worth_waking`), and the answer is left in the report.
+    /// that answers them only wakes for a status, ask, or failure.
     pub(super) no_reply: bool,
-    /// Made by a send (`owe_from_at`), not a spawn: what a lead says to it is
-    /// the answer its caller asked for, whatever its delegates are doing
-    /// (lines.rs `worth_waking`), until it has been told it is not done.
-    pub(super) by_send: bool,
     /// Which debt this is, whatever its numbers: asked again with nothing
     /// moved since, a new one has the same baseline and cursor as the old, and
     /// what was decided about the old is not to touch it.
@@ -94,6 +90,40 @@ pub(super) struct Owed {
     /// notice built on it may be telling of as they come (`owe`). Once that
     /// one is told, these are all that is left of it (`told_before`).
     pub(super) since: [Option<Since>; SINCE_KEPT],
+}
+
+/// Notice state, independent of the cursor a caller reads its answer from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(super) struct WakeState {
+    pub(super) status: Option<Status>,
+    pub(super) plan_through: Option<u32>,
+    pub(super) stalled: bool,
+    /// The latest turn skipped while work was still running.
+    pub(super) skipped: Option<u32>,
+    /// A settled idle answer, left readable from its original cursor.
+    pub(super) silent: Option<u32>,
+    pub(super) unread_since: Option<u64>,
+    /// Work of the session itself that a core restart would cut off.
+    pub(super) job_running: bool,
+    /// The last send asked for no reply, even if an older ask still did.
+    pub(super) quiet_send: bool,
+}
+
+impl WakeState {
+    pub(super) fn reported(&mut self, status: Status, turn: u32) {
+        if status.lasting() || self.status.is_none_or(|last| !last.lasting()) {
+            self.status = Some(status);
+            self.plan_through = (status == Status::Plan).then_some(turn);
+        }
+    }
+
+    pub(super) fn passed_plan(&mut self, ended: u32) {
+        if self.plan_through.is_some_and(|turn| ended > turn) {
+            self.status = None;
+            self.plan_through = None;
+        }
+    }
 }
 
 /// The debts taken in that `Owed::since` keeps what came after: a notice is
@@ -139,8 +169,8 @@ impl Owed {
             told_pending: false,
             told_quiet: None,
             told_background_wait: None,
+            wake: WakeState::default(),
             no_reply: false,
-            by_send: false,
             held_to: None,
             moved_from: None,
             since: [None; SINCE_KEPT],
@@ -153,6 +183,24 @@ impl Owed {
         for s in self.since.iter_mut().flatten() {
             s.cursor = from;
         }
+    }
+
+    pub(super) fn active(self) -> bool {
+        self.wake.silent.is_none()
+    }
+
+    pub(super) fn notice_baseline(self) -> u32 {
+        self.wake.skipped.or(self.wake.silent).unwrap_or(0).max(self.baseline)
+    }
+
+    /// Whether asks which merged in after a given revision all asked for no
+    /// reply. None means this debt never included that revision.
+    pub(super) fn no_task_since(self, rev: u64) -> Option<bool> {
+        self.since.iter().flatten().find(|s| s.rev == rev).map(|s| s.no_reply)
+    }
+
+    pub(super) fn can_stall(self) -> bool {
+        !self.no_reply && !self.wake.quiet_send && !self.wake.stalled && self.wake.status.is_none()
     }
 
     /// What is left of a debt once the caller has heard it is not done yet.
@@ -179,7 +227,7 @@ pub(super) fn shown(caller: &str, id: &str, turns_ended: u32) {
 /// is above the session now, as it must still be when that debt is put in.
 fn take_debt(r: &mut Registry, key: &(String, String), turns_ended: u32, job_debt: Option<u64>) -> Option<(bool, Owed)> {
     let o = *r.owed.get(key)?;
-    if turns_ended <= o.baseline && job_debt != Some(o.rev) {
+    if turns_ended <= o.baseline && o.wake.silent != Some(turns_ended) && job_debt != Some(o.rev) {
         return None;
     }
     r.owed.remove(key);
@@ -226,7 +274,15 @@ fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<(bool, O
         return None;
     }
     let rev = match r.owed.entry(key.clone()) {
-        std::collections::hash_map::Entry::Vacant(v) => v.insert(Owed { request_match, ..Owed::pending(turns_ended, cursor) }).rev,
+        std::collections::hash_map::Entry::Vacant(v) => {
+            v.insert(Owed {
+                request_match,
+                wake: WakeState { skipped: None, silent: None, unread_since: None, ..before.wake },
+                no_reply: before.no_reply,
+                ..Owed::pending(turns_ended, cursor)
+            })
+            .rev
+        }
         std::collections::hash_map::Entry::Occupied(_) => return None,
     };
     if let Some(x) = r.receipts.get_mut(&key).filter(|x| taken.is_some() && x.stands_for.map(|(o, _)| o.rev) == taken) {
@@ -398,6 +454,28 @@ pub(super) fn seen(caller: &str, id: &str, turns_ended: u32) {
     looked(id);
 }
 
+/// A full report was read from a silently settled answer. Restore the unread
+/// hold if the client cancels this response and the debt is still the same.
+pub(super) fn read_silent(caller: &str, id: &str, rev: u64) -> Option<impl FnOnce() + Send + 'static> {
+    let key = (caller.to_string(), id.to_string());
+    let unread_since = reg()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .owed
+        .get_mut(&key)
+        .filter(|o| o.rev == rev && !o.active())?
+        .wake
+        .unread_since
+        .take()?;
+    crate::background::save();
+    Some(move || {
+        if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&key).filter(|o| o.rev == rev && !o.active()) {
+            o.wake.unread_since.get_or_insert(unread_since);
+        }
+        crate::background::save();
+    })
+}
+
 /// Somebody has looked at `id`, so an `autoDelete` helper counts its idle
 /// time from now.
 pub(super) fn looked(id: &str) {
@@ -489,8 +567,10 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
     let no_reply = own_no_reply && before.is_none_or(|o| o.no_reply);
     // Text can miss its turn before the send that placed it gets here (`retried`).
     let floor = r.delivery_floors.get(&key).copied().unwrap_or(0);
-    // Only a send to a helper's queue comes with a count of handovers.
-    let by_send = handovers.is_some();
+    let mut wake = before.filter(|_| own_no_reply).map_or_else(WakeState::default, |o| o.wake);
+    wake.skipped = None;
+    wake.silent = None;
+    wake.quiet_send = own_no_reply;
     // The debt before may be told this very moment, by a notice that settles
     // it only as it was (notifier `settle_told`): what this ask owes of its own
     // is kept, to be all that is left once that one is told.
@@ -508,7 +588,7 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
         }
     }
     let request_match = before.and_then(|o| o.request_match);
-    r.owed.insert(key.clone(), Owed { resumed, no_reply, by_send, since, request_match, ..Owed::from(baseline.max(floor), cursor) });
+    r.owed.insert(key.clone(), Owed { resumed, no_reply, wake, since, request_match, ..Owed::from(baseline.max(floor), cursor) });
     let requests = if before.is_none() {
         // What earlier debts covered has been answered.
         let requests = r.requests.entry(key).or_default();
@@ -561,7 +641,7 @@ pub fn resumed(id: &str, turns_ended: u32) {
 }
 
 pub(super) fn resumed_in(r: &mut Registry, id: &str, turns_ended: u32) {
-    for (_, o) in r.owed.iter_mut().filter(|((_, s), _)| s == id) {
+    for (_, o) in r.owed.iter_mut().filter(|((_, s), o)| s == id && o.active()) {
         o.baseline = o.baseline.max(turns_ended);
         o.resumed = true;
         o.cut_short = false;
@@ -925,14 +1005,14 @@ mod tests {
         // A notice about the old one went in meanwhile: nor does that take it.
         settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Answered, &old);
         assert_eq!(owed().map(|o| o.rev), Some(new.rev));
-        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9, None), &old);
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9, None, None, false), &old);
         assert_eq!(owed().map(|o| (o.rev, o.baseline)), Some((new.rev, 3)));
         settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Waiting, &old);
         assert!(!owed().unwrap().told_waiting);
         // The one it told of it settles, and a debt a wait took stays gone.
         settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Answered, &new);
         assert!(owed().is_none());
-        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9, None), &new);
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9, None, None, false), &new);
         assert!(owed().is_none(), "a notice does not bring back what a wait handed over");
     }
 

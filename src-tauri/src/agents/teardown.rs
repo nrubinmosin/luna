@@ -162,6 +162,17 @@ fn remove(id: &str, known: Known, _held: &crate::background::DeleteClaim) -> Res
     Ok(Removed { ok: true })
 }
 
+/// How long a silently settled, unread answer delays auto-delete.
+const UNREAD_ANSWER_MS: u64 = 24 * 60 * 60 * 1000;
+
+pub(super) fn unread_holds(o: &crate::agents::owed::Owed, now: u64) -> bool {
+    unread_until(o).is_some_and(|until| now < until)
+}
+
+pub(super) fn unread_until(o: &crate::agents::owed::Owed) -> Option<u64> {
+    o.wake.unread_since.map(|since| since.saturating_add(UNREAD_ANSWER_MS))
+}
+
 /// Deletes the `autoDelete` helpers that are done with: nobody is owed their
 /// answer or waiting on them, nothing is owed to them, no helper of theirs is
 /// still there, nothing their turns left is still in their job, and they have
@@ -185,15 +196,19 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
         let helpers_there = below.iter().any(|k| live(pty, k));
         let known = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            let quiet = !helpers_there && !r.owed.iter().any(|((c, s), _)| *s == id || *c == id) && !r.waits.keys().any(|(_, s)| *s == id);
+            let quiet = !helpers_there
+                && !r.owed.iter().any(|((c, s), o)| o.active() && (*s == id || *c == id))
+                && !r.waits.keys().any(|(_, s)| *s == id);
+            let now = now_ms();
+            let unread = r.owed.iter().any(|((_, s), o)| *s == id && unread_holds(o, now));
             let known = r.known.get(&id).cloned();
             let Some(a) = r.auto.get_mut(&id) else { continue };
             if !(quiet && idle) {
                 a.idle_since = None;
                 continue;
             }
-            let since = *a.idle_since.get_or_insert(now_ms());
-            if now_ms().saturating_sub(since) < AUTO_DELETE_IDLE_MS {
+            let since = *a.idle_since.get_or_insert(now);
+            if unread || now.saturating_sub(since) < AUTO_DELETE_IDLE_MS {
                 continue;
             }
             a.deleting = true;
@@ -375,6 +390,37 @@ mod tests {
         reap(pty);
         assert_eq!(since(), None, "a follow-up starts it over");
         reg().lock().unwrap().auto.remove("ad-child");
+    }
+
+    #[test]
+    fn unread_silent_answers_hold_auto_delete_until_read_or_expired() {
+        for read in [true, false] {
+            let id = if read { "silent-auto-read" } else { "silent-auto-expired" };
+            let parent = "silent-auto-parent";
+            let key = (parent.to_string(), id.to_string());
+            register(id, Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some(parent), false, serde_json::json!({}));
+            owe_from(parent, id, 0, 0);
+            let debt = reg().lock().unwrap().owed[&key];
+            {
+                let mut r = reg().lock().unwrap();
+                r.auto.insert(id.into(), Auto { idle_since: Some(0), ..Auto::default() });
+                super::super::notifier::settle_told(&mut r, key.clone(), super::super::notifier::Settled::Silent(1, true), &debt);
+            }
+            let pty = crate::pty::manager();
+            reap_these(pty, vec![id.into()]);
+            assert!(reg().lock().unwrap().known.contains_key(id), "unread answer is retained");
+            if read {
+                let undo = super::super::owed::read_silent(parent, id, debt.rev).expect("answer read");
+                undo();
+                reap_these(pty, vec![id.into()]);
+                assert!(reg().lock().unwrap().known.contains_key(id), "a canceled read restores retention");
+                let _ = super::super::owed::read_silent(parent, id, debt.rev).expect("answer read again");
+            } else {
+                reg().lock().unwrap().owed.get_mut(&key).unwrap().wake.unread_since = Some(0);
+            }
+            reap_these(pty, vec![id.into()]);
+            assert!(!reg().lock().unwrap().known.contains_key(id), "delete after read or expiry");
+        }
     }
 
     /// An `autoDelete` helper with something its turns left still in its job is

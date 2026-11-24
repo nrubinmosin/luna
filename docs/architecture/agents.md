@@ -595,13 +595,17 @@ turn, stopped on a prompt (once per stop) or exited.
   refused, or a system notice) wait for a caller a restart has yet to bring back for as
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
   `chat-ties.json` until told.
-- **Riders.** A job's end with nothing said (`Settled::NoNews`), the idle line,
-  and a refusal for want of places are no reason
-  to wake a caller: they ride with the next notice (`riders_go`), and go alone
-  only once they are all it is owed, nothing in Luna is busy, or after
-  `RIDE_MAX_MS`. Quota news does not ride: its lines go into the notice's lines
-  as they are put together (mod.rs, before `riders_go` is asked), like a turn's
-  end, so a window at 90% wakes the top chat and brings the riders with it.
+- **Wake policy.** A fresh `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
+  opening, an ask, a failure or an exit wakes an owed caller. Plain turn ends
+  while work continues are skipped, retaining the answer cursor. Idle with
+  no status wakes once per task, along with what the session said. A 30-minute
+  quiet turn can use that stall early. After a status or stall, a quiet idle
+  end settles silently. A plan covers its own turn. A later independent turn
+  can stall. Session ties save `WakeState` and the answer cursor per caller.
+- **Riders.** Resume and later quiet lines accompany another notice. A place
+  refusal can go alone once the top chat has no active debt to bring a wake,
+  since only it can free the places. Suppressed news holds no power-off
+  countdown. Quota and system notices keep their own policy.
 - **Company.** A notice ready for an idle caller that is owed an answer by
   another session still mid-turn (`Turn::Busy`) waits for it up to
   `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
@@ -611,21 +615,9 @@ turn, stopped on a prompt (once per stop) or exited.
   `Settled::Asked`) never waits.
 - A helper with its own helpers out (`waits_on_helpers`) reads `background`; a
   turn on a notice from them counts once it has all their answers.
-- **Leads.** A lead (`is_lead`: spawned with tools) whose delegates still work
-  (its own helpers out, or what its CLI left in the background) is not done as
-  a matter of course: a turn it ends then settles as `Settled::Skip` (no
-  notice, `told_pending` set, the debt's offset kept, where that turn's text
-  ends kept as `Owed::held_to`), so what it wrote rides in its report with
-  the next notice, never "NOT done yet". Not the first
-  turn to answer a send of its caller's (`Owed::by_send`, before
-  `told_pending`): that is the answer asked for, unless the send asked for
-  none. A message whose
-  first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
-  (`said::says_status`, case-sensitive, alone or before `:` or a space,
-  markdown marks aside) goes at once (`worth_waking`), and so does a turn on
-  its helpers' notices that wrote one (`news_for_parent`, only ever upward).
-  Prompts, questions, errors, exits and the quiet-turn notices go as ever.
-  The lead's role text says so (`resources/system/role-lead.md`).
+- **Leads.** Turn ends while delegates work follow the same rule as for helpers.
+  The skipped turn's transcript end (`Owed::held_to`) distinguishes its interim
+  text from an answer after its delegates finish.
   Once all its delegates are done (`Verdict::JobOver`, or a turn on its own
   helpers' notices once they have all answered, `turns_on_helpers`) with
   nothing said of them (`quiet_on_helpers`, `quiet_since_held`: that last
@@ -694,10 +686,9 @@ turn, stopped on a prompt (once per stop) or exited.
   reply carries its prompt match past the read cursor. Session ties save the
   count, open request heads, and pending match. A legacy debt stays
   unnumbered until settled. Legacy or downgraded numbering may repeat once.
-- **No reply asked.** A send with `expectReply: false` sets `Owed::no_reply`
-  (a later send that asks for one clears it). A turn that answers it wakes the
-  caller only with a status word or a message of 400 characters or more;
-  otherwise the debt settles with no notice (`Settled::Unasked`). A send that
+- **No reply asked.** `expectReply: false` wakes only for a status, ask, or
+  failure. It retains the existing task's wake state. A send that wants a
+  reply starts a new task. A send that
   takes in a debt a notice may be telling of as it comes keeps what it owes
   of its own past each debt it took in, the last four (`Owed::since`, by
   `rev`): once that notice settles the debt it was put together on, whichever
@@ -714,7 +705,7 @@ turn, stopped on a prompt (once per stop) or exited.
   that notice and its top chat gets the details while the breaker is active.
   A core restart clears the breaker and any pending trip details. The log
   warns, the desktop is told once, and a person
-  typing into either chat lifts it. Prompts, questions and exits still come
+  typing into either chat lifts it. Prompts, questions, failures and exits still come
   (`standing_line`).
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
@@ -799,6 +790,8 @@ none is `transcriptMissing`, not "no reply".
 `wait` on it, no helper of its own, nothing its turns left still in its job
 (its record not active, however long that has done nothing), and no turn for 30 minutes, as `delete` would.
 Any `read` / `wait` / `send` restarts the clock (`deletesInMin`).
+A silent settlement keeps its unread cursor without holding up a lead.
+Unread text holds auto-delete until it is read or 24 hours elapse.
 A helper an agent killed mid-turn is left alone. On by default.
 
 The person's Delete on a helper, or on a chat with its helpers ticked

@@ -69,7 +69,7 @@ can type into it and answer its model's questions with `scope: "all"`
   nothing waiting to go into it),
   its agent's notice adds `[idle; send to resume]`, whatever its last words said it was waiting for.
 - A send may ask for no reply (`expectReply: false`): the helper's answer then
-  wakes the agent only for a status word or a report.
+  wakes the agent only for a status, ask, or failure.
 - An agent reads, waits on, sends text to and answers its own helpers. One of
   your own chats reads and waits on your other chats and other chats' helpers
   only by saying so (`scope: "all"`). It sends text to and answers only your
@@ -421,29 +421,23 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   helper said before it stopped comes with it. A helper whose CLI quit before its
   model did anything (an unknown `agent`, a model that is not there) is idle, not
   busy, and goes like any other.
-- A helper that ended its turn with a job running, or helpers of its own still
-  out, is announced once with `[job running]` or `[helpers pending]`; the next notice comes when that is over or
-  it ends a turn of its own (a turn it only ran on a Luna notice does not count,
-  unless that was its own helper's last awaited answer), so two chats with a
-  stray process each do not keep waking each other. A background Claude Code
-  helper's own `run_in_background` job keeps its turn going: it stays `working`
-  until the job ends, and there is one notice with everything it said. What a helper makes of its helpers' answers reaches
-  its parent when it is 400 characters or more, once, only upward.
-- A job's end the helper says nothing about rides with the next notice, alone
-  only once nothing else is owed, nothing is at work, or after 10 minutes.
-- What turns left running (a server, a watcher, a forgotten `tail -F`) is named in
-  the notice and in get diagnostics as `leftRunning` (by name and pid, or a
-  count of shells). It keeps the helper, and the PC, active for as long as it is
-  there, however idle. For a background helper `luna_session_stop`, or Stop in the
-  helper list, ends it once the turn is over; the notice of its end comes when it
-  ends. A turn silent for 30
-  minutes gets one notice too (a command may hang); a command with its own
-  timeout holds that until 5 minutes past it.
+- A fresh report opening on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or
+  `PLAN`, an ask, a failure or an exit wakes the caller. Interim turn ends and
+  plain replies to `expectReply: false` stay in the report.
+- Each task also gets one stall notice. It comes when the session is idle
+  with no work running and has given no status, or when its turn goes quiet
+  for 30 minutes before it gives a status. An idle stall carries what it said.
+  A `PLAN` covers its turn. A later independent turn can stall, and a new send
+  that wants a reply starts a new task.
+- Work a turn left running appears as `leftRunning` in get diagnostics. It
+  keeps the helper and the PC active. The 30-minute quiet check respects a
+  command's deadline plus five minutes. Luna still wakes a lead that has
+  nothing to say when its delegates finish.
 - **Breaker:** past 12 turn-end notices about one session in 15 minutes, Luna
   stops telling the caller of that session's turns and jobs until you type
   into either chat. Luna tells the person's chat at the top of the line,
-  logs the trip and shows a desktop notification. Prompts and questions
-  still come.
+  logs the trip and shows a desktop notification. Prompts, questions and
+  failures still come.
 - Your chat hears when an account used by live delegates under it reaches 90%
   and then 95% of a usage window, once each per window. It also hears when
   a delegate turn starts without its folder skills or a delegate's spawn is
@@ -465,7 +459,8 @@ that does not read as a model id (up to 256 letters, digits and `-._:/@+`) is gi
 ## Lifetime
 
 - A helper goes by itself (`autoDelete`, on by default) once its answer reached
-  the agent and it has sat idle 30 minutes with nobody reading or writing to it;
+  the agent and it has sat idle 30 minutes with nobody reading or writing to it.
+  A silently settled answer holds deletion until read or for up to 24 hours;
   get diagnostics show `deletesInMin`. It waits for jobs it left, however idle,
   and helpers of its own.
 - A helper stopped with `luna_session_stop` is never auto-deleted; one you opened as a

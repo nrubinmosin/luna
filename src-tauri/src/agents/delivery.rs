@@ -373,7 +373,7 @@ pub(super) fn as_sent(caller: &str, id: &str, text: &str) -> String {
 /// work and dismisses a question that is someone else's to answer.
 /// `key`: the `requestKey` it came with, which notices name its answer by;
 /// `reply`: whether it asks for one, as one that does not wakes the caller only
-/// for a status word or a report (notifier lines.rs `worth_waking`). Both are
+/// for a status word, ask, or failure. Both are
 /// a helper's debt's; a chat's has neither.
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&str>, reply: bool) -> Result<Sent, String> {
     authorize_send(caller, id)?;

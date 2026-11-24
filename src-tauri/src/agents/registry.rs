@@ -552,8 +552,8 @@ pub fn resumes_on_restart(id: &str) -> bool {
 pub fn helpers_owing() -> HashMap<String, u32> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let mut out: HashMap<String, u32> = HashMap::new();
-    for (caller, helper) in r.owed.keys() {
-        if is_descendant(&r, caller, helper) {
+    for ((caller, helper), o) in &r.owed {
+        if o.active() && is_descendant(&r, caller, helper) {
             *out.entry(caller.clone()).or_default() += 1;
         }
     }
@@ -565,7 +565,7 @@ pub(super) fn waits_on_helpers(id: &str, except: &str) -> bool {
 }
 
 pub(super) fn waits_on_helpers_in(r: &Registry, id: &str, except: &str) -> bool {
-    r.owed.keys().any(|(caller, helper)| caller == id && helper != except && is_descendant(r, id, helper))
+    r.owed.iter().any(|((caller, helper), o)| caller == id && helper != except && o.active() && is_descendant(r, id, helper))
 }
 
 pub(super) fn depth_of(r: &Registry, id: &str) -> usize {

@@ -33,6 +33,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- Luna wakes callers for fresh status reports, asks, failures, and one stall
+  per task. Interim replies stay readable without starting a caller turn.
+
 - The pane meter and session get diagnostics show the share of the CLI's estimated
   auto-compaction limit when known, or the model window otherwise.
   `context.window` gives the denominator and `context.basis` names it.

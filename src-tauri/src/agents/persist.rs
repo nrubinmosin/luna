@@ -5,7 +5,7 @@
 
 use crate::agents::held::{GoingIn, Held};
 use crate::agents::notifier::system::{read_saved, SystemNews};
-use crate::agents::owed::{Owed, Requests};
+use crate::agents::owed::{Owed, Requests, WakeState};
 use crate::agents::read::transcripts;
 use crate::agents::registry::{account_name, is_dev, label, reg, register, without_retired, Known, Registry, CODEX_TRUST};
 use crate::agents::spawn::SpawnTaken;
@@ -57,9 +57,40 @@ pub struct Ties {
     /// with the core.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub told_pending: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) notices: BTreeMap<String, SavedNotice>,
     /// See `Registry::tasks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub(super) struct SavedNotice {
+    wake: WakeState,
+    no_reply: bool,
+    resumed: bool,
+    held_to: Option<u64>,
+}
+
+impl SavedNotice {
+    fn of(o: &Owed) -> Option<Self> {
+        let Self { wake, no_reply, resumed, held_to } = Self { wake: o.wake, no_reply: o.no_reply, resumed: o.resumed, held_to: o.held_to };
+        (o.told_pending || wake != WakeState::default() || no_reply || resumed || held_to.is_some()).then_some(Self {
+            wake,
+            no_reply,
+            resumed,
+            held_to,
+        })
+    }
+
+    fn restore(&self, o: &mut Owed, mid_turn: bool) {
+        o.wake = self.wake;
+        o.no_reply = self.no_reply;
+        o.resumed = self.resumed;
+        o.held_to = self.held_to;
+        o.job_went = self.wake.job_running && !mid_turn;
+    }
 }
 
 /// One helper's ties, as a save keeps them (`ties_of_each`).
@@ -103,6 +134,12 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
         told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
+        notices: r
+            .owed
+            .iter()
+            .filter(|((_, s), _)| s == id)
+            .filter_map(|((c, _), o)| SavedNotice::of(o).map(|state| (c.clone(), state)))
+            .collect(),
         task: r.tasks.get(id).cloned(),
     })
 }
@@ -132,6 +169,9 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     }
     for (caller, baseline, cursor) in ties.owed {
         let mut o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));
+        if let Some(notice) = ties.notices.get(&caller) {
+            notice.restore(&mut o, false);
+        }
         o.request_match = ties.request_matches.get(&caller).copied();
         r.owed.insert((caller, id.to_string()), o);
     }
@@ -781,9 +821,15 @@ pub(super) fn take_up_chats(saved: SavedChats) {
                 .filter(|_| !c.mid_turn)
                 .unwrap_or_else(|| Owed::from(baseline, cursor));
             o.request_match = ties.request_matches.get(&caller).copied();
-            if !o.job_went && (c.turns_ended <= baseline || ties.cut_short.contains(&caller)) {
+            if let Some(notice) = ties.notices.get(&caller) {
+                notice.restore(&mut o, c.mid_turn);
+            }
+            if o.active()
+                && !o.job_went
+                && (c.mid_turn || (c.turns_ended <= baseline && !o.told_pending) || ties.cut_short.contains(&caller))
+            {
                 o.cut_short = true;
-                count = count.max(baseline.saturating_add(1));
+                count = count.max(o.notice_baseline().saturating_add(1));
             }
             r.owed.insert((caller, c.id.clone()), o);
         }
@@ -1430,7 +1476,7 @@ mod tests {
         };
         ask(0, 0, "first");
         let first = reg().lock().unwrap().owed[&key];
-        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(1, 50, Some(1)), &first);
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(1, 50, Some(1), None, false), &first);
         round_trip();
         let pending = reg().lock().unwrap().owed[&key];
         assert!(pending.told_pending && pending.request_match == Some(1));

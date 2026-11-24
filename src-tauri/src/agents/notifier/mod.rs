@@ -18,6 +18,7 @@ use crate::agents::notifier::usage::{quota_file, quota_from, quota_news, save_qu
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
 use crate::agents::registry::{chat_name, is_dev, is_persons_chat, label, parent_of, reg, waits_on_helpers, Known, Registry};
+use crate::agents::said::Status;
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::spawn::PlacesRefused;
 use crate::agents::teardown::reap;
@@ -91,38 +92,31 @@ pub fn notify(caller: &str, text: &str) -> Result<(), String> {
 pub(super) enum Settled {
     /// A turn past the one asked about ended.
     Answered,
+    /// A terminal failure or loss, even if the pair tripped the breaker.
+    Failed,
     /// A turn ended, but the session left a job running in the background;
     /// owed on from this turn count and transcript end, for that job's end or
     /// a turn of its own. Keep the last prompt match across that cursor.
-    Pending(u32, u64, Option<u32>),
+    Pending(u32, u64, Option<u32>, Option<Status>, bool),
+    Reported(u64, Option<u32>, Status, u32),
     /// A turn ended but is not settled — processes still at work, or no
     /// reply in the transcript yet: nothing to say, start the grace from now.
     Hold(u32),
     /// A job looked over and is at work again: the grace starts over.
     Unhold,
-    /// Told it is not done, and all that ended since were turns on Luna's own
-    /// notices, or a lead's turns while its delegates work: nothing to say,
-    /// and owed on from this turn count, what they said included, which ends
-    /// at this transcript length (`Owed::held_to`).
-    Skip(u32, u64),
+    /// An interim or notice-driven turn. Advance only the notifier's count.
+    /// Keep this turn's words for the caller, and its end for the lead wake.
+    Skip(u32, u64, bool, bool),
     Waiting,
     /// It asks a question it does not wait on; told once per question.
     Asked(u64),
     /// A core's going stopped its turn and it went on by itself; told once.
     Resumed,
-    /// Its job's end, seen at this moment, with no word from it and nothing
-    /// else to tell: settles as `Answered`, and rides (`riders_go`).
-    NoNews(u64),
-    /// Its turn at this count has gone quiet (QUIET_TURN_MS); told once per
-    /// turn, and owed on.
+    /// A quiet turn or its background wait. Only the task's first stall wakes.
     Quiet(u32),
-    /// Its turn at this count has answered and gone quiet waiting on its
-    /// background work; told once per turn, apart from `Quiet`, and owed on.
     WaitsOnBackground(u32),
-    /// A turn answered sends that asked for no reply (`Owed::no_reply`) with
-    /// nothing worth a turn of the caller's in it: settled with no notice, its
-    /// answer left in the report.
-    Unasked,
+    /// The answer is settled quietly, with the cursor retained for reading.
+    Silent(u32, bool),
     Exited,
 }
 
@@ -154,7 +148,7 @@ fn drawn_for_notice(pty: &crate::pty::PtyManager, id: &str) -> bool {
 /// holds that wait on news; helpers still to answer it keep `notice_line` from
 /// saying so.
 fn job_over(o: &Owed, ts: Option<crate::activity::TurnState>) -> bool {
-    o.told_pending && ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy)
+    (o.told_pending || o.wake.skipped.is_some()) && ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy)
 }
 
 /// For a `wait`: whether a job's end (`over`) has stood BACKGROUND_GRACE_MS, by
@@ -221,7 +215,7 @@ pub(super) fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str
         // its whole hold again for the news that turn brings.
         owed.ready_at = None;
         // A job at work again: its end starts its grace over.
-        if owed.told_pending && !job_ended {
+        if (owed.told_pending || owed.wake.skipped.is_some()) && !job_ended {
             owed.held = None;
         }
         return true;
@@ -238,40 +232,18 @@ pub(super) fn owed_stands(known: &HashMap<String, Known>, caller: &str, id: &str
     known.contains_key(id) && (known.get(caller).is_some_and(|k| !k.waiting) || up_ms < CALLER_RETURN_MS)
 }
 
-/// The longest a line with no news in it waits for a notice to ride with: a
-/// caller may be waiting on that very job while another helper runs for days.
-const RIDE_MAX_MS: u64 = 10 * 60 * 1000;
-
-/// Since when a line that is no reason to wake its caller (`Settled::NoNews`)
-/// has stood, if it is one.
-fn rides_since(how: &Settled) -> Option<u64> {
-    match how {
-        Settled::NoNews(since) => Some(*since),
-        _ => None,
-    }
+/// A rider never starts a turn. Place refusals are actionable for the top
+/// chat, and can go alone once nobody still owes it a wake.
+pub(crate) fn riders_go(company: bool, otherwise_owed: bool, needs_action: bool) -> bool {
+    company || (needs_action && !otherwise_owed)
 }
 
-/// Whether such lines, the oldest standing since `oldest`, go out now. A wake
-/// costs a caller a read of its whole context, so they go with a notice it is
-/// getting anyway (`company`). Alone they go once all it is owed is such lines
-/// (`only_riders`), or with nothing anywhere at work (`busy` 0), so no notice is
-/// on its way: all that lets a power-off start counting (power/rule.rs `advance`), which
-/// is not to go ahead of a line held here. That is this gate's word only: a line
-/// past it can still be held back, as any notice can, by a draft in its caller's
-/// composer or a turn it is on, and a power-off does not wait for that. Their debts
-/// stay open until then, for a `luna_session_wait` and against `reap`, and what happens to
-/// the session meanwhile replaces the line.
-pub(crate) fn riders_go(company: bool, only_riders: bool, oldest: u64, now: u64, busy: usize) -> bool {
-    company || only_riders || busy == 0 || now.saturating_sub(oldest) >= RIDE_MAX_MS
+fn rides(how: &Settled, owed: Owed) -> bool {
+    matches!(how, Settled::Resumed) || (matches!(how, Settled::Quiet(_) | Settled::WaitsOnBackground(_)) && !owed.can_stall())
 }
 
-/// The longest a notice ready for an idle caller waits for another helper of
-/// the caller's that is mid-turn, so that two finishing seconds apart come as
-/// one notice, and one turn of the caller's, rather than two. Short beside
-/// RIDE_MAX_MS: an answer is news, and a caller may be waiting on it.
+/// The longest a ready notice waits to batch with another session's answer.
 pub(super) const COALESCE_MS: u64 = 20_000;
-// Within what a line with no news waits for company.
-const _: () = assert!(COALESCE_MS < RIDE_MAX_MS);
 
 /// Whether a notice first ready at `first_ready` waits on at `now`: only while
 /// something else the caller is owed is at work (`others_working`), and never
@@ -346,12 +318,13 @@ fn notify_once(
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let Registry { owed, known, names, .. } = &mut *r;
         let up_ms = core_up_ms();
-        owed.retain(|(caller, id), _| {
+        owed.retain(|(caller, id), o| {
             #[cfg(test)]
             if !crate::agents::sweep_includes(caller) {
                 return true;
             }
-            let stands = owed_stands(known, caller, id, up_ms);
+            let stands =
+                owed_stands(known, caller, id, up_ms) || known.contains_key(id) && crate::agents::teardown::unread_holds(o, now_ms());
             if !stands && known.contains_key(id) {
                 gave_up.push((caller.clone(), id.clone()));
             }
@@ -379,7 +352,8 @@ fn notify_once(
         // has none to come (background/events.rs `keeps_listening`). Under
         // this lock, which goes before the background one: a debt made
         // meanwhile would not be in what it goes by.
-        let owed_to: std::collections::HashSet<String> = owed.keys().map(|(caller, _)| caller.clone()).collect();
+        let owed_to: std::collections::HashSet<String> =
+            owed.iter().filter(|(_, o)| o.active()).map(|((caller, _), _)| caller.clone()).collect();
         crate::background::listen_only_while_owed(&owed_to);
     }
     for (caller, id) in gave_up {
@@ -486,14 +460,18 @@ fn notify_once(
             if held_for_wait(pty, &caller, id, o) {
                 continue;
             }
-            let said =
-                if pair_stopped(pty, &caller, id) { standing_line(pty, who, id, k, *o) } else { notice_line(pty, &caller, who, id, k, *o) };
+            let said = notice_line(pty, &caller, who, id, k, *o);
+            let said = if pair_stopped(pty, &caller, id) && said.as_ref().is_some_and(|(_, how)| counts_for_breaker(how)) {
+                standing_line(pty, who, id, k, *o).filter(|_| o.active())
+            } else {
+                said
+            };
             match said {
                 Some((Some(mut line), how)) => {
                     if let Some(suffix) = breaker_suffix(&caller, id, &how, now_ms()) {
                         line.push_str(suffix);
                     }
-                    if rides_since(&how).is_some() {
+                    if rides(&how, *o) {
                         riders.push((line, id.clone(), how, *o));
                     } else {
                         lines.push(line);
@@ -512,17 +490,13 @@ fn notify_once(
                         o.held = None;
                     }
                 }
-                Some((None, how @ Settled::Skip(..))) => {
+                Some((None, how @ (Settled::Skip(..) | Settled::Silent(..)))) => {
                     settle_told(&mut reg().lock().unwrap_or_else(|e| e.into_inner()), (caller.clone(), id.clone()), how, o);
-                }
-                Some((None, Settled::Unasked)) => {
-                    let key = (caller.clone(), id.clone());
-                    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                    if r.owed.get(&key).is_some_and(|now| now.rev == o.rev) {
-                        r.owed.remove(&key);
-                        drop(r);
-                        crate::background::save();
-                        crate::log::info("agents", &format!("{} answered {} with no reply asked: no notice", label(id), label(&caller)));
+                    crate::background::save();
+                    if o.resumed && o.active() {
+                        if let Some((Some(line), how @ Settled::Resumed)) = standing_line(pty, who, id, k, *o) {
+                            riders.push((line, id.clone(), how, *o));
+                        }
                     }
                 }
                 _ => {}
@@ -538,17 +512,16 @@ fn notify_once(
         let spawn_lines = spawns.remove(&caller).unwrap_or_default();
         lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
         let refused = places.remove(&caller);
-        if let Some(oldest) = riders.iter().filter_map(|(_, _, how, _)| rides_since(how)).chain(refused.as_ref().map(|p| p.since)).min() {
-            if riders_go(!lines.is_empty(), riders.len() == items.len(), oldest, now_ms(), crate::activity::summary().busy) {
-                for (line, id, how, o) in riders {
-                    lines.push(line);
-                    settled.push((id, how, o));
-                }
-                // Told once it is in, as a queued line is (`deliver_notice`).
-                if let Some(line) = refused.map(|p| p.line()) {
-                    lines.push(line.clone());
-                    news_lines.push(line);
-                }
+        let otherwise_owed = refused.is_some()
+            && reg().lock().unwrap_or_else(|e| e.into_inner()).owed.iter().any(|((to, _), o)| *to == caller && o.active());
+        if riders_go(!lines.is_empty(), otherwise_owed, refused.is_some()) {
+            if let Some(line) = refused.map(|p| p.line()) {
+                lines.push(line.clone());
+                news_lines.push(line);
+            }
+            for (line, id, how, o) in riders {
+                lines.push(line);
+                settled.push((id, how, o));
             }
         }
         if lines.is_empty() {
@@ -712,7 +685,7 @@ pub(in crate::agents) fn hand_off(id: &str) -> Result<HandingOff, String> {
 /// end brings. Not a prompt or a question, which hold until they are answered
 /// and cannot loop by themselves, and a busy helper may ask many.
 fn counts_for_breaker(how: &Settled) -> bool {
-    matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Pending(..))
+    matches!(how, Settled::Answered | Settled::Pending(..) | Settled::Reported(..))
 }
 
 /// What a notice tells of, for `deliver_notice` to settle once it is in.
@@ -737,17 +710,18 @@ struct Notice {
 fn kind_of(how: &Settled) -> &'static str {
     match how {
         Settled::Answered => "answered",
+        Settled::Failed => "failed",
         Settled::Pending(..) => "pending",
+        Settled::Reported(..) => "reported",
         Settled::Hold(_) => "hold",
         Settled::Unhold => "unhold",
         Settled::Skip(..) => "skip",
         Settled::Waiting => "waiting",
         Settled::Asked(_) => "asked",
         Settled::Resumed => "resumed",
-        Settled::NoNews(_) => "no-news",
         Settled::Quiet(_) => "quiet",
         Settled::WaitsOnBackground(_) => "waits-on-background",
-        Settled::Unasked => "unasked",
+        Settled::Silent(..) => "silent",
         Settled::Exited => "exited",
     }
 }
@@ -845,7 +819,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             // Its words on what never reached them went with this notice.
             let told_lost: Vec<String> = settled
                 .iter()
-                .filter(|(_, how, _)| matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited))
+                .filter(|(_, how, _)| matches!(how, Settled::Answered | Settled::Failed | Settled::Exited))
                 .map(|(id, _, _)| id.clone())
                 .collect();
             let mut stopped = Vec::new();
@@ -860,6 +834,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
                 let wake = news_lines.iter().any(|line| is_wake(line));
                 notice_turn(&mut r, caller, turn, &told_of, wake);
             }
+            let told_debts = !settled.is_empty();
             for (id, how, told) in settled {
                 let now = now_ms();
                 if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now) {
@@ -889,7 +864,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
             }
-            if !told_lost.is_empty() || told_news || told_spawns {
+            if told_debts || told_news || told_spawns {
                 crate::background::save();
             }
             for id in stopped {
@@ -909,13 +884,13 @@ fn places_told(r: &mut Registry, caller: &str, news_lines: &[String]) {
 
 /// A notice that went into `caller` (`text`) settles what it told of `id`.
 fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, told: &Owed, text: &str, ended: Option<u32>) {
-    let answered = matches!(how, Settled::Answered);
+    let answered = matches!(how, Settled::Answered | Settled::Failed);
     // Told of its end: a wake before it is behind it (lines.rs `woken_before`).
     // Not one at the turns it has ended now (`ended`), which it has yet to take
     // up: another caller told of the same end without a wake would have the
     // next look wake it again.
     let behind = |w: &lines::Woken| ended.is_none_or(|e| w.ended < e);
-    if matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited) && r.woken.get(&id).is_some_and(behind) {
+    if matches!(how, Settled::Answered | Settled::Failed | Settled::Exited) && r.woken.get(&id).is_some_and(behind) {
         r.woken.remove(&id);
     }
     settle_told(r, (caller.to_string(), id.clone()), how, told);
@@ -945,13 +920,15 @@ fn ack_background_stop(r: &Registry, caller: &str, id: &str, text: &str) {
 pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled, told: &Owed) {
     if r.owed.get(&key).map(|o| o.rev) != Some(told.rev) {
         // Told as it was before another ask took it in: that ask is what is left.
-        if matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited | Settled::Unasked) {
+        if matches!(how, Settled::Answered | Settled::Failed | Settled::Exited) {
             crate::agents::owed::told_before(r, &key, told.rev);
+        } else if let Some(o) = r.owed.get_mut(&key) {
+            carry_delivery(o, &how, *told);
         }
         return;
     }
     match how {
-        Settled::Answered | Settled::NoNews(_) | Settled::Exited | Settled::Unasked => {
+        Settled::Answered | Settled::Failed | Settled::Exited => {
             r.owed.remove(&key);
         }
         Settled::Waiting => {
@@ -959,8 +936,26 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
                 o.told_waiting = true;
             }
         }
-        Settled::Pending(ended, cursor, request_match) => {
-            r.owed.insert(key, Owed { request_match, ..Owed::pending(ended, cursor) });
+        Settled::Pending(ended, cursor, request_match, status, job_running) => {
+            let mut wake = told.wake;
+            if let Some(status) = status {
+                wake.reported(status, ended);
+            }
+            wake.job_running = job_running;
+            wake.skipped = None;
+            wake.silent = None;
+            wake.unread_since = None;
+            wake.quiet_send = false;
+            r.owed.insert(key, Owed { request_match, wake, no_reply: told.no_reply, ..Owed::pending(ended, cursor) });
+        }
+        Settled::Reported(cursor, request_match, status, turn) => {
+            let o = r.owed.get_mut(&key).unwrap();
+            o.wake.reported(status, turn);
+            o.wake.silent = None;
+            o.wake.unread_since = None;
+            o.cursor = cursor;
+            o.request_match = request_match;
+            o.resumed = false;
         }
         Settled::Asked(ask) => {
             if let Some(o) = r.owed.get_mut(&key) {
@@ -974,26 +969,60 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
         }
         Settled::Quiet(ended) => {
             if let Some(o) = r.owed.get_mut(&key) {
+                o.wake.stalled |= o.can_stall();
                 o.told_quiet = Some(ended);
             }
         }
         Settled::WaitsOnBackground(ended) => {
             if let Some(o) = r.owed.get_mut(&key) {
+                o.wake.stalled |= o.can_stall();
                 o.told_background_wait = Some(ended);
             }
         }
-        // Owed on from this turn, what it said included: a turn a lead ended
-        // with its delegates at work counts as told it is not done, with
-        // nothing said (lines.rs `worth_waking`).
-        Settled::Skip(ended, cursor) => {
-            if let Some(o) = r.owed.get_mut(&key) {
-                o.baseline = ended;
-                o.held = None;
-                o.told_pending = true;
-                o.held_to = Some(cursor);
+        Settled::Skip(ended, cursor, job_running, real_turn) => {
+            let o = r.owed.get_mut(&key).unwrap();
+            if real_turn {
+                o.wake.passed_plan(ended);
+                if o.wake.skipped.is_some() || o.wake.silent.is_some() {
+                    o.wake.quiet_send = false;
+                }
             }
+            o.wake.skipped = Some(ended);
+            o.wake.job_running = job_running;
+            o.held = None;
+            o.held_to = Some(cursor);
+        }
+        Settled::Silent(ended, unread) => {
+            let o = r.owed.get_mut(&key).unwrap();
+            o.wake.silent = Some(ended);
+            if unread {
+                o.wake.unread_since.get_or_insert_with(now_ms);
+            }
+            o.wake.job_running = false;
+            o.held = None;
         }
         Settled::Hold(_) | Settled::Unhold => {}
+    }
+}
+
+/// A follow-up can merge a debt while its notice is going in. Keep the read
+/// already delivered. Only an actual new task clears its stall/status history.
+fn carry_delivery(o: &mut Owed, how: &Settled, told: Owed) {
+    let Some(same_task) = o.no_task_since(told.rev) else { return };
+    match *how {
+        Settled::Reported(cursor, request_match, status, turn) | Settled::Pending(turn, cursor, request_match, Some(status), _) => {
+            if cursor > o.cursor {
+                o.cursor = cursor;
+                o.request_match = request_match;
+            }
+            if same_task {
+                o.wake.reported(status, turn);
+            }
+        }
+        Settled::Quiet(_) | Settled::WaitsOnBackground(_) if same_task && told.can_stall() => {
+            o.wake.stalled = true;
+        }
+        _ => {}
     }
 }
 
@@ -1159,8 +1188,7 @@ mod tests {
         crate::background::left_for_test("lj-s", &[("tail.exe", 22104)]);
         let mut first = Owed { rev: o.rev, ..Owed::from(2, o.cursor) };
         first.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
-        let Some((Some(text), Settled::Pending(3, ..))) = line(first) else { panic!("not done yet") };
-        assert!(text.contains("NOT done yet [job running: tail.exe (pid 22104)]"), "{text}");
+        assert!(matches!(line(first), Some((None, Settled::Skip(3, ..)))), "interim end stays quiet");
         // Told: still a job, nothing more to say, and no end for a wait either.
         let told = Owed { told_pending: true, ..o };
         assert!(matches!(line(told), None | Some((None, _))));
@@ -1169,7 +1197,7 @@ mod tests {
         crate::background::left_for_test("lj-s", &[]);
         let mut ended = told;
         ended.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
-        let Some((Some(text), Settled::NoNews(_))) = line(ended) else { panic!("the job's end") };
+        let Some((Some(text), Settled::Answered)) = line(ended) else { panic!("the job's end") };
         assert!(text.contains("has nothing left running now"), "{text}");
         crate::background::gone_for_test("lj-s");
         forget("lj-s");
@@ -1215,27 +1243,18 @@ mod tests {
         }
     }
 
-    /// A job's end with no word from it, or an idle job, is told of with the
-    /// next notice; on its own only once nothing else can bring one.
     #[test]
-    fn a_line_with_no_news_rides_with_the_next_notice() {
-        let now = 100 * RIDE_MAX_MS;
-        let fresh = now - 30_000;
-        assert!(!riders_go(false, false, fresh, now, 1), "another helper at work: it waits for that one's notice");
-        assert!(riders_go(true, false, fresh, now, 1), "a notice is going in anyway");
-        assert!(riders_go(false, true, fresh, now, 1), "nothing else owed: this is the last it will hear");
-        assert!(!riders_go(false, false, now - RIDE_MAX_MS + 1, now, 1));
-        assert!(riders_go(false, false, now - RIDE_MAX_MS, now, 1), "it may be waiting on this very job");
-        // An open debt that can bring nothing (a stopped pair, a chat at rest), and
-        // all is idle: nothing is coming.
-        assert!(riders_go(false, false, fresh, now, 0));
-        // The line settles a debt as it always did; only going out does.
-        let key = ("rd-c".to_string(), "rd-s".to_string());
-        let o = Owed::pending(3, 0);
-        reg().lock().unwrap().owed.insert(key.clone(), o);
-        assert!(counts_for_breaker(&Settled::NoNews(1)));
-        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::NoNews(1), &o);
-        assert!(!reg().lock().unwrap().owed.contains_key(&key), "settled");
+    fn riders_use_an_existing_wake_and_only_actionable_refusals_can_go_alone() {
+        assert!(riders_go(true, true, false));
+        assert!(!riders_go(false, false, false));
+        assert!(!riders_go(false, true, true));
+        assert!(riders_go(false, false, true));
+        let mut o = Owed::pending(3, 0);
+        assert!(rides(&Settled::Resumed, o));
+        assert!(!rides(&Settled::Quiet(3), o));
+        o.wake.stalled = true;
+        assert!(rides(&Settled::Quiet(4), o));
+        assert!(rides(&Settled::WaitsOnBackground(3), o));
     }
 
     /// 2 November: a helper's pwsh hung for 25 minutes mid-turn on a process a
@@ -1268,6 +1287,27 @@ mod tests {
     }
 
     #[test]
+    fn only_a_send_wanting_a_reply_renews_the_stall() {
+        use crate::agents::owed::{owe_asked, Asked};
+        let key = ("renew-stall-caller".to_string(), "renew-stall-helper".to_string());
+        let (caller, id) = (&key.0, &key.1);
+        owe_from(caller, id, 0, 0);
+        let debt = || reg().lock().unwrap().owed[&key];
+        assert!(debt().can_stall());
+        let first = debt();
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Quiet(0), &first);
+        assert!(!debt().can_stall(), "the quiet stall is spent");
+        owe_asked(caller, id, 1, 0, &Asked { text: "FYI", key: None, reply: false });
+        assert!(debt().wake.stalled && !debt().can_stall(), "an FYI keeps the same task");
+        let previous = debt();
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Silent(2, true), &previous);
+        assert!(!debt().active() && debt().wake.stalled, "a plain idle end is quiet after the stall");
+        owe_asked(caller, id, 2, 0, &Asked { text: "Try again", key: None, reply: true });
+        assert!(debt().can_stall(), "a new task");
+        reg().lock().unwrap().owed.remove(&key);
+    }
+
+    #[test]
     fn a_jobs_end_goes_to_a_wait_that_is_out_and_not_to_a_notice_too() {
         let (known, o, path) = job_over_helper("jw-s", "jw-c", "");
         let key = ("jw-c".to_string(), "jw-s".to_string());
@@ -1296,7 +1336,7 @@ mod tests {
         drop(out);
         let stood = debt();
         assert!(!held_for_wait(pty, "jw-c", "jw-s", &stood));
-        assert!(matches!(notice_line(pty, "jw-c", "Your helper", "jw-s", &known, stood), Some((Some(_), Settled::NoNews(_)))));
+        assert!(matches!(notice_line(pty, "jw-c", "Your helper", "jw-s", &known, stood), Some((Some(_), Settled::Answered))));
         // A job back at work starts it over.
         assert!(!job_end_stood(&key, 3, false));
         assert_eq!(debt().held, None);
@@ -1348,7 +1388,7 @@ mod tests {
     #[test]
     fn the_breaker_counts_turn_ends_and_not_prompts() {
         assert!(counts_for_breaker(&Settled::Answered));
-        assert!(counts_for_breaker(&Settled::Pending(1, 0, None)));
+        assert!(counts_for_breaker(&Settled::Pending(1, 0, None, None, false)));
         assert!(!counts_for_breaker(&Settled::Waiting), "a busy helper asks often, and holds until answered");
         assert!(!counts_for_breaker(&Settled::Asked(1)));
         assert!(!counts_for_breaker(&Settled::Exited));
@@ -1451,16 +1491,6 @@ mod tests {
         for id in [helper, lead, chat] {
             forget(id);
         }
-    }
-
-    #[test]
-    fn a_line_with_no_news_waits_to_ride_with_another() {
-        let now = 1_000_000;
-        let fresh = now - 1000;
-        assert!(!riders_go(false, false, fresh, now, 1), "owed another helper's answer, with work going on: it waits for that");
-        assert!(riders_go(false, true, fresh, now, 1), "owed nothing else");
-        assert!(riders_go(true, false, fresh, now, 1), "a notice is going in anyway");
-        assert!(riders_go(false, false, now - RIDE_MAX_MS, now, 1), "ten minutes at most");
     }
 
     /// A notice put together before a handover and going in after it, the gap
@@ -1721,7 +1751,7 @@ mod tests {
         // The helper's "ok" to it: no notice, and the first answer not again.
         std::fs::write(&path, format!("{first}{}{}", prompt("FYI: main moved"), said("ok."))).unwrap();
         crate::background::idle_for_test(id, Provider::Claude, 2, false);
-        assert!(matches!(notice_line(pty, a, "Your helper", id, &k, left), Some((None, Settled::Unasked))));
+        assert!(matches!(notice_line(pty, a, "Your helper", id, &k, left), Some((None, Settled::Silent(..)))));
         reg().lock().unwrap().owed.remove(&key);
         for s in [id, a] {
             crate::background::gone_for_test(s);
@@ -1777,7 +1807,7 @@ mod tests {
         reg().lock().unwrap().owed.insert(key.clone(), left);
         std::fs::write(&path, format!("{first}{}{}", prompt("FYI: main moved"), said("ok."))).unwrap();
         crate::background::idle_for_test(id, Provider::Claude, 3, false);
-        assert!(matches!(notice_line(pty, a, "Your helper", id, &k, left), Some((None, Settled::Unasked))));
+        assert!(matches!(notice_line(pty, a, "Your helper", id, &k, left), Some((None, Settled::Silent(..)))));
         reg().lock().unwrap().owed.remove(&key);
         for s in [id, a] {
             crate::background::gone_for_test(s);
