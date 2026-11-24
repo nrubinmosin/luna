@@ -106,7 +106,11 @@ fn accounts_below(r: &Registry) -> Vec<(String, String, String)> {
     r.known
         .iter()
         .filter_map(|(id, k)| {
-            let chat = top_chat(r, k.parent.as_deref()?)?;
+            k.parent.as_ref()?;
+            let chat = top_chat(r, id)?;
+            if !r.known.contains_key(&chat) {
+                return None;
+            }
             Some((chat, format!("{}/{}", k.provider.as_str(), k.account), id.clone()))
         })
         .collect()
@@ -177,7 +181,8 @@ pub(in crate::agents) fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<Str
             let told = QuotaTold { level, resets_at: resets_at.clone() };
             if say {
                 let resets = resets_at.as_deref().map(|t| format!(" (resets {t})")).unwrap_or_default();
-                let line = format!("Account {account}, which your helpers run on, has used {pct:.0}% of its \"{label}\" window{resets}.");
+                let line =
+                    format!("Account {account}, used by delegates on your line, has used {pct:.0}% of its \"{label}\" window{resets}.");
                 news.entry(caller.clone()).or_default().push(QuotaNews { key, told, line });
             } else if level == 0 {
                 r.quota_told.remove(&key);

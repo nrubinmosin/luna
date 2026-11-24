@@ -256,8 +256,8 @@ it lies in.
   written into an account or a project, and no ledger note or backup is kept:
   the library is read at the start. A plugin that will not write (a locked file,
   a full disk) leaves the session to start without its folder skills, said as
-  `library.skills-off`, and for a helper to its parent too, with its next notice
-  (`agents::turn_without_skills`). The pass lays out no Claude Code folder
+  `library.skills-off`. For a delegate, the top chat also hears once per cause,
+  until it changes or clears (`agents::turn_folder_skills`). The pass lays out no Claude Code folder
   copy. The copies 0.19 kept, and 0.20 with its `claudeFolderCopies` setting
   (gone since; a settings file that still has it reads as one without it), in
   `<data>/library-folders/<slug>/<account>/.claude/skills/<name>` and passed as

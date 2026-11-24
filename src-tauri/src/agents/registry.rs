@@ -5,6 +5,7 @@
 use crate::agents::handover::taken_over_error;
 use crate::agents::held::Held;
 use crate::agents::notifier::lines::{NoticeTurn, Woken};
+use crate::agents::notifier::system::SystemNews;
 use crate::agents::notifier::usage::QuotaTold;
 use crate::agents::owed::{Owed, Receipt, Requests};
 use crate::agents::spawn::{PlacesRefused, SpawnTaken};
@@ -57,11 +58,12 @@ pub(super) fn top_of(r: &Registry, id: &str) -> String {
     cur
 }
 
-/// The real chat on this line, if it has one. An orphan or a missing link can
-/// end a lineage without a chat to receive system news.
+/// The chat on a known session's line. The top may have yet to register after
+/// a restart. A known orphan does not stand in for the chat it lost.
 pub(super) fn top_chat(r: &Registry, id: &str) -> Option<String> {
+    r.known.get(id)?;
     let top = top_of(r, id);
-    (!is_dev(&top) && persons_chat_in(r, &top)).then_some(top)
+    (!is_dev(&top) && r.known.get(&top).is_none_or(Known::is_persons_chat)).then_some(top)
 }
 
 pub(super) struct Registry {
@@ -165,6 +167,7 @@ pub(super) struct Registry {
     pub(super) quota_told: HashMap<(String, String, String), QuotaTold>,
     /// Lines for a caller's next notice that no debt brings: by caller.
     pub(super) news: Vec<(String, String)>,
+    pub(super) system_news: Vec<SystemNews>,
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,
@@ -209,6 +212,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             exits: HashMap::new(),
             quota_told: HashMap::new(),
             news: Vec::new(),
+            system_news: Vec::new(),
             places_refused: HashMap::new(),
         })
     });

@@ -353,14 +353,17 @@ pub(in crate::agents) fn last_notice(caller: &str, id: &str, now: u64) -> bool {
 pub(in crate::agents) fn pair_stopped(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool {
     let key = (caller.to_string(), id.to_string());
     let Some(at) = reg().lock().unwrap_or_else(|e| e.into_inner()).stopped.get(&key).copied() else { return false };
-    let since = now_ms().saturating_sub(at);
-    let typed = |s: &str| pty.typed_ago_ms(s).is_some_and(|ago| ago < since);
-    if !typed(caller) && !typed(id) {
+    if !breaker_lifted(pty, caller, id, at) {
         return true;
     }
     reg().lock().unwrap_or_else(|e| e.into_inner()).stopped.remove(&key);
     crate::log::info("agents", &format!("notices to {} about {} go on: a person has typed in", label(caller), label(id)));
     false
+}
+
+pub(super) fn breaker_lifted(pty: &crate::pty::PtyManager, caller: &str, id: &str, at: u64) -> bool {
+    let since = now_ms().saturating_sub(at);
+    [caller, id].iter().any(|s| pty.typed_ago_ms(s).is_some_and(|ago| ago < since))
 }
 
 /// The notice for one session, or None while nothing has happened to it.
@@ -654,11 +657,9 @@ const NOTHING_RUNNING: &str = " [idle; send to resume]";
 /// owed to it by anyone else, a helper of its own or a session it wrote to,
 /// whose notice would wake it; no `luna_session_wait` of its out; nothing
 /// queued, held or reserved for it; and no line waiting to go in, one queued
-/// (`news`) or one the notifier types in by itself: a quota notice, a spawn
-/// a core's going cut off, or a refused place. Each is read as it stands now, not as the
-/// notifier's last look saw it, so that what changed since can only hold the
-/// sentence back. What its words say it waits on does not count: only what
-/// Luna sees run.
+/// (`news`) or a spawn a core's going cut off. Usage and places news can
+/// wake a top chat only. Each is read as it stands when the notice is made.
+/// Only the work Luna sees counts.
 fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option<crate::activity::TurnState>) -> bool {
     if !ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy) {
         return false;
@@ -675,7 +676,7 @@ fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option
             && !r.spawns.values().any(|s| s.caller == id && (s.left_by_core || s.news.is_some()))
             && !r.places_refused.contains_key(id)
     };
-    // The quota check asks whether helpers are live off the registry's lock.
+    // Quota checks whether delegates are live off the registry's lock.
     quiet && !quota_due(pty, id)
 }
 
@@ -2381,20 +2382,17 @@ mod tests {
             // Only its parent is told to send to it.
             let to_other = says(other).unwrap_or_else(|| panic!("{tag}: a caller not its parent still hears"));
             assert!(!to_other.contains(NOTHING_RUNNING), "{tag}: {to_other}");
-            // A line the notifier has for it, as an account's usage window is,
-            // published after its last look read usage: the turn that wakes
-            // it starts without a send of its parent's.
+            // A delegate account's high usage only wakes the top chat.
             let (sub, account) = (format!("nx-{tag}-sub"), format!("nx{tag}"));
             register(&sub, Provider::Claude, "C:\\p", &format!("C:/acc/anthropic/{account}"), Some(id), false, serde_json::json!({}));
             crate::background::idle_for_test(&sub, Provider::Claude, 1, false);
             let usage = serde_json::json!({ "limits": [{ "label": "5h", "usedPct": 95.0 }] });
             reg().lock().unwrap().usage.insert(format!("claude/{account}"), usage);
             let line = says(top).unwrap_or_default();
-            assert!(line.contains("finished its turn") && !line.contains(NOTHING_RUNNING), "{tag}, a line is coming: {line}");
+            assert!(line.contains("finished its turn") && line.contains(NOTHING_RUNNING), "{tag}: {line}");
             reg().lock().unwrap().usage.remove(&format!("claude/{account}"));
             crate::background::gone_for_test(&sub);
             forget(&sub);
-            assert!(says(top).unwrap_or_default().contains(NOTHING_RUNNING), "{tag}: as before once it is said");
             // Its CLI cut its background work off: that line says how it goes on.
             crate::background::background_stopped_for_test(id, &[top]);
             let cut = says(top).unwrap_or_default();
@@ -2458,15 +2456,14 @@ mod tests {
         reg().lock().unwrap().news.push((id.into(), "a line for it".into()));
         stops("a line queued to go into it");
         reg().lock().unwrap().news.retain(|(c, _)| c != id);
-        // What the notifier types in by itself, read as it stands now (issue
-        // #77, review): what was published since its last look counts too.
+        // Quota on a lead's line does not start the lead's next turn.
         let sub = "rn-sub";
         register(sub, Provider::Claude, "C:\\p", "C:/acc/anthropic/rn-acc", Some(id), false, serde_json::json!({}));
         crate::background::idle_for_test(sub, Provider::Claude, 1, false);
         assert!(runs_nothing(pty, id, top, idle), "an idle helper of its own, nothing to say of it");
         let window = |pct: f64| serde_json::json!({ "limits": [{ "label": "5h", "usedPct": pct }] });
         reg().lock().unwrap().usage.insert("claude/rn-acc".into(), window(95.0));
-        stops("its helper's account past a usage level it has not been told of");
+        assert!(runs_nothing(pty, id, top, idle), "only the top chat hears quota");
         reg().lock().unwrap().usage.insert("claude/rn-acc".into(), window(40.0));
         assert!(runs_nothing(pty, id, top, idle), "a window below every level");
         reg().lock().unwrap().usage.remove("claude/rn-acc");

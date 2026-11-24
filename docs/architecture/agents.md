@@ -591,9 +591,8 @@ turn, stopped on a prompt (once per stop) or exited.
   none, its lines going to the log. Typing one takes seconds and the turn it
   starts may ask again meanwhile, so the notifier changes the debt only if it is
   still the one it announced.
-- Lines no debt brings (`Registry::news`: a helper taken over, an auto-delete, a
-  queued text refused, a breaker trip under a lead, or a turn missing folder
-  skills) wait for a caller a restart has yet to bring back for as
+- Lines no debt brings (a helper taken over, an auto-delete, a queued text
+  refused, or a system notice) wait for a caller a restart has yet to bring back for as
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
   `chat-ties.json` until told.
 - **Riders.** A job's end with nothing said (`Settled::NoNews`), the idle line,
@@ -711,16 +710,17 @@ turn, stopped on a prompt (once per stop) or exited.
   (read.rs `moved_to`: the cursor, `held_to` and each `since`'s).
 - **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller,
   session) pair (`BREAKER_NOTICES`), that pair's turn and job news stops. A
-  chat caller hears in the last notice. For a lead caller, the line goes
-  to its top chat. The log warns, the desktop is told once, and a person
+  chat caller hears in the last notice. A lead gets a short warning in
+  that notice and its top chat gets the details. The log warns, the desktop is told once, and a person
   typing into either chat lifts it. Prompts, questions and exits still come
   (`standing_line`).
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
   window (`<data>/quota-told.json`). `quota_due` uses the same lineage as
   `quota_news`. Breaker lines, folder-skills failures and places notices
-  also go to the top chat. News waits for a known chat until it can take a
-  notice. With no chat above the delegates there is no recipient. Leads
+  also go to the top chat. Folder-skills news is told once until the cause
+  changes or clears. News can wait for a top chat to register after a restart.
+  With no chat above the delegates there is no recipient. Leads
   still hear their delegates' outcomes, including failures on a usage limit.
 - **Context.** The pane meter and on-demand `luna_session_get` are the two
   places Luna shows context use (`background::Context`). Its basis is the CLI's estimated

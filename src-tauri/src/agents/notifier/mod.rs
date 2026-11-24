@@ -3,6 +3,7 @@
 //! tool's desktop notification.
 
 pub(super) mod lines;
+pub(super) mod system;
 pub(super) mod usage;
 
 use crate::agents::ask::live;
@@ -12,13 +13,14 @@ use crate::agents::notifier::lines::{
     count_notice, is_wake, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
     BREAKER_WINDOW_MS,
 };
+use crate::agents::notifier::system::SystemNews;
 use crate::agents::notifier::usage::{quota_file, quota_from, quota_news, save_quota_told, your_helper, QuotaNews};
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
-use crate::agents::registry::{chat_name, is_dev, is_persons_chat, label, parent_of, reg, top_chat, waits_on_helpers, Known, Registry};
+use crate::agents::registry::{chat_name, is_dev, is_persons_chat, label, parent_of, reg, waits_on_helpers, Known, Registry};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::spawn::PlacesRefused;
-use crate::agents::teardown::{reap, SKILLS_OFF_LINE};
+use crate::agents::teardown::reap;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
@@ -385,13 +387,17 @@ pub(super) fn notifier() {
                 if is_dev(caller) {
                     crate::log::warn("agents", &format!("{caller} is not there to be told: {line}"));
                 }
-                !is_dev(caller) && keep_queued_news(known.get(caller), line, up_ms)
+                !is_dev(caller) && (known.contains_key(caller) || up_ms < CALLER_RETURN_MS)
             });
             for (caller, line) in queued.iter().filter(|(caller, _)| known.get(caller).is_some_and(|k| !k.waiting)) {
                 news.entry(caller.clone()).or_default().push(line.clone());
             }
         }
         for caller in news.keys() {
+            by_caller.entry(caller.clone()).or_default();
+        }
+        let mut system_news = system::news(pty, core_up_ms());
+        for caller in system_news.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
         let mut spawns = spawn_news(core_up_ms());
@@ -404,7 +410,7 @@ pub(super) fn notifier() {
             let r = reg().lock().unwrap_or_else(|e| e.into_inner());
             r.places_refused
                 .iter()
-                .filter(|(caller, _)| r.known.get(*caller).is_some_and(|k| !k.waiting))
+                .filter(|(caller, _)| r.known.get(*caller).is_some_and(|k| k.is_persons_chat() && !k.waiting))
                 .map(|(caller, p)| (caller.clone(), p.clone()))
                 .collect()
         };
@@ -441,11 +447,8 @@ pub(super) fn notifier() {
                 };
                 match said {
                     Some((Some(mut line), how)) => {
-                        if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) && is_persons_chat(&caller) {
-                            line.push_str(&format!(
-                                " Luna stops telling you of its turns and jobs now ({BREAKER_NOTICES} notices in {} minutes); its prompts and questions still come, and a person typing into either chat lifts this.",
-                                BREAKER_WINDOW_MS / 60_000
-                            ));
+                        if let Some(suffix) = breaker_suffix(&caller, id, &how, now_ms()) {
+                            line.push_str(&suffix);
                         }
                         if rides_since(&how).is_some() {
                             riders.push((line, id.clone(), how, *o));
@@ -489,6 +492,9 @@ pub(super) fn notifier() {
             lines.extend(quota_lines.iter().map(|n| n.line.clone()));
             let mut news_lines: Vec<String> = news.remove(&caller).unwrap_or_default();
             lines.extend(news_lines.iter().cloned());
+            let system_lines = system_news.remove(&caller).unwrap_or_default();
+            lines.extend(system_lines.iter().map(|(_, line)| line.clone()));
+            let system_news = system_lines.into_iter().map(|(entry, _)| entry).collect();
             let spawn_lines = spawns.remove(&caller).unwrap_or_default();
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
             let refused = places.remove(&caller);
@@ -538,7 +544,7 @@ pub(super) fn notifier() {
             let text = format!("{NOTICE_TAG} {}", lines.join(" "));
             let typed = std::thread::Builder::new().name("luna-notice".into()).spawn(move || {
                 let _typing = typing;
-                let notice = Notice { settled, quota_lines, spawn_lines, news_lines, held_for };
+                let notice = Notice { settled, quota_lines, spawn_lines, news_lines, system_news, held_for };
                 deliver_notice(crate::pty::manager(), &caller, &text, notice);
             });
             if let Err(e) = typed {
@@ -552,14 +558,6 @@ pub(super) fn notifier() {
 /// still going in, and starts a turn of its own.
 pub(in crate::agents) fn notice_waits(caller: &str) -> bool {
     TypingInto::under_way(caller)
-}
-
-fn keep_queued_news(known: Option<&Known>, line: &str, up_ms: u64) -> bool {
-    let Some(known) = known else { return up_ms < CALLER_RETURN_MS };
-    // Old cores could queue a folder-skills line for a lead. Drop it once
-    // the recipient is known, since a top chat may register after restore.
-    let skills_off = line.strip_prefix("Your helper ").and_then(|s| s.split_once(SKILLS_OFF_LINE));
-    known.is_persons_chat() || skills_off.is_none_or(|(id, _)| id.contains(' '))
 }
 
 /// A debt a notice was put together on has become another since (`Owed::rev`), or
@@ -695,6 +693,7 @@ struct Notice {
     spawn_lines: Vec<(u64, String)>,
     /// The queued lines.
     news_lines: Vec<String>,
+    system_news: Vec<SystemNews>,
     /// How long it waited for company (`hold_for_company`), for the log: what
     /// a wider window of batching would have saved is read off there.
     held_for: Option<Duration>,
@@ -722,7 +721,7 @@ fn kind_of(how: &Settled) -> &'static str {
 
 /// Types a notice into `caller` and settles what it said (`Notice`).
 fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice: Notice) {
-    let Notice { settled, quota_lines, spawn_lines, news_lines, held_for } = notice;
+    let Notice { settled, quota_lines, spawn_lines, news_lines, system_news, held_for } = notice;
     let before = crate::activity::turn_state(caller);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     // Again here, where it goes in, and held from this check until it is in
@@ -737,6 +736,9 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
     };
     #[cfg(test)]
     tests::between_check_and_typing(caller);
+    if !system_news.is_empty() && !system::still_due(pty, caller, &system_news) {
+        return;
+    }
     // The turn it starts: the next, or for a background caller that has begun
     // one since the look, the one after that. A background caller whose turn
     // runs on and took it on stdin (`Placed::Joined`) answers it within that
@@ -782,12 +784,14 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
         .chain(quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
         .chain(spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
         .chain(news_lines.iter().map(|_| "news no debt brings".to_string()))
+        .chain(system_news.iter().map(|_| "system news".to_string()))
         .collect::<Vec<_>>()
         .join(", ");
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     match typed {
         Ok(None) => {
-            r.notices_held.insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len() + news_lines.len());
+            r.notices_held
+                .insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len() + news_lines.len() + system_news.len());
         }
         _ => {
             r.notices_held.remove(caller);
@@ -824,8 +828,9 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             }
             let mut breaker_news = false;
             for (id, how, told) in settled {
-                if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now_ms()) {
-                    breaker_news |= queue_breaker_news(&mut r, caller, &id);
+                let now = now_ms();
+                if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now) {
+                    breaker_news |= system::breaker(&mut r, caller, &id, now);
                     stopped.push(id.clone());
                 }
                 let now_ended = ended.get(&id).copied();
@@ -836,9 +841,10 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
                 r.quota_told.insert(n.key, n.told);
             }
             r.news.retain(|(c, line)| !(c == caller && news_lines.contains(line)));
+            system::told(&mut r, &system_news);
             places_told(&mut r, caller, &news_lines);
             // Told: not to be told again by a core after this one.
-            let told_news = !news_lines.is_empty();
+            let told_news = !news_lines.is_empty() || !system_news.is_empty();
             let told_spawns = !spawn_lines.is_empty();
             for (request, _) in spawn_lines {
                 r.spawns.remove(&request);
@@ -958,16 +964,17 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
     }
 }
 
-/// A lead's top chat hears when a pair on its line trips. If the caller is
-/// that chat, its last turn-end notice already says so.
-fn queue_breaker_news(r: &mut Registry, caller: &str, id: &str) -> bool {
-    let Some(chat) = top_chat(r, caller).filter(|chat| chat != caller) else { return false };
-    let line = format!(
-        "Luna stopped telling {caller} of the turns and jobs of {id} ({BREAKER_NOTICES} notices in {} minutes). Prompts and questions still come. A person typing into either chat lifts this.",
-        BREAKER_WINDOW_MS / 60_000
-    );
-    r.news.push((chat, line));
-    true
+fn breaker_suffix(caller: &str, id: &str, how: &Settled, now: u64) -> Option<String> {
+    if !counts_for_breaker(how) || !last_notice(caller, id, now) {
+        return None;
+    }
+    if is_persons_chat(caller) {
+        return Some(format!(
+            " Luna stops telling you of its turns and jobs now ({BREAKER_NOTICES} notices in {} minutes); its prompts and questions still come, and a person typing into either chat lifts this.",
+            BREAKER_WINDOW_MS / 60_000
+        ));
+    }
+    Some(" No more turn notices about it. Read it with luna_session_wait or luna_report_get.".into())
 }
 
 /// Logs the breaker trip and shows the desktop toast.
@@ -1278,7 +1285,6 @@ mod tests {
     #[test]
     fn a_refusal_for_want_of_places_is_told_once_and_a_later_one_again() {
         let bg = serde_json::json!({ "background": true });
-        register("pt-top", Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
         register("pt-lead", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("pt-top"), true, bg.clone());
         register("pt-other", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("pt-lead"), true, bg);
         let refuse = |id: &str| crate::agents::spawn::refused_a_place(&mut reg().lock().unwrap(), id);
@@ -1286,6 +1292,7 @@ mod tests {
         refuse("pt-lead");
         let told = line().unwrap();
         assert!(told.contains("pt-lead"), "{told}");
+        register("pt-top", Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
         // Another refused while that line went in: not what was told.
         refuse("pt-other");
         places_told(&mut reg().lock().unwrap(), "pt-top", std::slice::from_ref(&told));
@@ -1321,40 +1328,54 @@ mod tests {
     fn a_breaker_trip_under_a_lead_is_queued_only_for_its_top_chat() {
         let bg = serde_json::json!({ "background": true });
         let account = "C:/acc/anthropic/one";
-        register("bt-top", Provider::Claude, "C:/p", account, None, true, serde_json::json!({}));
+        let (top, lead, id) = ("bt-top", "bt-inner", "bt-helper");
         register("bt-lead", Provider::Claude, "C:/p", account, Some("bt-top"), true, bg.clone());
-        register("bt-inner", Provider::Claude, "C:/p", account, Some("bt-lead"), true, bg);
+        register(lead, Provider::Claude, "C:/p", account, Some("bt-lead"), true, bg.clone());
+        register(id, Provider::Claude, "C:/p", account, Some(lead), false, bg);
+        crate::agents::registry::set_name(id, "Check the gate");
+        crate::background::test_helper(lead, account, None, true);
+        let lines = crate::background::listening_for_test(lead);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        let now = now_ms();
+        assert!(breaker_suffix(lead, id, &Settled::Answered, now).is_none());
         {
             let mut r = reg().lock().unwrap();
-            assert!(queue_breaker_news(&mut r, "bt-inner", "bt-helper"));
-            assert!(!queue_breaker_news(&mut r, "bt-top", "bt-lead"), "the chat already has its own breaker suffix");
-            let news: Vec<_> = r.news.iter().filter(|(_, line)| line.contains("bt-helper")).collect();
-            assert_eq!(news.len(), 1);
-            assert_eq!(news[0].0, "bt-top");
-            assert!(news[0].1.contains("bt-inner"));
-            r.news.retain(|(to, _)| to != "bt-top");
+            for _ in 1..BREAKER_NOTICES {
+                assert!(!count_notice(&mut r, lead, id, now));
+            }
         }
-        forget("bt-top");
-        assert!(!queue_breaker_news(&mut reg().lock().unwrap(), "bt-inner", "bt-helper"));
-        forget("bt-inner");
-        forget("bt-lead");
-    }
-
-    #[test]
-    fn restored_folder_skills_news_waits_for_a_chat_but_is_dropped_for_a_lead() {
-        let skills = format!("Your helper rn-helper{SKILLS_OFF_LINE}disk full");
-        let account = "C:/acc/openai/one";
-        register("rn-chat", Provider::Codex, "C:/p", account, None, true, serde_json::json!({}));
-        register("rn-lead", Provider::Codex, "C:/p", account, Some("rn-chat"), true, serde_json::json!({ "background": true }));
-        let r = reg().lock().unwrap();
-        assert!(keep_queued_news(None, &skills, 0));
-        assert!(!keep_queued_news(None, &skills, CALLER_RETURN_MS));
-        assert!(keep_queued_news(r.known.get("rn-chat"), &skills, 0));
-        assert!(!keep_queued_news(r.known.get("rn-lead"), &skills, 0));
-        assert!(keep_queued_news(r.known.get("rn-lead"), "Your helper rn-helper stopped on a usage limit.", 0));
-        drop(r);
-        forget("rn-lead");
-        forget("rn-chat");
+        assert!(breaker_suffix(lead, id, &Settled::Waiting, now).is_none());
+        let suffix = breaker_suffix(lead, id, &Settled::Answered, now).unwrap();
+        assert!(suffix.contains("No more turn notices") && suffix.contains("luna_report_get"));
+        owe_from(lead, id, 0, 0);
+        let owed = reg().lock().unwrap().owed[&(lead.to_string(), id.to_string())];
+        let text = format!("{NOTICE_TAG} {id} answered.{suffix}");
+        let pty = crate::pty::manager();
+        deliver_notice(pty, lead, &text, Notice { settled: vec![(id.into(), Settled::Answered, owed)], ..Notice::default() });
+        assert!(lines.try_recv().unwrap().contains("No more turn notices"));
+        assert!(breaker_suffix(lead, id, &Settled::Answered, now).is_none(), "the trip has happened");
+        let saved = crate::agents::persist::chats_now();
+        let encoded = serde_json::to_value(saved).unwrap();
+        let restored: crate::agents::persist::SavedChats = serde_json::from_value(encoded).unwrap();
+        let saved_trip = restored.system_news.into_iter().filter(|n| n.about(id)).collect::<Vec<_>>();
+        assert_eq!(saved_trip.len(), 1);
+        assert_eq!(saved_trip[0].chat, top);
+        assert!(!system::news(pty, 0).contains_key(top), "the top has yet to register");
+        register(top, Provider::Claude, "C:/p", account, None, true, serde_json::json!({}));
+        let news = system::news(pty, 0);
+        assert!(news[top][0].1.contains("Check the gate"));
+        assert!(!news.contains_key(lead));
+        {
+            let mut r = reg().lock().unwrap();
+            let tripped = r.stopped[&(lead.into(), id.into())];
+            assert!(!system::breaker(&mut r, lead, id, tripped), "the same trip is queued once");
+        }
+        forget(top);
+        assert!(!system::breaker(&mut reg().lock().unwrap(), lead, id, now));
+        for session in [id, lead, "bt-lead"] {
+            crate::background::gone_for_test(session);
+            forget(session);
+        }
     }
 
     #[test]
