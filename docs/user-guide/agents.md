@@ -441,7 +441,7 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   into either chat. Luna tells the person's chat at the top of the line,
   logs the trip and shows a desktop notification. Prompts, questions, exits
   and a pair's first failure still come. Typing lifts the breaker, so the
-  caller can hear the replies and any error held since it tripped.
+  caller can hear the replies and the current outcome.
 - Your chat hears when an account used by live delegates under it reaches 90%
   and then 95% of a usage window, once each per window. It also hears when
   a delegate turn starts without its folder skills or a delegate's spawn is

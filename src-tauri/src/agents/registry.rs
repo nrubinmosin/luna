@@ -173,8 +173,6 @@ pub(super) struct Registry {
     pub(super) transcript_generations: HashMap<String, (u64, u64)>,
     /// When the most recent failure bypassed a tripped breaker.
     pub(super) failures_told: HashMap<(String, String), u64>,
-    /// Errors the breaker held back, even if a rerun clears the session's error.
-    pub(super) held_failures: HashMap<(String, String), (u32, String)>,
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,

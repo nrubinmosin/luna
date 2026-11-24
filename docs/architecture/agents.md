@@ -620,8 +620,9 @@ turn, stopped on a prompt (once per stop) or exited.
   failures, exits and restart
   interruptions still go to the caller. A tripped breaker allows the first
   failure of a pair and leaves the pair's other debts as they are. When it
-  lifts, the accumulated replies and any held error go together. A failure
-  or restart cut after a silent settlement wakes that caller for a later PLAN turn or a turn
+  lifts, the notifier renders the accumulated replies and the current
+  outcome. A failure or restart cut after a silent settlement wakes that
+  caller for a later PLAN turn or a turn
   started by one of its requests. A separate allowance per task covers
   the 30-minute quiet check, including when a turn waits for its own background
   work.
@@ -744,9 +745,9 @@ turn, stopped on a prompt (once per stop) or exited.
   warns, the desktop is told once, and a person
   typing into either chat lifts it. Prompts, questions, exits and a pair's
   first failure still come. The first-failure allowance resets when the
-  breaker lifts. Other failures count toward the breaker and are held when
-  it trips. A loss-only notice counts once for the IDs it
-  acknowledges, with the same allowance for the first failure after a trip.
+  breaker lifts. Other failures count toward the breaker. A loss-only notice
+  counts once for the IDs it acknowledges, with the same allowance for the
+  first failure after a trip.
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
   window (`<data>/quota-told.json`). Breaker lines, folder-skills failures and places notices

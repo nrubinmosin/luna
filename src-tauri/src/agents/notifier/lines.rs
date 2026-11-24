@@ -381,18 +381,15 @@ pub(super) fn render_notice(
 ) -> Option<(Option<String>, Settled, LineEvidence)> {
     let mut evidence = LineEvidence::default();
     let stopped = pair_stopped(pty, caller, id);
-    let key = (caller.to_string(), id.to_string());
-    let (failure_told, held_failure) = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        (stopped && r.failures_told.contains_key(&key), r.held_failures.get(&key).cloned())
-    };
+    let failure_told =
+        stopped && reg().lock().unwrap_or_else(|e| e.into_inner()).failures_told.contains_key(&(caller.to_string(), id.to_string()));
     let (text, how) = if failure_told {
         if !o.active() {
             return None;
         }
         standing_line(pty, who, id, k, o)?
     } else {
-        notice_line_inner(pty, caller, who, id, k, o, &mut evidence, work, stopped, held_failure.as_ref())?
+        notice_line_inner(pty, caller, who, id, k, o, &mut evidence, work, stopped)?
     };
     if stopped && (!matches!(how, Settled::Waiting | Settled::Asked(_) | Settled::Exited) && !super::failure(&how)) {
         return None;
@@ -427,7 +424,6 @@ fn notice_line_inner(
     evidence: &mut LineEvidence,
     work: &mut WorkLook,
     pair_is_stopped: bool,
-    held_failure: Option<&(u32, String)>,
 ) -> Option<(Option<String>, Settled)> {
     transcript_path(pty, id);
     if reg()
@@ -456,7 +452,6 @@ fn notice_line_inner(
     }
     let o = if between_turns { o.with_late_transcript(ended, || transcript_end(id)) } else { o };
     let late_status = turn == Some(crate::activity::Turn::Idle) && o.wake.late_status_to.is_some();
-    let held_failure = held_failure.filter(|(n, _)| !pair_is_stopped && between_turns && *n <= ended);
     let notice_baseline = o.notice_baseline();
     let cut = crate::background::cut_short(id) || o.cut_short;
     let unopened = between_turns && crate::background::unopened_turn(id, ended);
@@ -532,8 +527,9 @@ fn notice_line_inner(
         now = Verdict::Nothing;
     }
     if late_status
-        || held_failure.is_some()
-        || between_turns && (alive && cut || failed.is_some() && matches!(now, Verdict::AtWork | Verdict::Nothing))
+        || between_turns
+            && (alive && cut
+                || failed.is_some() && (matches!(now, Verdict::AtWork | Verdict::Nothing) || pair_is_stopped && now == Verdict::JobOver))
     {
         now = Verdict::TurnOver;
     }
@@ -645,7 +641,6 @@ fn notice_line_inner(
                     read_to: Some(read_to),
                     ended,
                     batch_failed: false,
-                    ..LineEvidence::default()
                 };
                 Some((Some(format!("{who} has nothing left running now, and {said}.{stopped}{failed}{lost}{unsure}")), how))
             }
@@ -679,7 +674,7 @@ fn notice_line_inner(
         };
         // Asked mid-turn: the CLI may start a turn on the text right after.
         let settle_ms = if o.queued { settle_ms.max(QUEUED_GRACE_MS) } else { settle_ms };
-        if settle_ms > 0 && !late_status && held_failure.is_none() && !pair_is_stopped {
+        if settle_ms > 0 && !late_status && !pair_is_stopped {
             match o.held {
                 Some((n, at)) if n == ended => {
                     if now_ms().saturating_sub(at) < settle_ms {
@@ -708,12 +703,12 @@ fn notice_line_inner(
             if lead && (background || waits) {
                 note_delegates(pty, id, k.provider, left.as_deref().filter(|_| background));
             }
-            if status.is_none() && !late_status && held_failure.is_none() {
+            if status.is_none() && !late_status {
                 evidence.read_to = Some(read_to);
                 return Some((None, Settled::Skip(ended, read_to, background)));
             }
         }
-        if !trouble && !work_left && !late_status && held_failure.is_none() {
+        if !trouble && !work_left && !late_status {
             if keeps_plan && status.is_none() && requests.iter().all(|q| q.taken) {
                 evidence.read_to = Some(read_to);
                 return Some((None, Settled::PlanFyi(ended, requests, !replies.is_empty())));
@@ -742,11 +737,6 @@ fn notice_line_inner(
             if lost.is_empty() && failed.is_none() && !cut && replies.requests().len() <= 1 { inline_answer(&replies) } else { None };
         let file = text.as_deref().filter(|_| inline.is_none()).and_then(|t| note_file(id, t));
         let span = report_span(&replies);
-        let earlier_failure = held_failure
-            .filter(|(n, _)| *n < ended || failed.is_none())
-            .map(|(_, why)| format!(" An earlier turn stopped on an error: {}", sentence(why)))
-            .unwrap_or_default();
-        let stopped = format!("{stopped}{earlier_failure}");
         *evidence = LineEvidence {
             requests: requests.clone(),
             lost: lost_ids.clone(),
@@ -755,7 +745,6 @@ fn notice_line_inner(
             read_to: Some(read_to),
             ended,
             batch_failed: false,
-            held_failure: held_failure.map(|(n, _)| *n),
         };
         let reply = match replies.len() {
             0 if !found => ", but Luna cannot find its transcript, so whether it replied is unknown".to_string(),
@@ -771,8 +760,9 @@ fn notice_line_inner(
         };
         if never_started {
             let what = never_started_what(&lost, file.as_deref());
+            let lost = if file.is_none() { undelivered_line(&lost, false, None) } else { String::new() };
             return Some((
-                Some(format!("{who} never got started: Luna's core restarted before its first turn got anywhere, so its prompt was lost and there is nothing to carry on from; {what}. luna_session_send starts it afresh.")),
+                Some(format!("{who} never got started: Luna's core restarted before its first turn got anywhere, so its prompt was lost and there is nothing to carry on from; {what}. luna_session_send starts it afresh.{stopped}{lost}")),
                 failure(),
             ));
         }
@@ -836,7 +826,7 @@ fn notice_line_inner(
             ));
         }
         // The internal wake has had its chance to get this lead moving.
-        if lead && status.is_none() && held_failure.is_none() && (can_stall(o, &requests, plan_covers) || trouble) {
+        if lead && status.is_none() && (can_stall(o, &requests, plan_covers) || trouble) {
             if let Some(w) = woken_before(id, ended) {
                 if said_since(pty, id, k.provider, w.cursor).is_empty() {
                     let earlier = if replies.is_empty() { String::new() } else { format!(" Its turns since you asked ended{reply}.") };
@@ -2698,6 +2688,7 @@ mod tests {
     fn a_helper_that_never_got_started_says_so_and_hands_back_its_prompt() {
         register("ns-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ns-parent"), false, serde_json::json!({}));
         crate::background::take_up_for_test("ns-child", "C:\\p", 0, &["and a follow-up"], Some("do the whole job"));
+        crate::background::loss_for_test("ns-child", 0, &["ns-parent"], &["interrupted delegate"]);
         owe_from("ns-parent", "ns-child", 0, 0);
         let (line, how) = notice_for("ns-parent", "ns-child", 2);
         let line = line.unwrap();
@@ -2709,6 +2700,7 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("its prompt and 1 queued message are in "), "{line}");
+        assert!(line.contains("interrupted delegate"), "{line}");
         let file = line.split(" are in ").nth(1).and_then(|l| l.split(". luna_session_send").next()).unwrap();
         let held = std::fs::read_to_string(file).unwrap();
         let _ = std::fs::remove_file(file);

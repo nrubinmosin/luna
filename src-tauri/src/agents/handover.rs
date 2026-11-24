@@ -141,7 +141,6 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     r.notice_times.retain(|(_, s), _| s != id);
     r.stopped.retain(|(_, s), _| s != id);
     r.failures_told.retain(|(_, s), _| s != id);
-    r.held_failures.retain(|(_, s), _| s != id);
     r.system_news.retain(|n| !n.about(id));
     // What only a helper has: nothing deletes it now but the person.
     r.auto.remove(id);
@@ -489,7 +488,6 @@ mod tests {
                 let mut r = reg().lock().unwrap();
                 r.stopped.insert(key.clone(), 0);
                 r.failures_told.insert(key.clone(), 0);
-                r.held_failures.insert(key.clone(), (1, "A held error".into()));
             }
             crate::background::idle_for_test(&id, provider, 1, false);
             crate::background::background_promote(id.clone()).unwrap();
@@ -500,7 +498,7 @@ mod tests {
             {
                 let r = reg().lock().unwrap();
                 assert!(r.owed.contains_key(&key), "what it is owed since stands");
-                assert!(!r.stopped.contains_key(&key) && !r.failures_told.contains_key(&key) && !r.held_failures.contains_key(&key));
+                assert!(!r.stopped.contains_key(&key) && !r.failures_told.contains_key(&key));
             }
             assert_eq!(handovers_of(&id), 1);
             assert_eq!(news_for(&parent).len(), 1, "told once");

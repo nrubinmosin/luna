@@ -458,9 +458,8 @@ fn notify_once_since_start(
     let mut gave_up: Vec<(String, String)> = Vec::new();
     {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let Registry { owed, known, names, stopped, held_failures, .. } = &mut *r;
+        let Registry { owed, known, names, stopped, .. } = &mut *r;
         gave_up.extend(prune_owed(owed, known, stopped, up_ms, now_ms(), &caller_in_scope));
-        held_failures.retain(|key, _| owed.get(key).is_some_and(|o| o.active()));
         for ((caller, id), o) in owed.iter() {
             if !caller_in_scope(caller) {
                 continue;
@@ -753,9 +752,6 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
     for (key, o, provider) in debts {
         let id = &key.1;
         if pair_stopped(pty, &key.0, id) {
-            if let Some(turn) = crate::activity::turn_state(id) {
-                remember_held_failure(pty, key, o, turn, provider);
-            }
             continue;
         }
         let Some(turn) = crate::activity::turn_state(id) else { continue };
@@ -812,29 +808,6 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
     }
     if changed {
         crate::background::save();
-    }
-}
-
-fn remember_held_failure(
-    pty: &crate::pty::PtyManager,
-    key: (String, String),
-    o: Owed,
-    turn: crate::activity::TurnState,
-    provider: Provider,
-) {
-    if !o.active()
-        || turn.turn == crate::activity::Turn::Busy
-        || (turn.turns_ended <= o.notice_baseline() && !o.told_pending && o.wake.skipped.is_none())
-    {
-        return;
-    }
-    let Some(why) = super::read::failure_of(pty, &key.1, provider).or_else(|| crate::activity::limit_of(&key.1)) else { return };
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    if r.stopped.contains_key(&key)
-        && r.owed.get(&key).is_some_and(|current| current.rev == o.rev && current.transcript_rev == o.transcript_rev && current.active())
-        && r.held_failures.get(&key).is_none_or(|(ended, _)| *ended < turn.turns_ended)
-    {
-        r.held_failures.insert(key, (turn.turns_ended, why));
     }
 }
 
@@ -1095,7 +1068,6 @@ pub(super) struct LineEvidence {
     read_to: Option<u64>,
     ended: u32,
     batch_failed: bool,
-    held_failure: Option<u32>,
 }
 
 /// The name of what became of a session, for the log line of the notice that
@@ -1370,10 +1342,6 @@ fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, to
     }
     if current.wake.late_status_to != told.wake.late_status_to && current.wake.late_status_to > read.read_to {
         return;
-    }
-    let held_turn = read.held_failure.or_else(|| (failure(&how) && (read.read_to.is_some() || read.batch_failed)).then_some(read.ended));
-    if held_turn.is_some_and(|turn| r.held_failures.get(&key).is_some_and(|(ended, _)| *ended == turn)) {
-        r.held_failures.remove(&key);
     }
     if let Some(to) = read.read_to {
         let wake = &mut r.owed.get_mut(&key).unwrap().wake;

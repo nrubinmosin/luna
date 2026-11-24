@@ -766,12 +766,19 @@ fn lifted_breaker(f: &mut Fixture, _: &mut Seed) {
     let after = reg().lock().unwrap().owed[&key];
     assert_eq!((after.baseline, after.cursor, after.held, after.wake), (before.baseline, before.cursor, before.held, before.wake));
     terminal.typed_at(f.now);
-    expect(&f.tick(WriteResult::Started), &[(TOP, &["An attempt.", "DONE: work after rerun", "earlier turn stopped on an error"])]);
+    let writes = f.tick(WriteResult::Started);
+    expect(&writes, &[(TOP, &["An attempt.", "DONE: work after rerun"])]);
+    assert!(!writes[0].1.contains("stopped on an error"));
     f.requests(TOP, WORKER, &[]);
     f.checkpoint(&[]);
 
     reg().lock().unwrap().stopped.insert(key, f.now);
     fail(f, 3);
+    expect(&f.tick(WriteResult::Started), expected);
+    fail(f, 4);
+    expect(&f.tick(WriteResult::Started), &[]);
+    f.advance(1);
+    terminal.typed_at(f.now);
     expect(&f.tick(WriteResult::Started), expected);
     f.checkpoint(&[]);
 }

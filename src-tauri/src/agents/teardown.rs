@@ -330,7 +330,6 @@ pub fn forget(id: &str) {
     r.notice_times.retain(|(who, chat), _| who != id && chat != id);
     r.stopped.retain(|(who, chat), _| who != id && chat != id);
     r.failures_told.retain(|(who, chat), _| who != id && chat != id);
-    r.held_failures.retain(|(who, chat), _| who != id && chat != id);
     r.transcript_generations.remove(id);
     r.exits.remove(id);
     let told = r.quota_told.len();
