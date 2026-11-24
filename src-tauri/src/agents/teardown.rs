@@ -356,7 +356,6 @@ mod tests {
     use crate::agents::owed::owe_from;
     use crate::agents::persist::{ties_of, Ties};
     use crate::agents::registry::{authorize, authorize_view, descendants, parent_of, reg, register};
-    use crate::agents::test_support::tooled;
     use crate::provider::Provider;
     use std::sync::Mutex;
 
