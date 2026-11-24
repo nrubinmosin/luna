@@ -3,7 +3,7 @@
 //! question (`shown`, `hand_over`) or a notice tells it.
 
 use crate::agents::lost::{put_undelivered_back, take_undelivered_ids};
-use crate::agents::read::transcript_end;
+use crate::agents::read::{transcript_end, SendCursor};
 use crate::agents::registry::{is_descendant, is_dev, parent_of, reg, stands, waits_on_helpers_in, Registry};
 use crate::agents::said::{replies_since, request_head, Request, Status};
 use crate::throttle::now_ms;
@@ -515,7 +515,7 @@ fn hand_over_of(
         };
         if let Some((before, mut removed)) = partial {
             let current = r.owed.get(&key).copied();
-            if r.transcript_generations.get(&key.1).copied().unwrap_or(0) == before.transcript_rev
+            if r.transcript_generations.get(&key.1).map_or(0, |(rev, _)| *rev) == before.transcript_rev
                 && current.is_none_or(|o| o.transcript_rev == before.transcript_rev)
             {
                 let qs = r.requests.entry(key.clone()).or_default();
@@ -532,7 +532,7 @@ fn hand_over_of(
                 }
             }
         }
-        if let Some(o) = owed.filter(|o| r.transcript_generations.get(&key.1).copied().unwrap_or(0) == o.transcript_rev) {
+        if let Some(o) = owed.filter(|o| r.transcript_generations.get(&key.1).map_or(0, |(rev, _)| *rev) == o.transcript_rev) {
             match r.owed.get_mut(&key) {
                 // What was put in the place of the debt it stands for
                 // (`owed_on`) goes, and that debt is back as it was.
@@ -648,17 +648,26 @@ pub(super) fn owe_asked(caller: &str, id: &str, baseline: u32, cursor: u64, aske
     owe(caller, id, baseline, cursor, None, Some(asked));
 }
 
+#[cfg(test)]
+impl From<u64> for SendCursor {
+    fn from(offset: u64) -> Self {
+        Self { generation: 0, offset }
+    }
+}
+
 pub(super) fn owe_sent(
     caller: &str,
     id: &str,
     baseline: u32,
-    cursor: u64,
+    cursor: SendCursor,
     handovers: Option<u64>,
     asked: &Asked,
     placement: (bool, Option<String>, bool),
 ) -> bool {
+    super::read::transcript_path(crate::pty::manager(), id);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    if !owe_in(&mut r, caller, id, baseline, cursor, handovers, Some(asked)) {
+    let offset = r.transcript_generations.get(id).filter(|(rev, _)| *rev != cursor.generation).map_or(cursor.offset, |(_, from)| *from);
+    if !owe_in(&mut r, caller, id, baseline, offset, handovers, Some(asked)) {
         return false;
     }
     let key = (caller.to_string(), id.to_string());
@@ -785,7 +794,7 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
             told_quiet: before.and_then(|o| o.told_quiet),
             told_background_wait: before.and_then(|o| o.told_background_wait),
             request_match,
-            transcript_rev: r.transcript_generations.get(id).copied().unwrap_or_else(|| before.map_or(0, |o| o.transcript_rev)),
+            transcript_rev: r.transcript_generations.get(id).map_or_else(|| before.map_or(0, |o| o.transcript_rev), |(rev, _)| *rev),
             job_went: before.is_some_and(|o| o.job_went),
             delivery_rev: before.map_or(0, |o| o.delivery_rev),
             ..Owed::from(baseline.max(floor), cursor)

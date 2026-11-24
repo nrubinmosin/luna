@@ -8,7 +8,7 @@ use crate::agents::ask::{live, state_of};
 use crate::agents::handover::handovers_of;
 use crate::agents::held::{hold, words};
 use crate::agents::owed::{owe_sent, seen, Asked};
-use crate::agents::read::transcript_end;
+use crate::agents::read::send_cursor;
 use crate::agents::registry::{authorize_send, is_mine, label, reg};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -409,7 +409,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     if background {
         // Taken before the text goes in: a turn it starts may be over, and
         // written, by the time the call returns.
-        let cursor = transcript_end(id);
+        let cursor = send_cursor(id);
         // And this, for the debt below: the person may take the helper over
         // once the text is in, which takes it back out (handover.rs).
         let handovers = handovers_of(id);
@@ -531,7 +531,7 @@ pub(super) fn put_in(
     let queued = turn_before == Some(crate::activity::Turn::Busy);
     // Before the text goes in: `type_in` waits for the turn to start, and a
     // short one is over, and written, by then.
-    let cursor = transcript_end(id);
+    let cursor = send_cursor(id);
     let Some(started) = type_text(pty, id, text, turn_before, baseline)? else { return Ok(None) };
     let started = started && !queued;
     if turn_before == Some(crate::activity::Turn::Waiting) {

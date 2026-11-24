@@ -940,7 +940,7 @@ mod tests {
                 caller,
                 id,
                 1,
-                first.len() as u64,
+                (first.len() as u64).into(),
                 None,
                 &Asked { text: "queue for later", key: None, reply: true },
                 (true, None, false),

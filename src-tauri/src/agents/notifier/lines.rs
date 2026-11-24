@@ -2000,7 +2000,7 @@ mod tests {
             caller,
             id,
             1,
-            first.len() as u64,
+            (first.len() as u64).into(),
             None,
             &Asked { text: "waiting for a place", reply: true, key: None },
             (true, Some("queued-id".into()), false),

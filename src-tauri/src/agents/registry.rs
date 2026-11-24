@@ -168,8 +168,8 @@ pub(super) struct Registry {
     /// Lines for a caller's next notice that no debt brings: by caller.
     pub(super) news: Vec<(String, String)>,
     pub(super) system_news: Vec<SystemNews>,
-    /// Transcript generations, including sessions with no current debt.
-    pub(super) transcript_generations: HashMap<String, u64>,
+    /// Transcript generation and offset at the switch, even with no debt.
+    pub(super) transcript_generations: HashMap<String, (u64, u64)>,
     /// When the most recent failure bypassed a tripped breaker.
     pub(super) failures_told: HashMap<(String, String), u64>,
     /// Sessions refused a place on a line since its top chat was last told, by

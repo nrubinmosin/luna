@@ -35,6 +35,19 @@ pub(super) fn transcript_end(id: &str) -> u64 {
     transcript_path(crate::pty::manager(), id).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len())
 }
 
+pub(super) struct SendCursor {
+    pub(super) generation: u64,
+    pub(super) offset: u64,
+}
+
+pub(super) fn send_cursor(id: &str) -> SendCursor {
+    transcript_path(crate::pty::manager(), id);
+    let known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
+    let offset = known.get(id).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
+    let generation = reg().lock().unwrap_or_else(|e| e.into_inner()).transcript_generations.get(id).map_or(0, |(rev, _)| *rev);
+    SendCursor { generation, offset }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reading {
@@ -179,7 +192,7 @@ fn moved_to(id: &str, was: &std::path::Path, now: &std::path::Path) -> u64 {
     };
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let generation = super::owed::next_rev();
-    r.transcript_generations.insert(id.to_string(), generation);
+    r.transcript_generations.insert(id.to_string(), (generation, from));
     for ((_, of), requests) in &mut r.requests {
         if of == id {
             for request in &mut requests.open {
@@ -623,6 +636,7 @@ mod tests {
         // current transcript. Its destination was already an older file.
         let (was, now) = (now, was);
         transcripts().lock().unwrap().insert(id.into(), was.clone());
+        let outgoing = send_cursor(id);
         remember_destination(id, now.clone());
         let before_reply = std::fs::metadata(&now).unwrap().len();
         use std::io::Write as _;
@@ -633,6 +647,20 @@ mod tests {
         assert!(o.cursor == from && o.held_to == Some(from), "{} {:?} {from}", o.cursor, o.held_to);
         told_before(&mut reg().lock().unwrap(), &key, first);
         assert_eq!(reg().lock().unwrap().owed[&key].cursor, from, "what came after the first, read in the new one");
+        crate::agents::owed::owe_sent(
+            caller,
+            id,
+            2,
+            outgoing,
+            None,
+            &Asked { text: "A send already going in", key: None, reply: true },
+            (true, None, false),
+        );
+        assert_eq!(
+            reg().lock().unwrap().requests[&key].open.last().unwrap().cursor,
+            from,
+            "a send placed across the switch belongs to the destination offset"
+        );
         reg().lock().unwrap().owed.remove(&key);
         forget(id);
         forget(caller);

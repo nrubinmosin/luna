@@ -1841,11 +1841,11 @@ mod tests {
         let (caller, id) = ("quiet-queue-caller", "quiet-queue-helper");
         let key = (caller.into(), id.into());
         let first = Asked { text: "First task", key: None, reply: true };
-        owe_sent(caller, id, 1, 0, None, &first, (false, None, true));
+        owe_sent(caller, id, 1, 0u64.into(), None, &first, (false, None, true));
         let o = reg().lock().unwrap().owed[&key];
         settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::QuietFor(1, Some(1), false), &o);
         let later = Asked { text: "Queued task", key: None, reply: true };
-        owe_sent(caller, id, 1, 40, None, &later, (true, None, false));
+        owe_sent(caller, id, 1, 40u64.into(), None, &later, (true, None, false));
         let current = reg().lock().unwrap().owed[&key];
         assert_eq!(current.told_quiet, Some(1));
         assert!(rides(&Settled::QuietFor(1, Some(1), true), current));
@@ -2305,7 +2305,7 @@ mod tests {
         run_between(
             a,
             Box::new(move || {
-                owe_sent(a, id, 2, end, None, &Asked { text: "FYI: main moved", key: None, reply: false }, (true, None, false));
+                owe_sent(a, id, 2, end.into(), None, &Asked { text: "FYI: main moved", key: None, reply: false }, (true, None, false));
             }),
         );
         let text = format!("{NOTICE_TAG} {line}");
