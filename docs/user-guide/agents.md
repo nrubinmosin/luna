@@ -427,7 +427,9 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
 - Each task gets one stall notice when the session is idle and an unanswered
   request that wanted a reply has run. It carries what the session said. Queued
   input and outstanding work keep it back. A `PLAN` covers the turn that
-  ended with it. A later independent turn can stall. The 30-minute quiet
+  ended with it and later turns started by an FYI. A later independent turn
+  can stall. Failures, exits and restart interruptions still reach the caller.
+  The 30-minute quiet
   check has its own allowance and leaves the idle stall available.
 - Work a turn left running appears as `leftRunning` in get diagnostics. It
   keeps the helper and the PC active. The 30-minute quiet check respects a
@@ -460,8 +462,9 @@ that does not read as a model id (up to 256 letters, digits and `-._:/@+`) is gi
 
 - A helper goes by itself (`autoDelete`, on by default) once its answer reached
   the agent and it has sat idle 30 minutes with nobody reading or writing to it.
-  A silently settled answer holds deletion until read or for up to 24 hours;
-  get diagnostics show `deletesInMin`. It waits for jobs it left, however idle,
+  A silently settled answer holds deletion until read or for up to 24 hours,
+  even if its caller is slow to reopen after a restart. Get diagnostics show
+  `deletesInMin`. It waits for jobs it left, however idle,
   and helpers of its own.
 - A helper stopped with `luna_session_stop` is never auto-deleted; one you opened as a
   chat is yours and stays.

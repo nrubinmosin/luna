@@ -60,9 +60,8 @@ fn read_at(path: &std::path::Path, provider: Provider, from: u64) -> (Vec<Messag
 }
 
 /// What a session said since a point: its own messages in order, and where
-/// the last of its turns that said anything begins among them. Text that
-/// reached it mid-turn starts a turn of its own after that one, and the
-/// newest turn is where it stands now: its report is the one to lead with.
+/// the last of its turns that said anything begins among them. A joined
+/// prompt can change which request the words answer within a turn.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Said {
     pub(super) texts: Vec<String>,
@@ -81,6 +80,9 @@ pub(super) struct Said {
     /// message after it: which of the caller's requests a turn answers is read
     /// off these (`asked`).
     prompts: Vec<(usize, String)>,
+    /// The prompt index of each turn's first input, or None when the read
+    /// starts mid-turn or the CLI started a turn on its own.
+    turn_prompts: Vec<Option<usize>>,
     /// The caller's requests these answer, in the order they went in, and beside
     /// `texts` the one each message answers, by index into them (`asked`).
     requests: Vec<Request>,
@@ -103,8 +105,6 @@ pub(super) struct Request {
     pub(super) taken: bool,
     #[serde(default)]
     pub(super) told: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(super) planned: bool,
     #[serde(default)]
     pub(super) baseline: u32,
     #[serde(default)]
@@ -135,7 +135,7 @@ pub(super) fn reply_by_default() -> bool {
 
 impl Request {
     pub(super) fn new(n: u32, key: Option<String>, head: String, reply: bool) -> Self {
-        Self { n, key, head, reply, taken: false, told: false, planned: false, baseline: 0, cursor: 0, queued: false, delivery: None }
+        Self { n, key, head, reply, taken: false, told: false, baseline: 0, cursor: 0, queued: false, delivery: None }
     }
 
     /// The heading used in answer files and tool replies.
@@ -186,14 +186,16 @@ impl Said {
                         from = i;
                         last_head = &q.head;
                     }
-                    at.map(|i| self.prompts[i].0)
+                    at
                 })
                 .collect();
             let prior = previous.and_then(|n| requests.iter().position(|q| q.n == n)).or_else(|| (requests.len() == 1).then_some(0));
             let before_first = prior.or_else(|| found.iter().position(Option::is_some).map(|i| i.saturating_sub(1)));
             if let Some(before_first) = before_first {
                 self.re = (0..self.texts.len())
-                    .map(|i| (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| at <= i)).unwrap_or(before_first))
+                    .map(|i| {
+                        (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| self.prompts[at].0 <= i)).unwrap_or(before_first)
+                    })
                     .collect();
             }
             self.matches = found;
@@ -215,20 +217,15 @@ impl Said {
         }
         let mut plan = false;
         let mut lasting_in_last_turn = false;
-        let mut last_prompt = None;
-        let mut matches = self.matches.iter().enumerate().filter_map(|(k, at)| Some((k, (*at)?))).peekable();
+        let mut matches = self.matches.iter().enumerate().filter_map(|(k, at)| Some((k, self.prompts[(*at)?].0))).peekable();
         for i in 0..=self.texts.len() {
             while let Some((k, _)) = matches.next_if(|(_, at)| *at == i) {
                 requests[k].taken = true;
                 current = Some(k);
-                if i >= self.last_turn {
-                    last_prompt = Some(k);
-                }
             }
             let Some(status) = self.texts.get(i).and_then(|text| status_word(text)) else { continue };
             if let Some(k) = current {
                 requests[k].told |= status.lasting();
-                requests[k].planned |= status == Status::Plan && requests[k].reply;
             }
             if i >= self.last_turn {
                 lasting_in_last_turn |= status.lasting();
@@ -237,11 +234,9 @@ impl Said {
         }
         // An FYI can follow an independent turn before the next look. It
         // leaves a plan asleep only if every observed turn was an FYI.
-        let fyi = last_prompt.is_some_and(|k| !requests[k].reply)
-            && self.starts.iter().copied().chain(self.prompts.last().map(|(at, _)| *at)).all(|start| {
-                self.prompts.iter().any(|(at, text)| {
-                    *at == start && requests.iter().any(|q| !q.reply && !q.head.is_empty() && flat(text).contains(&q.head))
-                })
+        let fyi = !self.turn_prompts.is_empty()
+            && self.turn_prompts.iter().all(|prompt| {
+                prompt.is_some() && self.matches.iter().rposition(|matched| matched == prompt).is_some_and(|k| !requests[k].reply)
             });
         (requests, plan && !lasting_in_last_turn, fyi)
     }
@@ -310,27 +305,29 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
         return Said::default();
     }
     let mut said = Said::default();
-    let mut prompted = false;
-    let mut prompts = Vec::new();
+    let mut starter = None;
     for m in messages {
         if m.role != "assistant" {
-            prompted = true;
-            prompts.push(m.text);
+            if !m.joined {
+                starter.get_or_insert(said.prompts.len());
+            }
+            said.prompts.push((said.texts.len(), m.text));
             continue;
         }
-        said.prompts.extend(prompts.drain(..).map(|text| (said.texts.len(), text)));
-        if prompted || m.after_cli || said.texts.is_empty() {
+        if starter.is_some() || m.after_cli || said.texts.is_empty() {
             if !said.texts.is_empty() {
                 said.last_turn = said.texts.len();
-                said.by_cli = !prompted;
+                said.by_cli = starter.is_none();
             }
             said.starts.push(said.texts.len());
-            prompted = false;
+            said.turn_prompts.push(starter.take());
         }
         said.finals.push(m.final_answer);
         said.texts.push(m.text);
     }
-    said.prompts.extend(prompts.into_iter().map(|text| (said.texts.len(), text)));
+    if starter.is_some() {
+        said.turn_prompts.push(starter);
+    }
     said
 }
 
@@ -628,7 +625,7 @@ mod tests {
         let request = |n, head: &str| Request::new(n, None, head.into(), true);
         let queued =
             ["check the warnings", "check the tests"].map(|text| crate::background::Queued::new(Some("caller".into()), text.into()));
-        let message = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
+        let message = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, joined: false, final_answer: false };
         let said = said_of(vec![message("user", crate::background::joined(&queued)), message("assistant", "Both checks passed.".into())])
             .asked(vec![request(2, "check the warnings"), request(3, "check the tests")]);
         assert_eq!(said.last_request(), Some(3));
@@ -657,7 +654,8 @@ mod tests {
 
     #[test]
     fn a_plan_in_a_later_turn_is_independent_of_a_status_in_an_earlier_turn() {
-        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let m =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
         let read = |last| {
             said_of(vec![
                 m("user", "First task"),
@@ -677,7 +675,8 @@ mod tests {
 
     #[test]
     fn an_fyi_after_an_independent_turn_is_not_the_only_work() {
-        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let m =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
         let fyi = [m("user", "Heads up"), m("assistant", "Noted.")];
         let match_fyi = |messages| said_of(messages).asked(vec![Request::new(1, None, "Heads up".into(), false)]).notice_requests().2;
         assert!(match_fyi(fyi.to_vec()));
@@ -686,8 +685,39 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_covers_the_turn_when_an_fyi_joins_after_it() {
+        use serde_json::json;
+        for provider in [Provider::Claude, Provider::Codex] {
+            let m = |role, text| match provider {
+                Provider::Claude => json!({"type": role, "message": {"content": text}}),
+                Provider::Codex => json!({"type": "response_item", "payload": {"type": "message", "role": role,
+                    "content": [{"type": if role == "user" { "input_text" } else { "output_text" }, "text": text}]}}),
+            };
+            let start = json!({"type": "event_msg", "payload": {"type": "task_started"}});
+            let joined = match provider {
+                Provider::Claude => json!({"type": "attachment", "attachment": {"type": "queued_command", "prompt": "/tmp contains logs"}}),
+                Provider::Codex => m("user", "/tmp contains logs"),
+            };
+            let path = std::env::temp_dir().join(format!("luna-joined-plan-{}-{}.jsonl", provider.as_str(), std::process::id()));
+            let lines = [start, m("user", "Check the changes"), m("assistant", "PLAN: inspect logs"), joined, m("assistant", "Noted.")];
+            let lines: Vec<_> = lines.into_iter().map(|line| line.to_string()).collect();
+            std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+            let said = said_of(messages_at(&path, provider, 0)).asked(vec![
+                Request::new(1, None, "Check the changes".into(), true),
+                Request::new(2, None, "/tmp contains logs".into(), false),
+            ]);
+            let (requests, plan, fyi_only) = said.notice_requests();
+            assert!(requests.iter().all(|q| q.taken), "{provider:?}: both prompts are taken");
+            assert!(plan && !fyi_only, "{provider:?}: the FYI joined the PLAN's turn");
+            assert_eq!(said.last_request(), Some(2), "the joined FYI has its own reply");
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
     fn answers_to_several_requests_are_put_down_to_the_turn_each_started() {
-        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let m =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
         let q = |n: u32, head: &str| Request::new(n, None, request_head(head), true);
         let said = || {
             said_of(vec![
@@ -719,7 +749,8 @@ mod tests {
     /// those's, under its number, up to a request sent since.
     #[test]
     fn answers_in_a_fresh_conversation_keep_the_numbers_of_requests_before_it() {
-        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let m =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
         let q = |n: u32, head: &str| Request::new(n, None, request_head(head), true);
         let said = said_of(vec![
             m("user", "This is a new conversation of session x, a lead."),
@@ -807,7 +838,13 @@ mod tests {
     /// queued mid-turn, then a shorter report at the commit it moved on to.
     #[test]
     fn a_final_answer_its_cli_marked_is_the_report_whatever_its_length() {
-        let m = |role: &str, text: String, final_answer: bool| Message { role: role.into(), text, after_cli: false, final_answer };
+        let m = |role: &str, text: String, final_answer: bool| Message {
+            role: role.into(),
+            text,
+            after_cli: false,
+            joined: false,
+            final_answer,
+        };
         let progress = format!("Working through the files. {}", "Notes. ".repeat(150));
         let said = own_words(
             vec![
@@ -842,7 +879,7 @@ mod tests {
 
     #[test]
     fn the_last_turn_reports() {
-        let m = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
+        let m = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, joined: false, final_answer: false };
         let first = format!("The new tip is 5ce3b92d2. {}", "Details. ".repeat(120));
         let second = format!("The new tip is cfeb7186f. {}", "Lanes green. ".repeat(40));
         let said = own_words(
@@ -875,7 +912,7 @@ mod tests {
         // started by itself on a background job's end, short. The report
         // stands; the short line comes next as its last word.
         // The CLI marks its own wakeup's line final as it does any: it answers nobody all the same.
-        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true, final_answer: true };
+        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true, joined: false, final_answer: true };
         let said = own_words(
             vec![
                 m("user", "Fix the shutdown.".into()),

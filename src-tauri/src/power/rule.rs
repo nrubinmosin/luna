@@ -460,7 +460,10 @@ mod tests {
         use crate::activity::{Life, Phase, SessionLife};
         use crate::agents::{
             forget, register,
-            test_support::{expire_refusal_for_test, notifier_tick_for_test, refusal_for_power_test, silent_answer_for_power_test},
+            test_support::{
+                claim_refusal_for_test, expire_refusal_for_test, notifier_tick_for_test, refusal_for_power_test,
+                silent_answer_for_power_test,
+            },
         };
         use crate::provider::Provider;
         let (chat, lead) = ("power-refusal-chat", "power-refusal-lead");
@@ -474,13 +477,18 @@ mod tests {
         let terminal = crate::pty::notice_terminal(chat, Provider::Codex, false);
         assert!(countdown(), "unread answers are not active");
         let (lock, gate, clock) = due();
+        let mut claim = None;
         let fresh = || {
             refusal_for_power_test(lead);
+            claim = Some(claim_refusal_for_test(chat));
+            crate::pty::manager().set_draft(chat, 1);
             summary.clone()
         };
         let (state, _, result) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || at(0), || clock);
-        assert_eq!(result, Effect::Canceled, "a refusal arrived during the final read");
+        assert_eq!(result, Effect::Canceled, "the notifier claimed the refusal but has not entered power admission");
         drop(state);
+        crate::pty::manager().set_draft(chat, 0);
+        drop(claim);
         assert!(!countdown(), "a live top chat can still take the refusal");
         notifier_tick_for_test(chat);
         assert!(terminal.input.try_iter().collect::<String>().contains("No place was left"));

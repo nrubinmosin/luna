@@ -24,6 +24,9 @@ pub struct Message {
     /// all the same, for which report leads (`own_words`).
     #[serde(skip)]
     pub after_cli: bool,
+    /// An input taken into a turn already under way.
+    #[serde(skip)]
+    pub joined: bool,
     /// Its CLI marked it the turn's final answer (Claude Code's `end_turn`, Codex's
     /// `final_answer` phase): the report, said so rather than guessed (`report_of`).
     #[serde(skip)]
@@ -468,7 +471,7 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -
                 }
                 None => text,
             };
-            Message { role: "assistant".into(), text, after_cli: false, final_answer: false }
+            Message { role: "assistant".into(), text, after_cli: false, joined: false, final_answer: false }
         })
         .into_iter()
         .collect();
@@ -781,7 +784,9 @@ mod tests {
             let text = std::fs::read_to_string(&path).unwrap();
             let rest = &text[(at as usize).min(text.len())..];
             (
-                rest.lines().map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false, final_answer: false }).collect(),
+                rest.lines()
+                    .map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false, joined: false, final_answer: false })
+                    .collect(),
                 text.len() as u64,
             )
         };

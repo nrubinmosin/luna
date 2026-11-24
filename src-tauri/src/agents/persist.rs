@@ -79,7 +79,8 @@ pub(super) struct SavedNotice {
 
 impl SavedNotice {
     fn of(o: &Owed, job_running: Option<bool>) -> Option<Self> {
-        let wake = WakeState { job_running: o.active() && job_running.unwrap_or(o.wake.job_running), ..o.wake };
+        let wake =
+            WakeState { job_running: (o.active() || o.watches_later_turns()) && job_running.unwrap_or(o.wake.job_running), ..o.wake };
         let saved = Self { wake, no_reply: o.no_reply, resumed: o.resumed, job_went: o.job_went, held_to: o.held_to };
         (o.told_pending
             || saved.wake != WakeState::default()
@@ -856,9 +857,9 @@ pub(super) fn take_up_chats(saved: SavedChats) {
             if let Some(notice) = ties.notices.get(&caller) {
                 notice.restore(&mut o);
             }
-            if o.active()
+            if (o.active() || o.watches_later_turns())
                 && !o.job_went
-                && (c.mid_turn || (c.turns_ended <= baseline && !o.told_pending) || ties.cut_short.contains(&caller))
+                && (c.mid_turn || (o.active() && c.turns_ended <= baseline && !o.told_pending) || ties.cut_short.contains(&caller))
             {
                 o.cut_short = true;
                 count = count.max(o.notice_baseline().saturating_add(1));
@@ -1536,6 +1537,34 @@ mod tests {
         assert!(!reg().lock().unwrap().owed[&key].active());
         assert!(reg().lock().unwrap().owed[&key].wake.unread_since.is_some());
         forget(id);
+    }
+
+    #[test]
+    fn a_restart_records_an_interruption_after_an_idle_plan() {
+        let (id, caller) = ("plan-restart-chat", "plan-restart-caller");
+        let key = (caller.into(), id.into());
+        let mut chat = owed_chat(id, caller, 3, 0);
+        chat.ties.silent_owed = std::mem::take(&mut chat.ties.owed);
+        chat.ties.notices.insert(
+            caller.into(),
+            SavedNotice { wake: WakeState { plan_through: Some(3), silent: Some(3), ..WakeState::default() }, ..Default::default() },
+        );
+        chat.mid_turn = true;
+        take_up(vec![chat], Vec::new(), Vec::new());
+        let (known, debt) = {
+            let r = reg().lock().unwrap();
+            let mut known = r.known[id].clone();
+            known.waiting = false;
+            (known, r.owed[&key])
+        };
+        assert!(debt.cut_short && debt.watches_later_turns());
+        assert_eq!(crate::activity::turns_counted(id), Some(4));
+        let Some((Some(line), Settled::Exited)) = notice_line(crate::pty::manager(), caller, "Session", id, &known, debt) else {
+            panic!("the caller hears that the restart cut off the turn");
+        };
+        assert!(line.contains("core restarted"), "{line}");
+        forget(id);
+        crate::activity::forget(id);
     }
 
     #[test]

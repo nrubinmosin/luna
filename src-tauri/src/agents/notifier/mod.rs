@@ -21,7 +21,7 @@ use crate::agents::registry::{chat_name, is_dev, is_persons_chat, label, reg, wa
 use crate::agents::said::{Request, Status};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::spawn::PlacesRefused;
-use crate::agents::teardown::reap;
+use crate::agents::teardown::{reap, unread_until};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
@@ -101,7 +101,6 @@ pub(super) enum Settled {
     Pending(u32, u64, Option<u32>, Option<Status>, bool),
     Progress(Progress),
     UnusedTurn(u32),
-    PlanContinued,
     PlanFyi(u32, Vec<Request>, bool),
     /// A turn ended but is not settled — processes still at work, or no
     /// reply in the transcript yet: nothing to say, start the grace from now.
@@ -110,7 +109,7 @@ pub(super) enum Settled {
     Unhold,
     /// An interim or notice-driven turn. Advance only the notifier's count.
     /// Keep this turn's words for the caller, and its end for the lead wake.
-    Skip(u32, u64, bool, bool),
+    Skip(u32, u64, bool),
     Waiting,
     /// It asks a question it does not wait on; told once per question.
     Asked(u64),
@@ -249,14 +248,32 @@ pub(super) fn owed_stands(known: &HashMap<String, Known>, caller: &str, id: &str
     known.contains_key(id) && (known.get(caller).is_some_and(|k| !k.waiting) || up_ms < CALLER_RETURN_MS)
 }
 
-fn prune_owed(owed: &mut HashMap<(String, String), Owed>, known: &HashMap<String, Known>, up_ms: u64) -> Vec<(String, String)> {
+fn prune_owed(
+    owed: &mut HashMap<(String, String), Owed>,
+    known: &HashMap<String, Known>,
+    up_ms: u64,
+    caller_in_scope: impl Fn(&str) -> bool,
+) -> Vec<(String, String)> {
     let mut unreachable = Vec::new();
+    let now = now_ms();
     owed.retain(|(caller, id), o| {
-        let stands = owed_stands(known, caller, id, up_ms);
-        if !stands && o.active() && known.contains_key(id) {
+        if !caller_in_scope(caller) {
+            return true;
+        }
+        if !known.contains_key(id) {
+            return false;
+        }
+        if let Some(until) = o.wake.delivery_expired {
+            return now < until;
+        }
+        if owed_stands(known, caller, id, up_ms) {
+            return true;
+        }
+        if o.active() {
             unreachable.push((caller.clone(), id.clone()));
         }
-        stands
+        o.wake.delivery_expired = unread_until(o).filter(|until| now < *until);
+        o.wake.delivery_expired.is_some()
     });
     unreachable
 }
@@ -272,8 +289,7 @@ fn riders_go(company: bool, otherwise_owed: bool, refusal_age: Option<u64>) -> b
 fn can_take_refusal(pty: &crate::pty::PtyManager, caller: &str) -> bool {
     // Power closes its own admission gate for the final recheck. Eligibility
     // must still reflect whether the chat could take the line with it open.
-    !notice_waits(caller)
-        && ready_for_notice(pty, caller)
+    ready_for_notice(pty, caller)
         && (!pty.has_draft(caller)
             || (puts_draft_aside(pty.provider(caller)) && pty.composer(caller).is_some_and(|c| !c.text.is_empty() && !c.stashed)))
 }
@@ -285,11 +301,13 @@ pub(crate) fn places_pending(sessions: &[crate::activity::SessionLife]) -> bool 
             .iter()
             .filter_map(|s| {
                 let p = r.places_refused.get(&s.id)?;
-                (p.since.elapsed() < Duration::from_millis(RIDE_MAX_MS) && refusal_has_chat(&r, &s.id, p)).then_some(s.id.as_str())
+                refusal_has_chat(&r, &s.id, p).then_some((s.id.as_str(), p.since.elapsed() < Duration::from_millis(RIDE_MAX_MS)))
             })
             .collect()
     };
-    pending.into_iter().any(|caller| can_take_refusal(crate::pty::manager(), caller))
+    // A claim can be visible before the delivery thread enters power
+    // admission. In that interval the refusal is still pending.
+    pending.into_iter().any(|(caller, fresh)| fresh && can_take_refusal(crate::pty::manager(), caller) || notice_waits(caller))
 }
 
 fn refusal_has_chat(r: &Registry, caller: &str, refusal: &PlacesRefused) -> bool {
@@ -384,6 +402,22 @@ pub(super) fn tick_for_test(caller: &str) {
     );
 }
 
+#[cfg(test)]
+pub(super) fn claim_refusal_for_test(caller: &str) -> TypingInto {
+    let mut claim = None;
+    notify_once(
+        crate::pty::manager(),
+        &mut HashMap::from([(caller.into(), NOTIFY_IDLE_LOOKS - 1)]),
+        &mut HashMap::new(),
+        |id| id == caller,
+        |typing, _, text, _| {
+            assert!(text.contains("No place was left"));
+            claim = Some(typing);
+        },
+    );
+    claim.expect("the notifier claimed the refusal before typing it")
+}
+
 fn notify_once(
     pty: &crate::pty::PtyManager,
     idle_looks: &mut HashMap<String, u32>,
@@ -400,7 +434,7 @@ fn notify_once(
     {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let Registry { owed, known, names, .. } = &mut *r;
-        gave_up.extend(prune_owed(owed, known, core_up_ms()));
+        gave_up.extend(prune_owed(owed, known, core_up_ms(), &caller_in_scope));
         for ((caller, id), o) in owed.iter() {
             #[cfg(test)]
             if !crate::agents::sweep_includes(caller) {
@@ -525,6 +559,7 @@ fn notify_once(
         }
         by_caller.contains_key(c)
     });
+    let mut deliveries = Vec::new();
     for (caller, items) in by_caller.into_iter().filter(|(caller, _)| caller_in_scope(caller)) {
         if notice_waits(&caller) {
             observe_without_delivery(pty, &caller, &items);
@@ -647,6 +682,12 @@ fn notify_once(
         idle_looks.insert(caller.clone(), 0);
         let text = format!("{NOTICE_TAG} {}", lines.join(" "));
         let notice = Notice { settled, quota_lines, spawn_lines, news_lines, system_news, held_for, lost };
+        deliveries.push((typing, caller, text, notice));
+    }
+    // Finish the look before any of its replies can settle. Waking the first
+    // caller in an idle cycle removes an edge the other callers still need
+    // to see, or their wakes would depend on the order of this loop.
+    for (typing, caller, text, notice) in deliveries {
         deliver(typing, caller, text, notice);
     }
 }
@@ -655,7 +696,7 @@ fn notify_once(
 fn observe_without_delivery(pty: &crate::pty::PtyManager, caller: &str, items: &[(String, Known, Owed, String)]) {
     for (id, known, owed, who) in items {
         if owed.wake.plan_through.is_some() || (owed.active() && lines::is_lead(known)) {
-            if let Some((None, how @ (Settled::Hold(_) | Settled::Unhold | Settled::Skip(..) | Settled::PlanContinued))) =
+            if let Some((None, how @ (Settled::Hold(_) | Settled::Unhold | Settled::Skip(..) | Settled::PlanFyi(..)))) =
                 notice_line(pty, caller, who, id, known, *owed)
             {
                 settle_control(caller, id, owed, how);
@@ -671,12 +712,7 @@ fn settle_control(caller: &str, id: &str, o: &Owed, how: Settled) {
     match how {
         Settled::Hold(ended) => current.held = Some((ended, now_ms())),
         Settled::Unhold => current.held = None,
-        Settled::Skip(..)
-        | Settled::Silent(..)
-        | Settled::UnusedTurn(_)
-        | Settled::PlanContinued
-        | Settled::PlanFyi(..)
-        | Settled::Resumed => {
+        Settled::Skip(..) | Settled::Silent(..) | Settled::UnusedTurn(_) | Settled::PlanFyi(..) | Settled::Resumed => {
             settle_told(&mut r, key, how, o);
             drop(r);
             crate::background::save();
@@ -860,7 +896,6 @@ fn kind_of(how: &Settled) -> &'static str {
         Settled::Pending(..) => "pending",
         Settled::Progress(_) => "reported",
         Settled::UnusedTurn(_) => "unused-turn",
-        Settled::PlanContinued => "plan-continued",
         Settled::PlanFyi(..) => "plan-fyi",
         Settled::Hold(_) => "hold",
         Settled::Unhold => "unhold",
@@ -1201,17 +1236,6 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
             o.wake.skipped = None;
             settle_silent(o, ended, unread);
         }
-        Settled::PlanContinued => {
-            let o = r.owed.get_mut(&key).unwrap();
-            o.wake.plan_through = None;
-            o.wake.status = None;
-            o.wake.silent = None;
-            if let Some(qs) = r.requests.get_mut(&key) {
-                for q in &mut qs.open {
-                    q.planned = false;
-                }
-            }
-        }
         Settled::UnusedTurn(ended) => {
             let o = r.owed.get_mut(&key).unwrap();
             o.wake.unused_turn = Some(ended);
@@ -1244,11 +1268,8 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
                 o.told_background_wait = Some(ended);
             }
         }
-        Settled::Skip(ended, cursor, job_running, real_turn) => {
+        Settled::Skip(ended, cursor, job_running) => {
             let o = r.owed.get_mut(&key).unwrap();
-            if real_turn {
-                o.wake.passed_plan(ended);
-            }
             o.wake.skipped = Some(ended);
             o.wake.job_running = job_running;
             o.held = None;
@@ -1261,6 +1282,9 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
 
 fn settle_silent(o: &mut Owed, ended: u32, unread: bool) {
     o.wake.silent = Some(ended);
+    if o.wake.plan_through.is_some_and(|through| ended > through) {
+        o.wake.plan_through = None;
+    }
     if unread {
         o.wake.unread_since.get_or_insert_with(now_ms);
     }
@@ -1276,7 +1300,6 @@ fn mark_requests(r: &mut Registry, key: &(String, String), snapshots: &[Request]
             if let Some(snapshot) = snapshots.iter().find(|snapshot| snapshot.n == q.n) {
                 q.taken |= snapshot.taken;
                 q.told |= snapshot.told;
-                q.planned |= snapshot.planned;
             }
         }
     }
@@ -1408,19 +1431,29 @@ mod tests {
     }
 
     #[test]
-    fn an_unread_answer_does_not_outlive_an_unreachable_caller() {
+    fn a_late_caller_loses_delivery_before_its_unread_hold() {
         let id = "gone-unread-helper";
         register(id, Provider::Claude, "C:/p", "C:/acc/one", None, false, serde_json::json!({}));
         let known = HashMap::from([(id.to_string(), reg().lock().unwrap().known[id].clone())]);
         let key = ("gone-unread-caller".into(), id.to_string());
         let mut silent = Owed::from(0, 0);
         silent.wake.silent = Some(1);
+        silent.wake.plan_through = Some(1);
         silent.wake.unread_since = Some(now_ms());
         let mut owed = HashMap::from([(key.clone(), silent)]);
-        prune_owed(&mut owed, &known, CALLER_RETURN_MS - 1);
+        prune_owed(&mut owed, &known, CALLER_RETURN_MS - 1, |_| true);
         assert!(owed.contains_key(&key), "the caller can still come back");
-        prune_owed(&mut owed, &known, CALLER_RETURN_MS);
-        assert!(owed.is_empty(), "an unread hold cannot keep a departed caller's debt");
+        prune_owed(&mut owed, &known, CALLER_RETURN_MS, |_| true);
+        let expired = owed.get_mut(&key).expect("the unread answer still holds auto-delete");
+        assert!(!expired.active() && !expired.watches_later_turns());
+        assert!(crate::agents::teardown::unread_holds(expired, now_ms()));
+        let read = expired.wake.unread_since.take().unwrap();
+        prune_owed(&mut owed, &known, CALLER_RETURN_MS, |_| true);
+        let expired = owed.get_mut(&key).expect("a cancel can still restore the unread hold");
+        expired.wake.unread_since = Some(read);
+        expired.wake.delivery_expired = Some(now_ms());
+        prune_owed(&mut owed, &known, CALLER_RETURN_MS, |_| true);
+        assert!(owed.is_empty(), "the unread hold expired");
         forget(id);
     }
 
@@ -1842,6 +1875,7 @@ mod tests {
         use crate::agents::owed::{owe_sent, Asked};
         let (caller, id) = ("quiet-queue-caller", "quiet-queue-helper");
         let key = (caller.into(), id.into());
+        register(id, Provider::Claude, "C:/p", "C:/acc/one", None, false, serde_json::json!({}));
         let first = Asked { text: "First task", key: None, reply: true };
         owe_sent(caller, id, 1, 0u64.into(), None, &first, (false, None, true));
         let o = reg().lock().unwrap().owed[&key];
@@ -1865,7 +1899,6 @@ mod tests {
         let o = reg().lock().unwrap().owed[&key];
         let mut requests = requests_of(caller, id);
         requests[0].taken = true;
-        requests[0].planned = true;
         let how = Settled::Progress(Progress {
             ended: 1,
             cursor: 50,
@@ -1880,7 +1913,7 @@ mod tests {
         settle_told(&mut reg().lock().unwrap(), key.clone(), how, &o);
         assert_eq!(reg().lock().unwrap().owed[&key].wake.plan_through, Some(1));
         let requests = requests_of(caller, id);
-        assert!(requests[0].planned && !requests[1].planned && !requests[1].taken);
+        assert!(requests[0].taken && !requests[1].taken);
         forget(id);
         forget(caller);
     }
@@ -1914,6 +1947,9 @@ mod tests {
         register(id, Provider::Claude, "C:/p", account, Some(lead), false, bg);
         crate::agents::registry::set_name(id, "Check the gate");
         crate::background::test_helper(lead, account, None, true);
+        // Other notifier tests can sample the registry before this test
+        // delivers. Put the debt in before leaving the lead listening.
+        owe_from(lead, id, 0, 0);
         let lines = crate::background::listening_for_test(lead);
         crate::background::idle_for_test(id, Provider::Claude, 1, false);
         let now = now_ms();
@@ -1927,7 +1963,6 @@ mod tests {
         assert!(breaker_suffix(lead, id, &Settled::Waiting, now).is_none());
         let suffix = breaker_suffix(lead, id, &Settled::Answered, now).unwrap();
         assert_eq!(suffix, " [turn notices stopped; luna_report_get]");
-        owe_from(lead, id, 0, 0);
         let owed = reg().lock().unwrap().owed[&(lead.to_string(), id.to_string())];
         let text = format!("{NOTICE_TAG} {id} answered.{suffix}");
         let pty = crate::pty::manager();
@@ -1947,7 +1982,7 @@ mod tests {
             system::breaker(&mut r, lead, id, tripped);
         }
         assert_eq!(system::news(pty)[top].len(), 1, "the same trip is queued once");
-        crate::background::idle_for_test(top, Provider::Claude, 1, false);
+        let terminal = crate::pty::notice_terminal(top, Provider::Claude, false);
         let mut idle_looks = HashMap::from([(top.to_string(), NOTIFY_IDLE_LOOKS - 1)]);
         let mut drafted = None;
         notify_once(
@@ -1964,12 +1999,11 @@ mod tests {
         let (text, notice) = drafted.expect("the notifier delivers system news even to a chat owed nothing");
         assert!(text.contains("Check the gate"));
         assert_eq!(notice.system_news.len(), 1);
-        crate::background::test_helper(top, account, None, true);
-        let lines = crate::background::listening_for_test(top);
         deliver_notice(pty, top, &text, notice);
-        assert!(lines.try_recv().unwrap().contains("Check the gate"));
+        assert!(terminal.input.try_iter().collect::<String>().contains("Check the gate"));
         assert!(!system::news(pty).contains_key(top), "a delivered breaker is removed");
-        crate::background::gone_for_test(top);
+        drop(terminal);
+        crate::activity::forget(top);
         forget(top);
         system::breaker(&mut reg().lock().unwrap(), lead, id, now);
         assert!(!reg().lock().unwrap().system_news.iter().any(|n| n.about(id)));

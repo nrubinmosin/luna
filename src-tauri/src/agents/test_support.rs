@@ -160,6 +160,10 @@ pub(crate) fn notifier_tick_for_test(caller: &str) {
     super::notifier::tick_for_test(caller);
 }
 
+pub(crate) fn claim_refusal_for_test(caller: &str) -> impl Drop {
+    super::notifier::claim_refusal_for_test(caller)
+}
+
 pub(crate) fn expire_refusal_for_test(caller: &str) {
     reg().lock().unwrap().places_refused.get_mut(caller).unwrap().since =
         std::time::Instant::now() - std::time::Duration::from_secs(10 * 60);

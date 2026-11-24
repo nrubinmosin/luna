@@ -4,7 +4,6 @@
 use crate::agents::ask::{ask_of, live};
 use crate::agents::lost::{never_started_what, sentence, undelivered_for, undelivered_line, undelivered_text};
 use crate::agents::notifier::Settled;
-use crate::agents::owed::requests_of;
 use crate::agents::owed::{requests_through, Owed, QUEUED_GRACE_MS};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{failure_of, transcript_end, transcript_found, transcript_path};
@@ -386,8 +385,6 @@ pub(in crate::agents) fn notice_line(
     {
         return None;
     }
-    let mut o = o;
-    let had_plan = o.wake.plan_through.is_some();
     let ts = crate::activity::turn_state(id);
     let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let turn = ts.map(|t| t.turn);
@@ -399,16 +396,6 @@ pub(in crate::agents) fn notice_line(
     // will be to hear of.
     let background = ts.is_some_and(|t| t.children_busy) && alive;
     let left = if background { left_named(id) } else { None };
-    let waits = waits_on_helpers(id, caller);
-    let work_left = alive && (background || waits || !runs_nothing(id, ts));
-    if o.wake.plan_through.is_some()
-        && turn == Some(crate::activity::Turn::Busy)
-        && !super::notice_waits(id)
-        && !requests_of(caller, id).iter().any(|q| !q.reply && !q.taken)
-        && real_turn_past(id, caller, ended, ended.saturating_add(1), waits, || false)
-    {
-        return Some((None, Settled::PlanContinued));
-    }
     let standing = standing_line(pty, who, id, k, o);
     if o.resumed || o.job_went {
         if let Some((Some(_), Settled::Waiting | Settled::Asked(_))) = &standing {
@@ -421,17 +408,10 @@ pub(in crate::agents) fn notice_line(
         };
         return Some((Some(format!("{who}: {line}")), Settled::Resumed));
     }
-    // A silently settled answer is still readable. An idle PLAN also watches
-    // for a later turn of its own, without holding up the caller's work.
-    if let Some(silent) = o.wake.silent {
-        if !o.watches_later_turns() || !alive || ended <= silent && turn == Some(crate::activity::Turn::Idle) {
-            return None;
-        }
+    if !alive && (standing.is_none() || !o.active() && o.watches_later_turns() || turn == Some(crate::activity::Turn::Waiting)) {
+        return standing;
     }
     let standing = standing.filter(|(_, how)| !matches!(how, Settled::Exited));
-    if standing.is_none() && alive && turn == Some(crate::activity::Turn::Idle) && wake_is_pending(id, ended) {
-        return None;
-    }
     if standing.is_some() {
         return standing;
     }
@@ -440,9 +420,17 @@ pub(in crate::agents) fn notice_line(
     }
     let between_turns = turn != Some(crate::activity::Turn::Busy);
     let notice_baseline = o.notice_baseline();
+    let cut = crate::background::cut_short(id) || o.cut_short;
+    let failed = (between_turns && (ended > notice_baseline || o.told_pending || o.wake.skipped.is_some()))
+        .then(|| failure_of(pty, id, k.provider).or_else(|| crate::activity::limit_of(id)))
+        .flatten();
+    if !o.active() && !o.watches_later_turns() && !cut && failed.is_none() {
+        return None;
+    }
+    let waits = waits_on_helpers(id, caller);
+    let work_left = alive && (background || waits || !runs_nothing(id, ts));
     let job_debt = o.told_pending || o.wake.skipped.is_some();
-    let real_turn = (job_debt || o.wake.silent.is_some() || o.wake.plan_through.is_some())
-        && real_turn_past(id, caller, notice_baseline, ended, waits, || false);
+    let real_turn = (job_debt || o.wake.silent.is_some()) && real_turn_past(id, caller, notice_baseline, ended, waits, || false);
     let mut now = verdict(
         &Owed { baseline: notice_baseline, told_pending: job_debt || o.wake.silent.is_some(), ..o },
         ended,
@@ -453,9 +441,9 @@ pub(in crate::agents) fn notice_line(
     if !job_debt && now == Verdict::JobOver {
         now = Verdict::Nothing;
     }
-    let failed = (between_turns && (ended > notice_baseline || now == Verdict::JobOver))
-        .then(|| failure_of(pty, id, k.provider).or_else(|| crate::activity::limit_of(id)))
-        .flatten();
+    if between_turns && (alive && cut || failed.is_some() && matches!(now, Verdict::AtWork | Verdict::Nothing)) {
+        now = Verdict::TurnOver;
+    }
     if now == Verdict::OnlyNotices {
         let (said, read_to) = written_range(pty, id, k.provider, o.cursor);
         if turn_changed(id, ended) {
@@ -470,15 +458,19 @@ pub(in crate::agents) fn notice_line(
             || !lost.is_empty()
             || !background_stopped(id, caller).is_empty()
             || !transcript_found(pty, id)
+            || !alive
         {
             now = Verdict::TurnOver;
         } else {
             // Keep an interim boundary only while work remains. If this
             // was the last turn on a dependency, its words can be the answer.
-            return Some((None, Settled::Skip(ended, if work_left { read_to } else { o.held_to.unwrap_or(o.cursor) }, background, false)));
+            return Some((None, Settled::Skip(ended, if work_left { read_to } else { o.held_to.unwrap_or(o.cursor) }, background)));
         }
     }
     if now == Verdict::AtWork && o.held.is_some() {
+        if wake_is_pending(id, ended) {
+            return None;
+        }
         return Some((None, Settled::Unhold));
     }
     if now == Verdict::JobOver && alive {
@@ -502,13 +494,14 @@ pub(in crate::agents) fn notice_line(
                 let said = said.asked_after(requests_through(caller, id, o, ended), o.request_match);
                 let (requests, plan, fyi) = said.notice_requests();
                 let keeps_plan = fyi && o.wake.plan_through.is_some();
+                let plan_covers = keeps_plan || plan_covers(o, ended);
                 if plain && keeps_plan && status.is_none() && requests.iter().all(|q| q.taken) {
                     return Some((None, Settled::PlanFyi(ended, requests, !said.is_empty())));
                 }
                 // An internal wake still goes to a lead whose delegates finished.
                 if plain
                     && is_lead(k)
-                    && o.wake.plan_through.is_none()
+                    && !plan_covers
                     && !plan
                     && had_delegates(id, o)
                     && quiet_since_held(pty, id, k, &o, &said)
@@ -517,7 +510,7 @@ pub(in crate::agents) fn notice_line(
                     return None;
                 }
                 let said_since_hold = !quiet_since_held(pty, id, k, &o, &said);
-                if plain && status.is_none() && (!said_since_hold || !can_stall(o, &requests)) {
+                if plain && status.is_none() && (!said_since_hold || !can_stall(o, &requests, plan_covers)) {
                     return Some((None, silent_or_untaken(o, ended, &requests, !said.is_empty())));
                 }
                 let how = if plain {
@@ -552,7 +545,6 @@ pub(in crate::agents) fn notice_line(
         };
     }
     if now == Verdict::TurnOver {
-        let cut = crate::background::cut_short(id) || o.cut_short;
         let failed = failed.filter(|_| !cut);
         // Stopped by Luna (a stop, an interrupt): no error, and not finished.
         let halted = if cut { None } else { crate::background::stop_of(id) };
@@ -566,9 +558,7 @@ pub(in crate::agents) fn notice_line(
         let replies = fresh.asked_after(requests_through(caller, id, o, ended), o.request_match);
         let (requests, plan, fyi) = replies.notice_requests();
         let keeps_plan = fyi && o.wake.plan_through.is_some();
-        if real_turn && !keeps_plan {
-            o.wake.passed_plan(ended);
-        }
+        let plan_covers = keeps_plan || plan_covers(o, ended);
         // The last lead turn may have made no reply even when the answer
         // includes interim text from earlier turns.
         let silent = replies.is_empty() || is_lead(k) && said_since(pty, id, k.provider, o.cursor).is_empty();
@@ -598,6 +588,9 @@ pub(in crate::agents) fn notice_line(
         let never_started = parent && crate::background::never_started(id);
         let trouble =
             cut || halted.is_some() || failed.is_some() || never_started || !found || o.unsure || !lost.is_empty() || !stopped.is_empty();
+        if !trouble && wake_is_pending(id, ended) {
+            return None;
+        }
         let failure = || failed_requests(id, o, ended, &requests);
         let lead = is_lead(k);
         if !trouble && work_left {
@@ -605,17 +598,21 @@ pub(in crate::agents) fn notice_line(
                 note_delegates(pty, id, k.provider, left.as_deref().filter(|_| background));
             }
             if status.is_none() {
-                return Some((None, Settled::Skip(ended, read_to, background, real_turn && !keeps_plan)));
+                return Some((None, Settled::Skip(ended, read_to, background)));
             }
         }
         if !trouble && !work_left {
             if keeps_plan && status.is_none() && requests.iter().all(|q| q.taken) {
                 return Some((None, Settled::PlanFyi(ended, requests, !replies.is_empty())));
             }
-            if lead && !had_plan && !plan && quiet_on_helpers(pty, id, k, &o, ended, silent) && wake_lead(pty, id, ended) == Wake::Waits {
+            if lead && !plan_covers && !plan && quiet_on_helpers(pty, id, k, &o, ended, silent) && wake_lead(pty, id, ended) == Wake::Waits
+            {
                 return None;
             }
-            if status.is_none() && !can_stall(o, &requests) {
+            if status.is_none() && !can_stall(o, &requests, plan_covers) {
+                if !alive {
+                    return standing_line(pty, who, id, k, o);
+                }
                 return Some((None, silent_or_untaken(o, ended, &requests, !replies.is_empty())));
             }
         }
@@ -710,7 +707,7 @@ pub(in crate::agents) fn notice_line(
             ));
         }
         // The internal wake has had its chance to get this lead moving.
-        if lead && status.is_none() && (can_stall(o, &requests) || trouble) {
+        if lead && status.is_none() && (can_stall(o, &requests, plan_covers) || trouble) {
             if let Some(w) = woken_before(id, ended) {
                 if said_since(pty, id, k.provider, w.cursor).is_empty() {
                     let earlier = if replies.is_empty() { String::new() } else { format!(" Its turns since you asked ended{reply}.") };
@@ -797,14 +794,18 @@ fn turn_changed(id: &str, ended: u32) -> bool {
     crate::activity::turn_state(id).is_some_and(|t| t.turn != crate::activity::Turn::Idle || t.turns_ended != ended)
 }
 
-fn can_stall(o: Owed, requests: &[Request]) -> bool {
-    if o.no_reply {
+fn plan_covers(o: Owed, ended: u32) -> bool {
+    o.wake.plan_through.is_some_and(|through| ended <= through)
+}
+
+fn can_stall(o: Owed, requests: &[Request], plan_covers: bool) -> bool {
+    if o.no_reply || plan_covers {
         return false;
     }
     if requests.is_empty() {
-        return o.wake.plan_through.is_none() && o.legacy_can_stall();
+        return o.legacy_can_stall();
     }
-    requests.iter().any(|q| q.reply && q.taken && !q.told && (!q.planned || o.wake.plan_through.is_none()))
+    requests.iter().any(|q| q.reply && q.taken && !q.told)
 }
 
 fn silent_or_untaken(o: Owed, ended: u32, requests: &[Request], unread: bool) -> Settled {
@@ -894,28 +895,57 @@ pub(super) fn runs_nothing(id: &str, ts: Option<crate::activity::TurnState>) -> 
         {
             return false;
         }
-        let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+        let mut edges: HashMap<String, Vec<(String, Owed)>> = HashMap::new();
         for ((from, to), o) in &r.owed {
             if !o.active() || o.no_reply {
                 continue;
             }
-            edges.entry(from.clone()).or_default().push(to.clone());
+            edges.entry(from.clone()).or_default().push((to.clone(), *o));
         }
         (edges, pending)
     };
+    // A due reply cannot keep this session waiting when its peer, directly
+    // or through another debt, is waiting on this session's own reply.
+    let mut upstream: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (from, asks) in &edges {
+        for (peer, _) in asks {
+            upstream.entry(peer).or_default().push(from);
+        }
+    }
+    let mut leads_back = HashSet::new();
+    let mut callers = vec![id];
+    while let Some(caller) = callers.pop() {
+        if leads_back.insert(caller) {
+            callers.extend(upstream.get(caller).into_iter().flatten().copied());
+        }
+    }
     let mut visited = HashSet::from([id]);
-    let mut peers: Vec<_> = edges.get(id).into_iter().flatten().map(String::as_str).collect();
-    while let Some(peer) = peers.pop() {
-        if !visited.insert(peer) {
-            continue;
+    let mut peers = vec![id];
+    let pty = crate::pty::manager();
+    while let Some(caller) = peers.pop() {
+        for (peer, owed) in edges.get(caller).into_iter().flatten() {
+            let peer = peer.as_str();
+            let state = crate::activity::turn_state(peer);
+            let due = !leads_back.contains(peer)
+                && (owed.resumed
+                    || owed.job_went
+                    || owed.cut_short
+                    || state.is_some_and(|t| t.turns_ended > owed.notice_baseline() || owed.told_pending))
+                && !pair_stopped(pty, caller, peer);
+            if due {
+                return false;
+            }
+            if !visited.insert(peer) {
+                continue;
+            }
+            if pending.contains(peer)
+                || crate::background::has_work(peer)
+                || state.is_some_and(|t| t.turn != crate::activity::Turn::Idle || t.children_busy)
+            {
+                return false;
+            }
+            peers.push(peer);
         }
-        if pending.contains(peer)
-            || crate::background::has_work(peer)
-            || crate::activity::turn_state(peer).is_some_and(|t| t.turn != crate::activity::Turn::Idle || t.children_busy)
-        {
-            return false;
-        }
-        peers.extend(edges.get(peer).into_iter().flatten().map(String::as_str));
     }
     true
 }
@@ -1096,13 +1126,7 @@ fn begins_re(replies: &Said, already_pending: bool) -> String {
         // Claude's reader skips native command records, so their absence
         // cannot tell us whether the reply belongs to the command. A pending
         // reply may also begin past its prompt, especially after an old save.
-        None if !already_pending
-            && !requests.iter().any(|q| {
-                q.head.starts_with("<command-name")
-                    || q.head.starts_with("<local-command")
-                    || crate::agents::command_prefix(&q.head).is_some()
-            }) =>
-        {
+        None if !already_pending && !requests.iter().any(|q| crate::claude::session::command_record(&q.head)) => {
             format!(" [unmatched]{quoted}")
         }
         _ => quoted,
@@ -1216,7 +1240,7 @@ mod tests {
     use crate::agents::ask::ask_of;
     use crate::agents::lost::sentence;
     use crate::agents::notifier::{job_end_stood, Settled, NOTICE_TAG};
-    use crate::agents::owed::{owe_from, Owed};
+    use crate::agents::owed::{owe_from, requests_of, Owed};
     use crate::agents::persist::{tie_back, ties_of, Ties};
     use crate::agents::read::transcripts;
     use crate::agents::registry::{parent_of, reg, register, waits_on_helpers};
@@ -1230,7 +1254,8 @@ mod tests {
         use crate::agents::read::Message;
         use crate::agents::said::{said_of, Request};
         let request = |n, head: &str| Request::new(n, None, head.into(), true);
-        let message = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let message =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
         let preview = |prompt, requests| {
             begins_re(&said_of(vec![message("user", prompt), message("assistant", "DONE: first pass")]).asked(requests), false)
         };
@@ -1873,7 +1898,7 @@ mod tests {
 
     #[test]
     fn an_idle_plan_waits_through_an_fyi_and_reopens_for_an_independent_turn() {
-        use crate::agents::owed::{owe_asked, Asked};
+        use crate::agents::owed::{owe_asked, owe_sent, Asked};
         let (id, caller) = ("plan-turn-helper", "plan-turn-caller");
         let initial = [prompt_line("Review changes"), said_line("PLAN: inspect the changes")].concat();
         let (known, path) = lead(caller, id, 3, false, &initial);
@@ -1890,9 +1915,19 @@ mod tests {
         assert!(!planned.told_pending && !planned.active());
         assert!(line(planned).is_none());
         assert!(!reg().lock().unwrap().woken.contains_key(id));
-        owe_asked(caller, id, 3, initial.len() as u64, &Asked { text: "Heads up", key: None, reply: false });
+        owe_sent(
+            caller,
+            id,
+            3,
+            (initial.len() as u64).into(),
+            None,
+            &Asked { text: "Heads up", key: None, reply: false },
+            (false, None, true),
+        );
         crate::background::quiet_for_test(id, 0);
+        std::fs::write(&path, format!("{initial}{}", prompt_line("Heads up"))).unwrap();
         assert!(line(debt()).is_none(), "the FYI cannot reopen the plan");
+        assert_eq!(debt().wake.plan_through, Some(3), "the delivery already marked the FYI taken");
         let news = [initial, prompt_line("Heads up"), said_line("Noted.")].concat();
         std::fs::write(&path, &news).unwrap();
         crate::background::idle_for_test(id, Provider::Claude, 4, false);
@@ -1900,19 +1935,35 @@ mod tests {
         let Some((None, how @ Settled::PlanFyi(..))) = line(o) else { panic!("the FYI stays readable without a stall") };
         settle(how, o);
         crate::background::quiet_for_test(id, 0);
-        let o = debt();
-        let Some((None, how @ Settled::PlanContinued)) = line(o) else { panic!("an independent turn reopens the task") };
-        settle(how, o);
-        let reopened = debt();
-        assert!(reopened.active() && reopened.wake.plan_through.is_none());
+        assert!(line(debt()).is_none(), "the independent turn has yet to end");
         std::fs::write(&path, format!("{news}{}{}", prompt_line("Go ahead"), said_line("Reviewed the changes."))).unwrap();
         crate::background::idle_for_test(id, Provider::Claude, 5, false);
-        let (Some(text), Settled::Answered) = line(reopened).unwrap() else { panic!("later stall") };
+        let (Some(text), Settled::Answered) = line(debt()).unwrap() else { panic!("later stall") };
         assert!(text.contains("finished its turn") && !text.contains("PLAN"), "{text}");
         crate::background::gone_for_test(id);
         forget(id);
         forget(caller);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_chat_that_exits_during_a_plan_continuation_is_reported() {
+        let (id, caller) = ("plan-exit-chat", "plan-exit-caller");
+        let initial = [prompt_line("Review changes"), said_line("PLAN: inspect the changes")].concat();
+        let (mut known, path) = lead(caller, id, 1, false, &initial);
+        known.parent = None;
+        owe_from(caller, id, 0, 0);
+        assert!(matches!(look(caller, id, &known), Some((Some(_), Settled::Progress(_)))));
+        assert!(look(caller, id, &known).is_none());
+        std::fs::write(&path, format!("{initial}{}", prompt_line("Go ahead"))).unwrap();
+        crate::background::quiet_for_test(id, 0);
+        // No notifier sample saw the independent turn run.
+        crate::background::gone_for_test(id);
+        let Some((Some(line), Settled::Exited)) = look(caller, id, &known) else { panic!("the exit must wake the caller") };
+        assert!(line.contains("has exited"), "{line}");
+        forget(id);
+        forget(caller);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -2028,7 +2079,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_status_waits_for_turn_end() {
+    fn codex_status_wakes_an_fyi_caller_after_turn_end() {
         let (id, caller) = ("codex-status-helper", "codex-status-caller");
         register(id, Provider::Codex, "C:/p", "C:/acc/openai/one", Some(caller), false, serde_json::json!({}));
         crate::background::idle_for_test(id, Provider::Codex, 0, false);
@@ -2037,17 +2088,33 @@ mod tests {
         let message = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"BLOCKED: waiting for the deploy"}]}}"#;
         std::fs::write(&path, format!("{message}\n")).unwrap();
         transcripts().lock().unwrap().insert(id.into(), path.clone());
-        owe_from(caller, id, 0, 0);
+        let mut debt = Owed::from(0, 0);
+        debt.no_reply = true;
+        reg().lock().unwrap().owed.insert((caller.into(), id.into()), debt);
         let pty = crate::pty::manager();
         let known = reg().lock().unwrap().known[id].clone();
         let o = reg().lock().unwrap().owed[&(caller.into(), id.into())];
         assert!(notice_line(pty, caller, "Session", id, &known, o).is_none());
         crate::background::idle_for_test(id, Provider::Codex, 1, false);
-        let (Some(text), Settled::Answered) = notice_for(caller, id, 1) else { panic!("ended report") };
+        let ack = message.replace("BLOCKED: waiting for the deploy", &"Still waiting for the deploy. ".repeat(20));
+        std::fs::write(&path, format!("{ack}\n")).unwrap();
+        assert!(matches!(notice_line(pty, caller, "Session", id, &known, o), Some((None, Settled::Silent(1, true)))));
+        std::fs::write(&path, format!("{message}\n")).unwrap();
+        let (Some(text), Settled::Answered) = notice_line(pty, caller, "Session", id, &known, o).unwrap() else { panic!("ended report") };
         assert!(text.contains("BLOCKED"), "{text}");
         crate::background::gone_for_test(id);
         forget(id);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_slash_in_an_ordinary_request_does_not_hide_an_unmatched_reply() {
+        let said = |head: &str| {
+            Said::one_turn(vec!["Still investigating.".into()])
+                .asked(vec![Request::new(1, None, "First request".into(), true), Request::new(2, None, head.into(), true)])
+        };
+        assert!(begins_re(&said("/tmp has logs"), false).contains("[unmatched]"));
+        assert!(!begins_re(&said("<command-name>/model</command-name>"), false).contains("[unmatched]"));
     }
 
     /// A helper's turn that has answered but waits on a watcher it left: the
@@ -2919,6 +2986,38 @@ mod tests {
     }
 
     #[test]
+    fn a_due_reply_from_a_peer_holds_an_interim_stall() {
+        let (a, b, c) = ("peer-chain-a", "peer-chain-b", "peer-chain-c");
+        for id in [a, b, c] {
+            register(id, Provider::Claude, "C:/p", "C:/acc/one", None, true, serde_json::json!({}));
+            crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        }
+        owe_from(a, b, 0, 0);
+        owe_from(b, c, 0, 0);
+        let path = std::env::temp_dir().join(format!("luna-{b}-{}.jsonl", std::process::id()));
+        std::fs::write(&path, said_line("Waiting on C.")).unwrap();
+        transcripts().lock().unwrap().insert(b.into(), path.clone());
+        let (debt, known) = {
+            let r = reg().lock().unwrap();
+            (r.owed[&(a.into(), b.into())], r.known[b].clone())
+        };
+        let line = || notice_line(crate::pty::manager(), a, "Session B", b, &known, debt);
+        assert!(!waits_on_helpers(b, a), "C is a peer chat");
+        assert!(!runs_nothing(b, crate::activity::turn_state(b)), "C ended the turn it owes to B");
+        assert!(matches!(line(), Some((None, Settled::Skip(1, ..)))), "A stays asleep while C's reply is due");
+        reg().lock().unwrap().owed.remove(&(b.into(), c.into()));
+        assert!(runs_nothing(b, crate::activity::turn_state(b)), "C's answer has been delivered");
+        crate::background::idle_for_test(b, Provider::Claude, 2, false);
+        std::fs::write(&path, said_line("Finished after hearing from C.")).unwrap();
+        assert!(matches!(line(), Some((Some(line), Settled::Answered)) if line.contains("Finished after hearing from C")));
+        for id in [a, b, c] {
+            crate::background::gone_for_test(id);
+            forget(id);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn runs_nothing_is_false_for_whatever_would_start_the_session() {
         use crate::activity::{Turn, TurnState};
         use crate::agents::held::Held;
@@ -2977,7 +3076,7 @@ mod tests {
         register(sub, Provider::Claude, "C:\\p", "C:/acc/anthropic/rn-acc", Some(id), false, serde_json::json!({}));
         crate::background::idle_for_test(sub, Provider::Claude, 1, false);
         assert!(runs_nothing(id, idle), "an idle helper of its own, nothing to say of it");
-        owe_from(id, sub, 0, 0);
+        owe_from(id, sub, 1, 0);
         assert!(waits_on_helpers(id, top));
         assert!(runs_nothing(id, idle), "its unanswered helper is idle too");
         let debt = reg().lock().unwrap().owed[&key(sub)];

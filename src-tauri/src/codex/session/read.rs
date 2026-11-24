@@ -151,7 +151,7 @@ fn message_of(v: &Value) -> Option<crate::agents::Message> {
     // 0.167.0 classes an assistant message as commentary, a partial answer or the
     // turn's terminal one (`MessagePhase`, protocol/src/models.rs).
     let final_answer = role == "assistant" && v["payload"]["phase"] == "final_answer";
-    Some(crate::agents::Message { role: role.to_string(), text, after_cli: false, final_answer })
+    Some(crate::agents::Message { role: role.to_string(), text, after_cli: false, joined: false, final_answer })
 }
 
 /// `limit_at_in` without its time.
@@ -1046,7 +1046,15 @@ impl Conversation {
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         if response {
-            self.messages.extend(message_of(&v));
+            if let Some(mut message) = message_of(&v) {
+                message.joined = message.role == "user"
+                    && self.turn_from.is_some_and(|from| {
+                        // Older rollouts may put the opening input immediately
+                        // before the start event.
+                        from < self.messages.len() || from > self.turn_end && self.messages[from - 1].role == "user"
+                    });
+                self.messages.push(message);
+            }
             return;
         }
         let payload = &v["payload"];
@@ -1102,6 +1110,7 @@ impl Conversation {
                 role: "assistant".into(),
                 text: said.to_string(),
                 after_cli: false,
+                joined: false,
                 final_answer: true,
             });
         }
@@ -1113,7 +1122,8 @@ impl Conversation {
     pub(super) fn finish(mut self, before: impl Fn(&str) -> bool) -> Vec<crate::agents::Message> {
         for (at, said) in std::mem::take(&mut self.orphans).into_iter().rev() {
             if !before(&said) {
-                let message = crate::agents::Message { role: "assistant".into(), text: said, after_cli: false, final_answer: true };
+                let message =
+                    crate::agents::Message { role: "assistant".into(), text: said, after_cli: false, joined: false, final_answer: true };
                 self.messages.insert(at, message);
             }
         }

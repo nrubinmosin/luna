@@ -530,7 +530,8 @@ Invariants:
   begun for 8 s (`LET_GO_MS`).
 - `wait_many`: finished ones stay owed and reserved from the notice
   (`reserved`) until the response; a cancel undoes them together except an
-  answer a later call delivered (`receipts`).
+  answer a later call delivered (`receipts`). Partial responses retain
+  separate receipts for the request IDs each collected.
 
 ## Session tool results
 
@@ -595,12 +596,17 @@ turn, stopped on a prompt (once per stop) or exited.
   failure or exit can also wake it. A status or answer covers a numbered
   request after the CLI confirms delivery or its transcript shows the prompt. An untold request
   that wants a reply gets one idle stall, carrying what the session said.
-  Work, queued inputs and pending replies keep that stall back. An idle
-  cycle or idle peer allows each caller its own stall. A draft holds only its
+  Work, queued inputs and due replies keep that stall back. A peer's due
+  reply holds it even while the peer is idle, except when the peer's
+  dependencies lead back to this session. Each caller in an idle cycle
+  can still get its own stall. A draft holds only its
   own notice. Interim and suppressed text
-  stays readable. An idle plan watches for a later independent turn without
-  creating a job debt. A separate allowance per task covers the 30-minute
-  quiet check, including when a turn waits for its own background work.
+  stays readable. After a PLAN, the idle stall stays covered through that
+  turn and later turns started by FYIs. A joined FYI stays part of the
+  original turn. Permission prompts, failures, exits and restart
+  interruptions still go to the caller. A separate allowance per task covers
+  the 30-minute quiet check, including when a turn waits for its own background
+  work.
   Ties save request intent and coverage, idle plan state, quiet allowance,
   and untold restart interruptions. A move to another transcript captures
   the destination offset and invalidates settlements from the old file.
@@ -608,7 +614,8 @@ turn, stopped on a prompt (once per stop) or exited.
 - **Riders.** Later quiet lines accompany another notice. A place refusal
   can go alone after ten minutes or when the top chat has no active debt.
   An untold refusal holds the power-off countdown for up to ten minutes
-  while its top chat can take it. It expires with that chat or its line.
+  while its top chat can take it. A claimed refusal holds it through power
+  admission. It expires with that chat or its line.
   Suppressed answers hold no countdown. Quota and system notices keep
   their own policy.
 - **Company.** A notice ready for an idle caller that is owed an answer by
@@ -798,7 +805,8 @@ none is `transcriptMissing`, not "no reply".
 (its record not active, however long that has done nothing), and no turn for 30 minutes, as `delete` would.
 Any `read` / `wait` / `send` restarts the clock (`deletesInMin`).
 A silent settlement keeps its unread cursor without holding up a lead.
-Unread text holds auto-delete until it is read or 24 hours elapse.
+Unread text holds auto-delete until it is read or 24 hours elapse, even
+after the notifier stops waiting for a caller to reopen after a restart.
 A helper an agent killed mid-turn is left alone. On by default.
 
 The person's Delete on a helper, or on a chat with its helpers ticked
