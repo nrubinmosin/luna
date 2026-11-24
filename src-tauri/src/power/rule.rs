@@ -478,8 +478,9 @@ mod tests {
             refusal_for_power_test(lead);
             summary.clone()
         };
-        let (_, _, result) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || at(0), || clock);
+        let (state, _, result) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || at(0), || clock);
         assert_eq!(result, Effect::Canceled, "a refusal arrived during the final read");
+        drop(state);
         assert!(!countdown(), "a live top chat can still take the refusal");
         notifier_tick_for_test(chat);
         assert!(terminal.input.try_iter().collect::<String>().contains("No place was left"));
