@@ -170,7 +170,7 @@ impl Live {
     /// A spawn as `luna_session_spawn` would take it, on this account, at low effort,
     /// kept until the test deletes it. The model is the account's default
     /// unless LUNA_LIVE_CLAUDE_MODEL / LUNA_LIVE_CODEX_MODEL names one.
-    fn params(&self, folder: &str, prompt: &str, extra: Value) -> crate::agents::SpawnParams {
+    fn arguments(&self, folder: &str, prompt: &str, extra: Value) -> Value {
         let model_var = match self.provider {
             Provider::Claude => "LUNA_LIVE_CLAUDE_MODEL",
             Provider::Codex => "LUNA_LIVE_CODEX_MODEL",
@@ -190,7 +190,7 @@ impl Live {
         for (k, x) in extra.as_object().into_iter().flatten() {
             v[k] = x.clone();
         }
-        serde_json::from_value(v).expect("spawn params")
+        v
     }
 }
 
@@ -287,9 +287,18 @@ fn spawn_in(live: &Live, folder: String, extra: Value, prompt: &str) -> Spawned 
     for (k, v) in helper_mode.as_object().into_iter().flatten() {
         extra[k] = v.clone();
     }
-    let spawned = crate::agents::spawn(&caller, live.params(&folder, prompt, extra)).expect("luna_session_spawn");
-    assert!(crate::background::has(&spawned.id), "a helper runs in the background");
-    Spawned { caller, id: spawned.id, folder }
+    let req = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "luna_session_spawn", "arguments": live.arguments(&folder, prompt, extra) }
+    });
+    let response = crate::mcp::handle(&caller, &req.to_string()).expect("spawn response");
+    let result = &response["result"];
+    assert_ne!(result["isError"], true, "{response}");
+    let spawned: Value = serde_json::from_str(result["content"][0]["text"].as_str().expect("spawn result")).unwrap();
+    let id = spawned["id"].as_str().expect("helper id").to_string();
+    assert!(crate::background::has(&id), "a helper runs in the background");
+    assert!(spawned["settings"].get("budgetPct").is_none() && spawned["settings"].get("budgetTokens").is_none());
+    Spawned { caller, id, folder }
 }
 
 /// A turn on the real CLI ends with the answer asked for, and on the way its
@@ -366,6 +375,23 @@ fn claude_a_helper_answers_in_a_folder_without_git() {
 #[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
 fn codex_a_helper_answers_in_a_folder_without_git() {
     a_turn_completes_with_an_answer(Provider::Codex, true);
+}
+
+fn a_spawn_accepts_retired_context_options(provider: Provider) {
+    let Some(live) = live(provider) else { return };
+    let _helper = spawn(&live, json!({ "budgetPct": 101, "budgetTokens": 0 }), "Reply with OK.");
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn claude_a_spawn_accepts_retired_context_options() {
+    a_spawn_accepts_retired_context_options(Provider::Claude);
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_spawn_accepts_retired_context_options() {
+    a_spawn_accepts_retired_context_options(Provider::Codex);
 }
 
 /// A lead (a helper with Luna's tools) in a folder with no git spawns a

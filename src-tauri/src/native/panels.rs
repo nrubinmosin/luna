@@ -114,7 +114,6 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("helper_settings", own!(ok crate::agents::spawn::helper_settings)),
     ("set_max_helpers", own!(res crate::agents::spawn::set_max_helpers, n: u32)),
     ("set_delegate_auto_compact_tokens", own!(res crate::agents::spawn::set_delegate_auto_compact_tokens, tokens: u32)),
-    ("set_helper_context_pct", own!(res crate::agents::spawn::set_helper_context_pct, pct: u32)),
     // Which accounts agents may use: the switch on each row of the accounts panel.
     ("agent_blocked_accounts", own!(ok crate::agents::spawn::account::agent_blocked_accounts)),
     ("set_agent_account", own!(res crate::agents::spawn::account::set_agent_account, provider: Provider, name: String, allowed: bool)),

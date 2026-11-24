@@ -60,41 +60,69 @@ fn approval_before() -> Option<String> {
     Some("never".into())
 }
 
-/// How full a session's context window is, as its pane's meter reads it: what
-/// the window held as of its latest answer, against the model's window.
+/// How full a session's context is as of its latest usage reading.
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Context {
-    /// `tokens` of `window`, rounded: 0–100.
+    /// `tokens` of `window`, rounded and capped at 100.
     pub pct: u64,
     pub tokens: u64,
     pub window: u64,
+    /// The denominator, either the auto-compaction point or the model window.
+    pub basis: &'static str,
 }
 
 impl Context {
-    /// Off the tail of a transcript (Claude Code) or rollout (Codex). None
-    /// until an answer has stated its usage, as before the first turn.
-    pub(crate) fn of(path: &std::path::Path, provider: Provider) -> Option<Self> {
-        Self::read(path, provider).map(|(context, _)| context)
-    }
-
-    pub(super) fn read(path: &std::path::Path, provider: Provider) -> Option<(Self, Option<crate::to_compact::Sample>)> {
-        let (tokens, window, sample) = match provider {
+    /// The transcript or rollout's context, once it has recorded an answer.
+    pub(crate) fn read(
+        path: &std::path::Path,
+        id: &str,
+        provider: Provider,
+        launch: Option<&crate::to_compact::Launch>,
+    ) -> Option<(Self, Option<u64>)> {
+        let (tokens, window, model, fresh_tokens) = match provider {
             Provider::Claude => {
-                let read = crate::claude::session::last_context(path)?;
-                (read.tokens, read.window, read.compaction)
+                let c = crate::claude::session::last_context(path)?;
+                (c.tokens, c.window, c.model, c.fresh_tokens)
             }
             Provider::Codex => {
                 let tail = crate::codex::session::read_tail(path);
                 let tokens = tail.context_tokens?;
-                let sample = tail.context_model.map(|model| crate::to_compact::Sample { tokens: tokens as u64, model });
-                (tokens, tail.context_window?, sample)
+                (tokens, tail.context_window?, tail.context_model, Some(tokens))
             }
         };
-        (tokens >= 0.0 && window > 0.0).then(|| {
-            let context = Self { pct: ((tokens / window).min(1.0) * 100.0).round() as u64, tokens: tokens as u64, window: window as u64 };
-            (context, sample)
-        })
+        Self::measure(id, launch, tokens, window, model.as_deref(), fresh_tokens)
+    }
+
+    /// The same reading supplies both the context share and the estimated
+    /// tokens left. After a Claude compaction, its boundary can give newer usage.
+    pub(crate) fn measure(
+        id: &str,
+        launch: Option<&crate::to_compact::Launch>,
+        tokens: f64,
+        window: f64,
+        model: Option<&str>,
+        fresh_tokens: Option<f64>,
+    ) -> Option<(Self, Option<u64>)> {
+        if !(tokens >= 0.0 && window > 0.0) {
+            return None;
+        }
+        let limit = launch.zip(model).and_then(|(launch, model)| crate::to_compact::threshold(id, launch, model, window as u64));
+        let tokens = fresh_tokens.unwrap_or(tokens) as u64;
+        let (window, basis, left) = match limit {
+            Some(limit) => (limit, "autoCompact", fresh_tokens.map(|_| limit.saturating_sub(tokens))),
+            None => (window as u64, "model", None),
+        };
+        let context = Self { pct: (Self::share(tokens, window) * 100.0).round() as u64, tokens, window, basis };
+        Some((context, left))
+    }
+
+    pub(crate) fn fraction(&self) -> f64 {
+        Self::share(self.tokens, self.window)
+    }
+
+    fn share(tokens: u64, window: u64) -> f64 {
+        (tokens as f64 / window.max(1) as f64).min(1.0)
     }
 }
 
@@ -411,11 +439,6 @@ pub struct Queued {
     #[serde(default)]
     pub from: Option<String>,
     pub text: String,
-    /// The budget lines in a notice, which go with it wherever it goes and are
-    /// saved with it: nothing else says a line is on its way, so a core going at
-    /// any moment can neither lose one nor have it told twice.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub budget: Vec<BudgetMark>,
     /// Its own id, the same on every try.
     #[serde(default = "new_id")]
     pub id: String,
@@ -438,23 +461,15 @@ pub struct Queued {
 }
 
 impl Queued {
-    pub fn new(from: Option<String>, text: String, budget: Vec<BudgetMark>) -> Queued {
-        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false, sent: false }
+    pub fn new(from: Option<String>, text: String) -> Queued {
+        Queued { from, text, id: new_id(), line: None, maybe_reached: false, sent: false }
     }
-}
-
-/// A budget line in a notice: whose it is, and its words, to take back out of a
-/// notice that did not reach its parent.
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-pub struct BudgetMark {
-    pub id: String,
-    pub line: String,
 }
 
 #[cfg(test)]
 impl From<&str> for Queued {
     fn from(text: &str) -> Queued {
-        Queued::new(None, text.to_string(), Vec::new())
+        Queued::new(None, text.to_string())
     }
 }
 
@@ -515,14 +530,14 @@ mod tests {
         let claude = dir.join("transcript.jsonl");
         let prompt = r#"{"type":"user","message":{"role":"user","content":"hi"}}"#;
         std::fs::write(&claude, format!("{prompt}\n")).unwrap();
-        assert_eq!(Context::of(&claude, Provider::Claude), None, "no answer yet");
+        assert_eq!(Context::read(&claude, "context-test", Provider::Claude, None).map(|(c, _)| c), None, "no answer yet");
         // Input side only, cache included; a subagent's runs in a window of its own.
         let answer = r#"{"type":"assistant","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":10,"cache_creation_input_tokens":20000,"cache_read_input_tokens":29990,"output_tokens":300},"content":[]}}"#;
         let subagent = r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":150000},"content":[]}}"#;
         std::fs::write(&claude, [prompt, answer, subagent].join("\n") + "\n").unwrap();
-        let context = Context::of(&claude, Provider::Claude);
-        assert_eq!(context, Some(Context { pct: 25, tokens: 50_000, window: 200_000 }));
-        assert_eq!(serde_json::to_value(context).unwrap(), json!({ "pct": 25, "tokens": 50000, "window": 200000 }));
+        let context = Context::read(&claude, "context-test", Provider::Claude, None).map(|(c, _)| c);
+        assert_eq!(context, Some(Context { pct: 25, tokens: 50_000, window: 200_000, basis: "model" }));
+        assert_eq!(serde_json::to_value(context).unwrap(), json!({ "pct": 25, "tokens": 50000, "window": 200000, "basis": "model" }));
 
         let codex = dir.join("rollout-2026-11-05T10-00-00-abc.jsonl");
         let started = concat!(
@@ -534,11 +549,18 @@ mod tests {
             "\n",
         );
         std::fs::write(&codex, started).unwrap();
-        assert_eq!(Context::of(&codex, Provider::Codex), None, "a count of rate limits alone: no turn yet");
+        assert_eq!(
+            Context::read(&codex, "context-test", Provider::Codex, None).map(|(c, _)| c),
+            None,
+            "a count of rate limits alone: no turn yet"
+        );
         // Reasoning is not kept in the window, as Codex itself counts it.
         let count = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":90000},"last_token_usage":{"input_tokens":64000,"output_tokens":700,"reasoning_output_tokens":100,"total_tokens":64700},"model_context_window":258400}}}"#;
         std::fs::write(&codex, format!("{started}{count}\n")).unwrap();
-        assert_eq!(Context::of(&codex, Provider::Codex), Some(Context { pct: 25, tokens: 64_600, window: 258_400 }));
+        assert_eq!(
+            Context::read(&codex, "context-test", Provider::Codex, None).map(|(c, _)| c),
+            Some(Context { pct: 25, tokens: 64_600, window: 258_400, basis: "model" })
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

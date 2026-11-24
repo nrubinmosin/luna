@@ -65,8 +65,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "folder",
         "tools",
         "autoDelete",
-        "budgetTokens",
-        "budgetPct",
         "expectReply",
         "connectors",
         "name",
@@ -155,6 +153,19 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             names_as(agents::is_persons_chat(caller)).join(", ")
         ));
     }
+    // Old callers can still send these retired spawn options. Drop them
+    // before validation and request-key matching.
+    let mut legacy;
+    let a = if name == "luna_session_spawn" && ["budgetPct", "budgetTokens"].iter().any(|key| a.get(key).is_some()) {
+        legacy = a.clone();
+        if let Some(args) = legacy.as_object_mut() {
+            args.remove("budgetPct");
+            args.remove("budgetTokens");
+        }
+        &legacy
+    } else {
+        a
+    };
     if let Err(e) = arguments_fit(name, a, agents::is_persons_chat(caller)) {
         return failure(e);
     }
@@ -742,6 +753,30 @@ mod tests {
         for blank in ["", "  "] {
             assert!(get(blank).starts_with("no account"), "a blank folder is none named: {blank:?}");
         }
+    }
+
+    #[test]
+    fn old_spawn_options_are_ignored_before_validation() {
+        let caller = "legacy-spawn-args";
+        let token = agents::register(caller, crate::provider::Provider::Claude, "", "", None, true, json!({})).unwrap();
+        let _presenting = agents::presenting(caller, &token);
+        let call = |args: Value| {
+            let result = run(caller, &json!({ "name": "luna_session_spawn", "arguments": args }), &Call::new());
+            assert_eq!(result["isError"], true, "{result}");
+            result["content"][0]["text"].as_str().unwrap().to_owned()
+        };
+        let expected = call(json!({ "prompt": "go", "folder": "relative" }));
+        assert!(expected.contains("folder: not a usable path"), "{expected}");
+        assert_eq!(call(json!({ "prompt": "go", "folder": "relative", "budgetPct": 101, "budgetTokens": "ignored" })), expected);
+        assert_eq!(call(json!({ "prompt": "go", "folder": "relative", "budgetPct": null, "budgetTokens": null })), expected);
+        for persons in [true, false] {
+            let schemas = super::super::tools::tools_as(persons);
+            let spawn = schemas.as_array().unwrap().iter().find(|tool| tool["name"] == "luna_session_spawn").unwrap();
+            let props = spawn["inputSchema"]["properties"].as_object().unwrap();
+            assert!(!props.contains_key("budgetPct") && !props.contains_key("budgetTokens"));
+        }
+        assert!(call(json!({ "prompt": "go", "budgetPtc": 50 })).contains("has no argument"));
+        agents::forget(caller);
     }
 
     /// `luna_session_spawn`'s folder is held to the same shape, in the same

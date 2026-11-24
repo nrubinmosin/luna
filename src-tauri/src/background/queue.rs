@@ -231,8 +231,7 @@ pub(super) fn write_line(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
 /// Puts text where it goes: on the turn running if it may `join` that, behind it,
 /// or for the turn now claimed, if `room` (places.rs `room_for_turn`), else for
 /// the turn that waits for a place. Text the turn now claimed starts on is
-/// `in_flight`, as queued text is by then: budget lines count as arrived when
-/// the CLI has it, not before, and a turn the start gate refuses
+/// `in_flight` until the CLI takes it. A turn the start gate refuses
 /// (`crate::starts`) queues it again rather than fail its sender
 /// (run.rs `requeue_refused`).
 pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool, room: bool) -> Placed {
@@ -275,12 +274,12 @@ pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<Placed, String> 
 /// With the text's own id (`Queued::id`): what tells whether text queued went
 /// onto the running process's stdin after all (events.rs `moved_onto_stdin_at`).
 pub fn send_tracked(id: &str, text: &str, from: Option<&str>) -> Result<(Placed, String), String> {
-    let q = Queued::new(from.map(str::to_owned), text.to_string(), Vec::new());
+    let q = Queued::new(from.map(str::to_owned), text.to_string());
     let qid = q.id.clone();
     send_as(id, q, true).map(|(placed, _)| (placed, qid))
 }
 
-/// A notice with budget lines in it, or none. It was aimed at a helper found
+/// A notice aimed at a helper found
 /// idle, and if a turn has begun since, it waits for that turn's end: what it
 /// reports is what the next turn is to act on, and it starts one by itself.
 /// Or at a lead found taking notices on stdin while its own background tasks
@@ -288,8 +287,8 @@ pub fn send_tracked(id: &str, text: &str, from: Option<&str>) -> Result<(Placed,
 /// where it went, whether it was queued for a stdin kept open so (events.rs
 /// `keeps_listening`): one its CLI's next `result` takes it onto, within the
 /// process running (events.rs `feed_queued`), unless that goes first.
-pub fn send_marked(id: &str, text: &str, from: Option<&str>, budget: Vec<BudgetMark>) -> Result<(Placed, bool), String> {
-    send_as(id, Queued::new(from.map(str::to_owned), text.to_string(), budget), false)
+pub fn send_notice(id: &str, text: &str) -> Result<(Placed, bool), String> {
+    send_as(id, Queued::new(None, text.to_string()), false)
 }
 
 /// The text a helper may have queued behind its turn, in bytes, before more
@@ -317,7 +316,6 @@ pub(super) fn room_for(id: &str, e: &Entry, text: &str) -> Result<(), String> {
 }
 
 fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String> {
-    let marked = !q.budget.is_empty();
     let text = q.text.clone();
     let qid = q.id.clone();
     let (placed, kept_open) = {
@@ -341,7 +339,7 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
         let kept_open = e.run.as_ref().is_some_and(|run| run.feed.is_some() && run.listening_since.is_some());
         (placed, placed == Placed::Queued && kept_open)
     };
-    if placed != Placed::Started || marked {
+    if placed != Placed::Started {
         // At once: a core that goes hard (power, a crash) writes nothing more.
         save();
     }
@@ -356,59 +354,6 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
     }
     changed();
     Ok((placed, kept_open))
-}
-
-/// Where a helper's budget line stands with a background parent.
-#[derive(Debug, PartialEq)]
-pub enum MarkStands {
-    /// In none of what it holds: never given, or dropped with the rest of a queue.
-    Nothing,
-    /// Queued, with a turn starting on it, or on the stdin of one running.
-    Coming,
-    /// Kept undelivered: it will not reach the parent by itself.
-    Undelivered,
-    /// Its CLI's stdin took it.
-    Landed,
-}
-
-pub fn budget_mark(parent: &str, helper: &str) -> MarkStands {
-    let r = lock();
-    let Some(e) = r.entries.get(parent) else { return MarkStands::Nothing };
-    let holds = |batch: &[Queued]| batch.iter().any(|q| q.budget.iter().any(|m| m.id == helper));
-    if e.budgets_landed.iter().any(|h| h == helper) {
-        MarkStands::Landed
-    } else if holds(&e.queue) || holds(&e.in_flight) || holds(&e.fed) {
-        MarkStands::Coming
-    } else if holds(&e.undelivered) {
-        MarkStands::Undelivered
-    } else {
-        MarkStands::Nothing
-    }
-}
-
-/// The agent layer has noted that the line landed.
-pub fn budget_mark_noted(parent: &str, helper: &str) {
-    if let Some(e) = lock().entries.get_mut(parent) {
-        e.budgets_landed.retain(|h| h != helper);
-    }
-}
-
-/// Takes a helper's line out of what is kept undelivered, as its next notice has it,
-/// and with it any message left with nothing but `opening`, the words notices open on.
-pub fn drop_undelivered_mark(parent: &str, helper: &str, opening: &str) {
-    let mut r = lock();
-    let Some(e) = r.entries.get_mut(parent) else { return };
-    for q in e.undelivered.iter_mut() {
-        let (gone, kept): (Vec<BudgetMark>, Vec<BudgetMark>) = std::mem::take(&mut q.budget).into_iter().partition(|m| m.id == helper);
-        q.budget = kept;
-        for m in gone {
-            q.text = q.text.replace(&m.line, "");
-        }
-    }
-    e.undelivered.retain(|q| {
-        let left = q.text.trim();
-        !left.is_empty() && left != opening
-    });
 }
 
 /// What never reached it that `caller` is to hear of (`Entry::undelivered`):
@@ -639,7 +584,7 @@ mod tests {
         register("bq-top", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("bypassPermissions"));
         register("bq-full", Provider::Claude, "C:/p", "C:/acc/one", Some("bq-top"), true, mode("bypassPermissions"));
         register("bq-kid", Provider::Claude, "C:/p", "C:/acc/one", Some("bq-full"), false, mode("default"));
-        let queued = |from: &str, text: &str| Queued::new(Some(from.to_string()), text.to_string(), Vec::new());
+        let queued = |from: &str, text: &str| Queued::new(Some(from.to_string()), text.to_string());
         lock().entries.insert("bq-kid".into(), entry(Provider::Claude));
         // As a turn's end has it: claimed and reserved under the lock, its
         // senders asked with the lock let go.
@@ -678,7 +623,7 @@ mod tests {
 
         // Its sender gone: the helper's parent now hears, without the text. Luna's own goes.
         forget("bq-full");
-        assert_eq!(take(vec![queued("bq-full", "! whoami"), Queued::new(None, "a notice".into(), Vec::new())]), Some("a notice".into()));
+        assert_eq!(take(vec![queued("bq-full", "! whoami"), Queued::new(None, "a notice".into())]), Some("a notice".into()));
         let top = news_for("bq-top");
         assert_eq!(top.len(), 1, "{top:?}");
         assert!(top[0].contains("bq-full, since gone") && !top[0].contains("whoami"), "{top:?}");
@@ -701,7 +646,7 @@ mod tests {
         let id = "rw-kid";
         let fresh = || {
             let mut e = entry(Provider::Claude);
-            e.queue.push(Queued::new(None, "first".into(), Vec::new()));
+            e.queue.push(Queued::new(None, "first".into()));
             lock().entries.insert(id.into(), e);
             let mut r = lock();
             let e = r.entries.get_mut(id).unwrap();
@@ -727,7 +672,7 @@ mod tests {
         let res = fresh();
         let ended = lock().entries[id].turns_ended;
         stop(lock().entries.get_mut(id).unwrap());
-        lock().entries.get_mut(id).unwrap().queue.push(Queued::new(None, "after the kill".into(), Vec::new()));
+        lock().entries.get_mut(id).unwrap().queue.push(Queued::new(None, "after the kill".into()));
         let next = settle_batch(id, res).expect("the queued text starts a turn");
         assert_eq!(next.text, "after the kill");
         {
@@ -745,7 +690,7 @@ mod tests {
             let e = r.entries.get_mut(id).unwrap();
             stop(e);
             e.ending_left = true;
-            e.queue.push(Queued::new(None, "after the kill".into(), Vec::new()));
+            e.queue.push(Queued::new(None, "after the kill".into()));
         }
         assert!(settle_batch(id, res).is_none());
         {
@@ -755,7 +700,7 @@ mod tests {
 
         // Text sent meanwhile is queued behind the claim: the batch runs, it waits.
         let res = fresh();
-        lock().entries.get_mut(id).unwrap().queue.push(Queued::new(None, "later".into(), Vec::new()));
+        lock().entries.get_mut(id).unwrap().queue.push(Queued::new(None, "later".into()));
         assert_eq!(settle_batch(id, res).map(|b| b.text).as_deref(), Some("first"));
         assert_eq!(lock().entries[id].queue, ["later"]);
 

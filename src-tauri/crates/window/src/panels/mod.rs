@@ -89,7 +89,6 @@ pub mod cmd {
     pub const HELPER_SETTINGS: &str = "helper_settings";
     pub const SET_MAX_HELPERS: &str = "set_max_helpers";
     pub const SET_DELEGATE_AUTO_COMPACT_TOKENS: &str = "set_delegate_auto_compact_tokens";
-    pub const SET_HELPER_CONTEXT_PCT: &str = "set_helper_context_pct";
     pub const CODEX_TRUSTED_ROOTS: &str = "codex_trusted_roots";
     pub const SET_CODEX_TRUSTED_ROOTS: &str = "set_codex_trusted_roots";
     /// `{}`: copy on select as Settings has it, `off`, `on` or
@@ -156,7 +155,6 @@ pub mod cmd {
         HELPER_SETTINGS,
         SET_MAX_HELPERS,
         SET_DELEGATE_AUTO_COMPACT_TOKENS,
-        SET_HELPER_CONTEXT_PCT,
         CODEX_TRUSTED_ROOTS,
         SET_CODEX_TRUSTED_ROOTS,
         COPY_ON_SELECT,

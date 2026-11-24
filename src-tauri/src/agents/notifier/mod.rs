@@ -12,9 +12,7 @@ use crate::agents::notifier::lines::{
     count_notice, is_wake, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
     BREAKER_WINDOW_MS,
 };
-use crate::agents::notifier::usage::{
-    budget_news, context_rider, quota_file, quota_from, quota_news, save_quota_told, your_helper, BudgetNews, QuotaNews,
-};
+use crate::agents::notifier::usage::{quota_file, quota_from, quota_news, save_quota_told, your_helper, QuotaNews};
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
 use crate::agents::registry::{chat_name, is_dev, label, parent_of, reg, waits_on_helpers, Known, Registry};
@@ -51,10 +49,6 @@ pub(super) const CALLER_RETURN_MS: u64 = 10 * 60 * 1000;
 
 /// How every notice opens, so a model tells it from what the user types.
 pub const NOTICE_TAG: &str = "[Luna notice, not typed by the user]";
-
-/// How many of the notifier's looks go by between reads of the transcripts of
-/// helpers with a budget: each read goes to the disk.
-const BUDGET_EVERY_LOOKS: u32 = 5;
 
 /// The shortest gap between two notifications from one session: a model in
 /// a loop must not bury the desktop in them.
@@ -264,8 +258,7 @@ fn rides_since(how: &Settled) -> Option<u64> {
 /// past it can still be held back, as any notice can, by a draft in its caller's
 /// composer or a turn it is on, and a power-off does not wait for that. Their debts
 /// stay open until then, for a `luna_session_wait` and against `reap`, and what happens to
-/// the session meanwhile replaces the line. A budget line rides the same way, with
-/// no debt to it.
+/// the session meanwhile replaces the line.
 pub(crate) fn riders_go(company: bool, only_riders: bool, oldest: u64, now: u64, busy: usize) -> bool {
     company || only_riders || busy == 0 || now.saturating_sub(oldest) >= RIDE_MAX_MS
 }
@@ -320,7 +313,6 @@ pub(super) fn notifier() {
     // When each caller's notice was first ready while another of its helpers
     // worked on (`hold_for_company`).
     let mut company_since: HashMap<String, Instant> = HashMap::new();
-    let mut looks_at_budgets = 0;
     loop {
         std::thread::sleep(NOTIFY_EVERY);
         let pty = crate::pty::manager();
@@ -376,14 +368,6 @@ pub(super) fn notifier() {
         // and of a spawn of its own that a core's going cut off.
         let mut quota = quota_news(pty);
         for caller in quota.keys() {
-            by_caller.entry(caller.clone()).or_default();
-        }
-        looks_at_budgets = (looks_at_budgets + 1) % BUDGET_EVERY_LOOKS;
-        let (mut budget, budgets_moved) = budget_news(pty, looks_at_budgets == 0);
-        if budgets_moved {
-            crate::background::save();
-        }
-        for caller in budget.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
         settle_spawns();
@@ -457,8 +441,6 @@ pub(super) fn notifier() {
                 };
                 match said {
                     Some((Some(mut line), how)) => {
-                        // Where its context stands, past its level (`budget_news`).
-                        line.push_str(&context_rider(id));
                         if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) {
                             line.push_str(&format!(
                                 " Luna stops telling you of its turns and jobs now ({BREAKER_NOTICES} notices in {} minutes); its prompts and questions still come, and a person typing into either chat lifts this.",
@@ -509,23 +491,14 @@ pub(super) fn notifier() {
             lines.extend(news_lines.iter().cloned());
             let spawn_lines = spawns.remove(&caller).unwrap_or_default();
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
-            let breaches = budget.remove(&caller).unwrap_or_default();
             let refused = places.remove(&caller);
-            let mut budget_lines = Vec::new();
-            if let Some(oldest) = riders
-                .iter()
-                .filter_map(|(_, _, how, _)| rides_since(how))
-                .chain(breaches.iter().map(|n| n.since))
-                .chain(refused.as_ref().map(|p| p.since))
-                .min()
+            if let Some(oldest) = riders.iter().filter_map(|(_, _, how, _)| rides_since(how)).chain(refused.as_ref().map(|p| p.since)).min()
             {
                 if riders_go(!lines.is_empty(), riders.len() == items.len(), oldest, now_ms(), crate::activity::summary().busy) {
                     for (line, id, how, o) in riders {
                         lines.push(line);
                         settled.push((id, how, o));
                     }
-                    lines.extend(breaches.iter().map(|n| n.line.clone()));
-                    budget_lines = breaches;
                     // Told once it is in, as a queued line is (`deliver_notice`).
                     if let Some(line) = refused.map(|p| p.line()) {
                         lines.push(line.clone());
@@ -565,7 +538,7 @@ pub(super) fn notifier() {
             let text = format!("{NOTICE_TAG} {}", lines.join(" "));
             let typed = std::thread::Builder::new().name("luna-notice".into()).spawn(move || {
                 let _typing = typing;
-                let notice = Notice { settled, quota_lines, spawn_lines, news_lines, budget_lines, held_for };
+                let notice = Notice { settled, quota_lines, spawn_lines, news_lines, held_for };
                 deliver_notice(crate::pty::manager(), &caller, &text, notice);
             });
             if let Err(e) = typed {
@@ -714,8 +687,6 @@ struct Notice {
     spawn_lines: Vec<(u64, String)>,
     /// The queued lines.
     news_lines: Vec<String>,
-    /// The budgets passed.
-    budget_lines: Vec<BudgetNews>,
     /// How long it waited for company (`hold_for_company`), for the log: what
     /// a wider window of batching would have saved is read off there.
     held_for: Option<Duration>,
@@ -743,7 +714,7 @@ fn kind_of(how: &Settled) -> &'static str {
 
 /// Types a notice into `caller` and settles what it said (`Notice`).
 fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice: Notice) {
-    let Notice { settled, quota_lines, spawn_lines, news_lines, budget_lines, held_for } = notice;
+    let Notice { settled, quota_lines, spawn_lines, news_lines, held_for } = notice;
     let before = crate::activity::turn_state(caller);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     // Again here, where it goes in, and held from this check until it is in
@@ -768,9 +739,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
     let background = crate::background::has(caller);
     let mut joined = false;
     let (typed, turn) = if background {
-        // A background parent's own record says when these have arrived (`budget_news`).
-        let marks = budget_lines.iter().map(|n| crate::background::BudgetMark { id: n.id.clone(), line: n.line.clone() }).collect();
-        match crate::background::send_marked(caller, text, None, marks) {
+        match crate::background::send_notice(caller, text) {
             Ok((placed, for_stdin)) => {
                 joined = placed == crate::background::Placed::Joined || for_stdin;
                 (Ok(Some(true)), baseline + 1 + u32::from(placed == crate::background::Placed::Queued))
@@ -805,14 +774,12 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
         .chain(quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
         .chain(spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
         .chain(news_lines.iter().map(|_| "news no debt brings".to_string()))
-        .chain(budget_lines.iter().map(|n| format!("the budget of {}", label(&n.id))))
         .collect::<Vec<_>>()
         .join(", ");
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     match typed {
         Ok(None) => {
-            r.notices_held
-                .insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len() + news_lines.len() + budget_lines.len());
+            r.notices_held.insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len() + news_lines.len());
         }
         _ => {
             r.notices_held.remove(caller);
@@ -866,12 +833,6 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             for (request, _) in spawn_lines {
                 r.spawns.remove(&request);
             }
-            let told_budgets = !background && !budget_lines.is_empty();
-            for n in budget_lines.iter().filter(|_| !background) {
-                if let Some(k) = r.known.get_mut(&n.id) {
-                    k.settings["budgetTold"] = serde_json::json!(true);
-                }
-            }
             drop(r);
             if told_quota {
                 save_quota_told();
@@ -879,7 +840,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
             }
-            if !told_lost.is_empty() || told_news || told_spawns || told_budgets {
+            if !told_lost.is_empty() || told_news || told_spawns {
                 crate::background::save();
             }
             for id in stopped {
@@ -1332,7 +1293,7 @@ mod tests {
     }
 
     #[test]
-    fn a_budget_line_rides_like_any_line_with_no_news_in_it() {
+    fn a_line_with_no_news_waits_to_ride_with_another() {
         let now = 1_000_000;
         let fresh = now - 1000;
         assert!(!riders_go(false, false, fresh, now, 1), "owed another helper's answer, with work going on: it waits for that");
@@ -1497,7 +1458,7 @@ mod tests {
             // Its CLI takes up a task's end in a turn of its own, and a notice
             // that finds it so waits for that turn's end; the send behind it.
             event(a, serde_json::json!({ "type": "system", "subtype": "task_notification" }));
-            let notice = crate::background::send_marked(a, "[Luna notice] a helper answered", None, Vec::new()).unwrap();
+            let notice = crate::background::send_notice(a, "[Luna notice] a helper answered").unwrap();
             assert_eq!(notice, (crate::background::Placed::Queued, true));
             let ended = crate::activity::turn_state(a).unwrap().turns_ended;
             let at_result = || {

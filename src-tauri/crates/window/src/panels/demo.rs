@@ -107,9 +107,9 @@ pub fn answer_all(host: &FakeHost) {
     host.answer(cmd::WINDOW_PREFS, json!({ "sound": true, "newChat": { "worktree": true, "tools": false } }));
     host.answer(cmd::GET_ACCOUNTS_ROOT, json!({ "path": "C:\\Users\\me\\luna-accounts", "isDefault": true }));
     host.answer(cmd::SET_ACCOUNTS_ROOT, json!({ "path": "D:\\accounts", "isDefault": false }));
-    let helpers = json!({ "maxHelpers": 16, "min": 1, "max": 64, "helperContextPct": 50,
+    let helpers = json!({ "maxHelpers": 16, "min": 1, "max": 64,
         "delegateAutoCompactTokens": crate::settings::DELEGATE_COMPACT_DEFAULT, "leadHandoff": { "on": true, "threshold": 60 } });
-    for c in [cmd::HELPER_SETTINGS, cmd::SET_MAX_HELPERS, cmd::SET_HELPER_CONTEXT_PCT] {
+    for c in [cmd::HELPER_SETTINGS, cmd::SET_MAX_HELPERS] {
         host.answer(c, helpers.clone());
     }
     host.respond(cmd::SET_DELEGATE_AUTO_COMPACT_TOKENS, move |args| {

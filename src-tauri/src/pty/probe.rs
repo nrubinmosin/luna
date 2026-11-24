@@ -377,7 +377,16 @@ fn window_meta(probe: &Probe) -> Option<SessionMeta> {
     m.draft = manager().has_draft(id);
     m.held = crate::agents::held_count(id);
     m.limit = crate::activity::limit_of(id);
-    m.context_to_compact = to_compact_of(id, probe, &m);
+    if let Some((tokens, window)) = m.context_tokens.zip(m.context_window) {
+        let launch = probe.compaction_launch(m.cwd.clone());
+        if let Some((context, left)) =
+            crate::background::Context::measure(id, Some(&launch), tokens, window, m.context_model.as_deref(), m.fresh_context_tokens)
+        {
+            m.context = Some(context.fraction());
+            m.context_auto_compact = context.basis == "autoCompact";
+            m.context_to_compact = left;
+        }
+    }
     pin_name(&mut m);
     Some(m)
 }
@@ -398,12 +407,13 @@ pub(crate) fn resumed_claude_look_for_test(id: &str, account: &str, pid: u32) ->
     ChatLook { id: probe.id.clone(), meta: window_meta(&probe) }
 }
 
-/// A live chat's tokens to auto-compaction, off the context its meta read:
-/// for the start it is, in the folder its CLI works in.
-fn to_compact_of(id: &str, p: &Probe, m: &SessionMeta) -> Option<u64> {
-    let sample = m.compaction_sample.as_ref()?;
-    let launch = p.compaction_launch(m.cwd.clone());
-    crate::to_compact::left(id, &launch, &sample.model, sample.tokens, m.context_window? as u64)
+impl PtyManager {
+    /// A chat's launch inputs for an on-demand context reading.
+    pub(crate) fn compaction_launch(&self, id: &str, folder: Option<String>) -> Option<crate::to_compact::Launch> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let s = sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst))?;
+        Some(probe_of(id, s).compaction_launch(folder))
+    }
 }
 
 /// A live session's meta: what its CLI left on disk, with its record's status

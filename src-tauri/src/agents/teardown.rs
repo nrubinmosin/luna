@@ -4,7 +4,7 @@
 //! the window runs is the person's, and goes only by their hand.
 
 use crate::agents::ask::live;
-use crate::agents::notifier::usage::{budget_owed, save_quota_told};
+use crate::agents::notifier::usage::save_quota_told;
 use crate::agents::read::{transcript_path, transcripts};
 use crate::agents::registry::{authorize, descendants, label, named, persons_chat_in, reg, top_of, Known, Registry};
 use crate::agents::said::replies_since;
@@ -182,10 +182,7 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
         let helpers_there = below.iter().any(|k| live(pty, k));
         let known = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            let quiet = !helpers_there
-                && !r.owed.iter().any(|((c, s), _)| *s == id || *c == id)
-                && !r.waits.keys().any(|(_, s)| *s == id)
-                && !budget_owed(&r, &id);
+            let quiet = !helpers_there && !r.owed.iter().any(|((c, s), _)| *s == id || *c == id) && !r.waits.keys().any(|(_, s)| *s == id);
             let known = r.known.get(&id).cloned();
             let Some(a) = r.auto.get_mut(&id) else { continue };
             if !(quiet && idle) {
@@ -306,7 +303,6 @@ pub fn forget(id: &str) {
     r.notice_turns.remove(id);
     r.woken.remove(id);
     r.delegates.remove(id);
-    r.context_seen.remove(id);
     r.requests.retain(|(who, chat), _| who != id && chat != id);
     r.notice_times.retain(|(who, chat), _| who != id && chat != id);
     r.stopped.retain(|(who, chat), _| who != id && chat != id);
@@ -357,11 +353,9 @@ fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (Vec<(String, Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::notifier::usage::set_budget_state;
     use crate::agents::owed::owe_from;
     use crate::agents::persist::{ties_of, Ties};
     use crate::agents::registry::{authorize, authorize_view, descendants, parent_of, reg, register};
-    use crate::agents::test_support::tooled;
     use crate::provider::Provider;
     use std::sync::Mutex;
 
@@ -532,33 +526,6 @@ mod tests {
     fn reaps_to_myself() -> std::sync::MutexGuard<'static, ()> {
         static ONE: Mutex<()> = Mutex::new(());
         ONE.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    #[test]
-    fn auto_delete_keeps_a_helper_until_its_parent_has_heard_of_its_budget() {
-        let pty = crate::pty::manager();
-        let (parent, kid) = ("br-parent", "br-kid");
-        tooled(parent);
-        let breach = serde_json::json!({ "at": 1, "tokens": 5, "window": 10, "pct": 50 });
-        register(
-            kid,
-            Provider::Claude,
-            "C:\\p",
-            "C:\\acc\\one",
-            Some(parent),
-            false,
-            serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }),
-        );
-        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), ..Auto::default() };
-        reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
-        reap_these(pty, vec![kid.to_string()]);
-        assert!(reg().lock().unwrap().known.contains_key(kid), "the breach would go with it");
-        assert_eq!(reg().lock().unwrap().auto.get(kid).unwrap().idle_since, None);
-        set_budget_state(kid, "budgetTold", Some(serde_json::json!(true)));
-        reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
-        reap_these(pty, vec![kid.to_string()]);
-        assert!(!reg().lock().unwrap().known.contains_key(kid), "told: it goes");
-        forget(parent);
     }
 
     /// A helper the person is opening as a chat is theirs to be: its parent can

@@ -446,7 +446,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
             claim(e);
         } else {
             note(e, "interrupted");
-            e.queue.push(Queued::new(from.map(str::to_owned), text.to_string(), Vec::new()));
+            e.queue.push(Queued::new(from.map(str::to_owned), text.to_string()));
             if waits {
                 wait_for_place(e);
             }
@@ -1099,7 +1099,7 @@ mod tests {
             let mut r = lock();
             let e = r.entries.get_mut(late).unwrap();
             claim(e);
-            e.in_flight.push(Queued::new(None, "after the look".into(), Vec::new()));
+            e.in_flight.push(Queued::new(None, "after the look".into()));
         }
         assert_eq!(stop_for_update_of(&looked, std::time::Duration::from_millis(100)), 1, "the listed turn alone");
         {
@@ -1129,7 +1129,7 @@ mod tests {
         let mut e = entry(Provider::Codex);
         e.turns_ended = 1;
         claim(&mut e);
-        e.queue.push(Queued::new(None, "before the stop".into(), Vec::new()));
+        e.queue.push(Queued::new(None, "before the stop".into()));
         lock().entries.insert("stop-claimed".into(), e);
         assert!(kill("stop-claimed").is_empty());
         assert_eq!(send("stop-claimed", "after the stop", None), Ok(Placed::Queued));

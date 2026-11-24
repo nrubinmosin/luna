@@ -371,7 +371,7 @@ mod tests {
         helper(&mut r, "busy-2", "chat", true);
         for id in ["w-late", "w-early", "fresh"] {
             helper(&mut r, id, "chat", false);
-            r.entries.get_mut(id).unwrap().queue.push(Queued::new(Some("chat".into()), "go".into(), Vec::new()));
+            r.entries.get_mut(id).unwrap().queue.push(Queued::new(Some("chat".into()), "go".into()));
         }
         r.entries.get_mut("w-early").unwrap().waits_since = Some(1);
         r.entries.get_mut("w-late").unwrap().waits_since = Some(2);
@@ -407,8 +407,8 @@ mod tests {
         helper(&mut r, "lead", "chat", false);
         assert!(!Lines::of(&r).room_for("lead", 1), "a session's text waits");
         let lead = r.entries.get_mut("lead").unwrap();
-        lead.queue.push(Queued::new(Some("chat".into()), "and this".into(), Vec::new()));
-        lead.queue.push(Queued::new(None, "[Luna notice] your helper answered".into(), Vec::new()));
+        lead.queue.push(Queued::new(Some("chat".into()), "and this".into()));
+        lead.queue.push(Queued::new(None, "[Luna notice] your helper answered".into()));
         lead.waits_since = Some(5);
         assert!(Lines::of(&r).room_for("lead", 1));
         assert_eq!(Lines::of(&r).startable(1), ["lead"]);
@@ -479,7 +479,7 @@ mod tests {
         let names: Vec<&str> = idle.iter().map(String::as_str).collect();
         let ids = global("pc", most - 2, &names);
         for id in &idle {
-            lock().entries.get_mut(id).unwrap().queue.push(Queued::new(Some("pc-chat".into()), "go".into(), Vec::new()));
+            lock().entries.get_mut(id).unwrap().queue.push(Queued::new(Some("pc-chat".into()), "go".into()));
         }
         let threads: Vec<_> = idle.iter().cloned().map(|id| std::thread::spawn(move || claim_queued(&mut lock(), &id).is_some())).collect();
         let started = threads.into_iter().map(|t| t.join().unwrap()).filter(|s| *s).count();
@@ -503,7 +503,7 @@ mod tests {
             e.cut_short = true;
             e.resumable = true;
             e.session = Some("s-1".into());
-            e.undelivered.push(Queued::new(Some("pr-chat".into()), "the rest".into(), Vec::new()));
+            e.undelivered.push(Queued::new(Some("pr-chat".into()), "the rest".into()));
         }
         resume("pr-cut");
         {
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn lunas_own_text_is_a_notice_or_a_wake() {
-        let from = |f: Option<&str>| Queued::new(f.map(str::to_owned), "x".into(), Vec::new());
+        let from = |f: Option<&str>| Queued::new(f.map(str::to_owned), "x".into());
         assert!(lunas_own(&[from(Some("lead")), from(None)]));
         assert!(!lunas_own(&[from(Some("lead"))]));
     }

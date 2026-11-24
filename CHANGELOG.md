@@ -20,9 +20,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - A pane's context meter tooltip shows an estimate of the tokens the session
   can still take in before its CLI compacts on its own. Luna works it out from
-  Claude Code's and Codex's settings for the session's model. The estimate
-  appears only in the tooltip and only when Luna has the inputs to calculate it
-  and auto-compaction is enabled.
+  Claude Code's and Codex's settings for the session's model. A delegate's
+  `luna_session_get` response can also show the estimate.
 - A pane's title bar has a **×** button, after **...** and **_**, and its
   menu and the peek's a Delete row: all open the same Delete dialog as the
   sidebar's row, helpers listed, and nothing is deleted until it is
@@ -33,6 +32,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   bottom pane on a low window), and scrolls where it does not all fit.
 
 ### Changed
+
+- The pane meter and `luna_session_get` show the share of the CLI's estimated
+  auto-compaction limit when known, or the model window otherwise.
+  `context.window` gives the denominator and `context.basis` names it.
 
 - A Codex project trusted in Luna is no longer trusted by `codex` outside
   it. Luna saves the approved project with the chat and passes trust on
@@ -98,6 +101,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   it says nothing else wakes it.
 
 ### Removed
+
+- Helper context thresholds, their notice text, and the Settings control.
+  `luna_session_spawn` still accepts and ignores `budgetPct` and `budgetTokens`.
 
 - The `role-chat` system text. A chat of yours is now shaped only by your
   library (the instructions and skills whose **For** column takes chats) and

@@ -154,6 +154,7 @@ pub struct Live {
     pub context: Option<f64>,
     /// The tokens it can take in before its CLI compacts its context, as
     /// the core estimates them.
+    pub context_auto_compact: bool,
     pub to_compact: Option<u64>,
     /// An unsent draft in its composer.
     pub draft: bool,
@@ -182,6 +183,7 @@ pub struct Meta {
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub context: Option<f64>,
+    pub context_auto_compact: bool,
     pub context_to_compact: Option<u64>,
     pub title: Option<String>,
     pub title_renamed: bool,
@@ -2283,7 +2285,13 @@ impl Workspace {
             } else if let Some(prompt) = meta.first_prompt.as_deref() {
                 changed |= self.state.set_name(id, prompt, NameSource::Prompt);
             }
-            let live = Live { context: meta.context, to_compact: meta.context_to_compact, draft: meta.draft, held: meta.held };
+            let live = Live {
+                context: meta.context,
+                context_auto_compact: meta.context_auto_compact,
+                to_compact: meta.context_to_compact,
+                draft: meta.draft,
+                held: meta.held,
+            };
             if self.live.get(id) != Some(&live) {
                 self.live.insert(id.clone(), live);
                 redraw = true;
