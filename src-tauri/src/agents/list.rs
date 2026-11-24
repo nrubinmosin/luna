@@ -2,54 +2,17 @@
 //! `luna_account_get`: the compact rows a caller polls, and one item whole.
 
 use crate::agents::admission::refuse_luna;
-use crate::agents::ask::{state_of, Ask};
+use crate::agents::ask::state_of;
 use crate::agents::read::transcript_path;
-use crate::agents::registry::{descendants, is_descendant, is_dev, is_self, persons_chat_in, reg, scope_all, Known, Registry};
+use crate::agents::registry::{descendants, is_descendant, is_dev, is_self, persons_chat_in, reg, scope_all, Registry};
 use crate::agents::spawn::account::allowed_account_dirs;
-use crate::agents::spawn::{max_descendants, places_in, Places};
+use crate::agents::spawn::places;
 use crate::agents::teardown::AUTO_DELETE_IDLE_MS;
 use crate::boundary::AbsPath;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionRow {
-    pub id: String,
-    pub name: String,
-    /// The window group, 1-based as the title bar counts (I = 1).
-    pub group: Option<u32>,
-    pub provider: Provider,
-    pub account: String,
-    pub parent: Option<String>,
-    /// See `state_of`.
-    pub state: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ask: Option<Ask>,
-    pub turns_ended: u32,
-    /// The flags it runs with (see `Known::settings`).
-    pub settings: serde_json::Value,
-    /// The first line of its spawn's prompt: none for a session nobody spawned.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
-    /// An `autoDelete` helper idle with nobody owed its answer: the minutes
-    /// left before it goes, unless it is read or written to first.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deletes_in_min: Option<u64>,
-    #[serde(flatten)]
-    pub signs: crate::background::Signs,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Listing {
-    pub me: String,
-    pub sessions: Vec<SessionRow>,
-    /// Of the sessions asked for by id, those Luna does not know.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub unknown: Vec<String>,
-}
+use serde_json::{json, Map, Value};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -58,22 +21,22 @@ pub struct AccountRow {
     pub name: String,
     /// The settings a helper gets here unless the spawn says otherwise, for
     /// the caller's folder: the flags as `spawn` echoes them.
-    pub defaults: serde_json::Value,
+    pub defaults: Value,
     /// The models a helper may ask for here, each with its name and levels:
     /// the account's own list for Claude Code (a full id works too; the four
     /// aliases where Luna knows none yet), Codex's catalog. Only
     /// when asked (`models: true`): Codex's catalog is most of what a listing
     /// weighs, and a caller lists far more often than it picks a model.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub models: Option<Vec<serde_json::Value>>,
+    pub models: Option<Vec<Value>>,
     /// Its usage as the window last showed it (see `account_usage`); none
     /// before the window has said.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<serde_json::Value>,
+    pub usage: Option<Value>,
 }
 
 /// The models a helper may ask for on the account at `path`.
-fn models_of(provider: Provider, path: &str) -> Vec<serde_json::Value> {
+fn models_of(provider: Provider, path: &str) -> Vec<Value> {
     match provider {
         Provider::Claude => crate::claude::models::models_known(path)
             .into_iter()
@@ -115,83 +78,6 @@ fn chat_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> cra
     crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running, ..Default::default() }
 }
 
-/// The caller's own, or the sessions `ids` names, which may be any: what a row
-/// says is what `sessions` and `read` already show of them. Of a session not
-/// the caller's, what it was asked and is asking (`task`, `ask`) only with
-/// `all` (`scope: "all"`): a listing of any session is metadata. `accounts` is
-/// the costly part of a listing, in time and in what it adds to the caller's
-/// context, and `models` the costliest part of that.
-pub fn list(caller: &str, ids: Option<&[String]>, all: bool) -> Listing {
-    let mut unknown = Vec::new();
-    let rows: Vec<(String, Known, String, Option<u32>, bool)> = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let wanted = match ids {
-            None => descendants(&r, caller),
-            Some(ids) => {
-                let mut wanted: Vec<String> = Vec::new();
-                for id in ids {
-                    if wanted.contains(id) || unknown.contains(id) {
-                        continue;
-                    }
-                    if r.known.contains_key(id) && (!is_dev(id) || is_dev(caller)) {
-                        wanted.push(id.clone());
-                    } else {
-                        unknown.push(id.clone());
-                    }
-                }
-                wanted
-            }
-        };
-        wanted
-            .into_iter()
-            .filter_map(|id| {
-                let name = r.names.get(&id).cloned().unwrap_or_default();
-                let group = r.groups.get(&id).map(|g| g + 1);
-                let told = all || is_self(&r, caller, &id) || is_descendant(&r, caller, &id);
-                r.known.get(&id).cloned().map(|k| (id, k, name, group, told))
-            })
-            .collect()
-    };
-    let pty = crate::pty::manager();
-    let sessions = rows
-        .into_iter()
-        .map(|(id, k, name, group, told)| {
-            let (deletes_in_min, task) = {
-                let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                let left = r.auto.get(&id).and_then(|a| a.idle_since);
-                (
-                    left.map(|since| AUTO_DELETE_IDLE_MS.saturating_sub(now_ms().saturating_sub(since)).div_ceil(60_000)),
-                    r.tasks.get(&id).cloned(),
-                )
-            };
-            let ts = crate::activity::turn_state(&id);
-            // A listing is not a reading: it does not move what the caller
-            // is taken to have seen of a session's turns.
-            let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
-            let (state, ask) = state_of(&id);
-            let (ask, task) = if told { (ask, task) } else { (None, None) };
-            let signs = crate::background::signs(&id).unwrap_or_else(|| chat_signs(pty, &id, k.provider));
-            let settings = k.settings;
-            SessionRow {
-                state,
-                ask,
-                turns_ended,
-                id,
-                name,
-                group,
-                provider: k.provider,
-                account: k.account,
-                parent: k.parent,
-                settings,
-                task,
-                deletes_in_min,
-                signs,
-            }
-        })
-        .collect();
-    Listing { me: caller.to_string(), sessions, unknown }
-}
-
 /// What `luna_session_list` is asked: whose sessions, which of them, how many.
 /// Each filter is applied before anything is read off a session but the
 /// registry: the state, the one filter that needs a look, comes after the rest.
@@ -206,7 +92,7 @@ pub struct SessionQuery {
     pub provider: Option<String>,
     pub account: Option<String>,
     /// A window group, 1-based as the title bar counts (I = 1), or `mine`.
-    pub group: Option<serde_json::Value>,
+    pub group: Option<Value>,
     /// Text in the name, folder, account or id, any case.
     pub q: Option<String>,
     pub limit: Option<usize>,
@@ -219,33 +105,22 @@ const PAGE: usize = 50;
 const PAGE_MAX: usize = 200;
 
 /// One row of `luna_session_list`: what is on hand without reading a transcript
-/// or asking git, some 60-80 tokens. `luna_session_get` has the rest.
+/// or asking git. `luna_session_get` has the rest.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    pub provider: Provider,
-    pub account: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode_from: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent: Option<String>,
     /// See `state_of`.
     pub state: &'static str,
     /// What it waits on, by id, for `luna_session_answer`: a background helper's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ask_id: Option<String>,
+    /// The owner if it cannot be inferred from the caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     pub turns_ended: u32,
-    /// The first line of its spawn's prompt (`TASK_CHARS`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_activity_at: Option<String>,
-    /// An `autoDelete` helper idle with nobody owed its answer: minutes left.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deletes_in_min: Option<u64>,
 }
 
 #[derive(Serialize, Debug)]
@@ -259,8 +134,6 @@ pub struct SessionPage {
     /// Of the sessions asked for by id, those Luna does not know.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unknown: Vec<String>,
-    /// Where the caller's line stands against its cap (spawn/ `Places`).
-    pub places: Places,
 }
 
 /// A helper names only itself and the sessions under it (`persons_chat_in`):
@@ -281,7 +154,7 @@ fn ids_in_reach(r: &Registry, caller: &str, ids: &[String]) -> Result<(), String
 }
 
 /// The 1-based group `group` asks for, `mine` resolved against the caller's.
-fn group_asked(group: Option<&serde_json::Value>, mine: Option<u32>) -> Result<Option<u32>, String> {
+fn group_asked(group: Option<&Value>, mine: Option<u32>) -> Result<Option<u32>, String> {
     let Some(v) = group else { return Ok(None) };
     if v.as_str().is_some_and(|s| s.trim().eq_ignore_ascii_case("mine")) {
         return mine.map(Some).ok_or_else(|| "your session is in no window group, so \"mine\" matches nothing".to_string());
@@ -293,34 +166,17 @@ fn group_asked(group: Option<&serde_json::Value>, mine: Option<u32>) -> Result<O
         .ok_or_else(|| format!("group {v} is neither a number from 1 nor \"mine\""))
 }
 
-/// When a session last did anything, as cheaply as that is known: a helper's
-/// last event, a chat's transcript's last write.
-fn last_activity(pty: &crate::pty::PtyManager, id: &str) -> Option<String> {
-    if crate::background::has(id) {
-        return crate::background::last_activity_ms(id).and_then(crate::background::iso);
-    }
-    let path = transcript_path(pty, id)?;
-    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
-    crate::background::iso(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64)
-}
-
-/// `luna_session_list`: the caller's sessions, or with `scope: "all"` every one,
-/// or those `ids` names, as compact rows a page at a time. Of a session not the
-/// caller's, what it was asked and is asking (`task`, `askId`) only with `all`.
+/// List the caller's sessions, every session with scope "all", or the requested ids.
 pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, String> {
     let all = scope_all(caller, q.scope.as_deref())?;
     let limit = q.limit.unwrap_or(PAGE).clamp(1, PAGE_MAX);
-    let most = max_descendants();
-    // Read before the registry is held, as the helpers' lock is taken for it.
-    let lines = crate::background::lines();
     let from: usize = match q.cursor.as_deref() {
         None | Some("") => 0,
         Some(c) => c.parse().map_err(|_| format!("cursor {c:?} is not one a page gave; leave it out to start over"))?,
     };
     let text = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_lowercase);
     let mut unknown = Vec::new();
-    type Row = (String, Known, String, bool, Option<String>, Option<u64>);
-    let (rows, places): (Vec<Row>, Places) = {
+    let rows: Vec<_> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let group = group_asked(q.group.as_ref(), r.groups.get(caller).map(|g| g + 1))?;
         ids_in_reach(&r, caller, q.ids.as_deref().unwrap_or_default())?;
@@ -346,10 +202,9 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
         if q.ids.is_none() {
             ids.sort();
         }
-        let rows: Vec<Row> = ids
-            .into_iter()
+        ids.into_iter()
             .filter_map(|id| {
-                let k = r.known.get(&id)?.clone();
+                let k = r.known.get(&id)?;
                 let name = r.names.get(&id).cloned().unwrap_or_default();
                 let keep = q.provider.as_deref().is_none_or(|p| k.provider.as_str() == p)
                     && q.account.as_deref().is_none_or(|a| k.account == a)
@@ -359,77 +214,107 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
                     return None;
                 }
                 let told = all || is_self(&r, caller, &id) || is_descendant(&r, caller, &id);
-                let task = r.tasks.get(&id).cloned().filter(|_| told);
-                let left = r.auto.get(&id).and_then(|a| a.idle_since);
-                Some((id, k, name, told, task, left))
+                let parent = k.parent.as_ref().filter(|p| p.as_str() != caller).cloned();
+                Some((id, name, parent, told))
             })
-            .collect();
-        (rows, places_in(&lines, caller, most))
+            .collect()
     };
-    let pty = crate::pty::manager();
     let wanted = q.state.as_ref().filter(|s| !s.is_empty());
-    let mut matched = rows.into_iter().filter_map(|(id, k, name, told, task, left)| {
+    let mut matched = rows.into_iter().filter_map(|(id, name, parent, told)| {
         let (state, ask) = state_of(&id);
         if wanted.is_some_and(|w| !w.iter().any(|s| s == state)) {
             return None;
         }
-        Some((id, k, name, told, task, left, state, ask))
+        Some((id, name, parent, told, state, ask))
     });
     let mut sessions = Vec::new();
-    for (id, k, name, told, task, left, state, ask) in matched.by_ref().skip(from).take(limit) {
+    for (id, name, parent, told, state, ask) in matched.by_ref().skip(from).take(limit) {
         sessions.push(SessionSummary {
             ask_id: ask.and_then(|a| a.id).filter(|_| told),
             turns_ended: crate::activity::turn_state(&id).map(|t| t.turns_ended).unwrap_or(0),
-            last_activity_at: last_activity(pty, &id),
-            deletes_in_min: left.map(|since| AUTO_DELETE_IDLE_MS.saturating_sub(now_ms().saturating_sub(since)).div_ceil(60_000)),
             name,
-            provider: k.provider,
-            account: k.account,
-            mode_from: k.settings["modeFrom"].as_str().map(str::to_owned),
-            parent: k.parent,
+            parent,
             state,
-            task,
             id,
         });
     }
     let next_cursor = matched.next().is_some().then(|| (from + sessions.len()).to_string());
-    Ok(SessionPage { me: caller.to_string(), sessions, next_cursor, unknown, places })
+    Ok(SessionPage { me: caller.to_string(), sessions, next_cursor, unknown })
 }
 
-/// `luna_session_get`: one session whole, its row as `list` gives it (settings,
-/// context, leftRunning and the rest) with where it lives on disk.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionDetail {
-    #[serde(flatten)]
-    pub row: SessionRow,
-    pub folder: String,
-    /// Where the CLI runs: the worktree, for one in a worktree.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
-    /// The transcript (Claude Code) or rollout (Codex) file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transcript: Option<String>,
-    /// The CLI's own id for the conversation (`--resume`, `codex resume`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    /// The version of Luna's copy of the CLI its process last started from
-    /// (cli.rs `launch`); none for one the live suite started, or not started
-    /// since this core began.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cli_version: Option<String>,
-}
-
-pub fn session_get(caller: &str, id: &str, all: bool) -> Result<SessionDetail, String> {
-    ids_in_reach(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, &[id.to_string()])?;
-    let mut listing = list(caller, Some(&[id.to_string()]), all);
-    let row = listing.sessions.pop().ok_or_else(|| format!("unknown session {id}; luna_session_list lists them"))?;
-    let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).map(|k| k.folder.clone()).unwrap_or_default();
+/// The session's identity, turn and ask. Read extra groups only when requested.
+pub fn session_get(caller: &str, id: &str, all: bool, include: &[String]) -> Result<Map<String, Value>, String> {
+    let (known, name, told, task, group, left) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        ids_in_reach(&r, caller, &[id.to_string()])?;
+        let known = r
+            .known
+            .get(id)
+            .filter(|_| !is_dev(id) || is_dev(caller))
+            .ok_or_else(|| format!("unknown session {id}; luna_session_list lists them"))?;
+        let told = all || is_self(&r, caller, id) || is_descendant(&r, caller, id);
+        let task = r.tasks.get(id).filter(|_| told).cloned();
+        let group = r.groups.get(id).map(|g| g + 1);
+        let left = r.auto.get(id).and_then(|a| a.idle_since);
+        (known.clone(), r.names.get(id).cloned().unwrap_or_default(), told, task, group, left)
+    };
+    let (state, ask) = state_of(id);
+    let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
+    let mut out = Map::from_iter([
+        ("id".into(), json!(id)),
+        ("name".into(), json!(name)),
+        ("provider".into(), json!(known.provider)),
+        ("account".into(), json!(known.account)),
+        ("state".into(), json!(state)),
+        ("turnsEnded".into(), json!(turns_ended)),
+    ]);
+    if let Some(parent) = known.parent {
+        out.insert("parent".into(), json!(parent));
+    }
+    if let Some(ask) = ask.filter(|_| told) {
+        out.insert("ask".into(), json!(ask));
+    }
+    if let Some(task) = task {
+        out.insert("task".into(), json!(task));
+    }
+    let wants = |group| include.iter().any(|g| g == group);
+    if wants("places") {
+        out.insert("places".into(), json!(places(caller)));
+    }
+    if wants("settings") {
+        out.insert("settings".into(), known.settings);
+    }
     let pty = crate::pty::manager();
-    let cwd = pty.probe(id).map(|p| p.cwd).or_else(|| crate::background::working_dir(id)).filter(|c| !crate::pty::same_dir(c, &folder));
-    let transcript = transcript_path(pty, id).map(|p| p.to_string_lossy().into_owned());
-    let session_id = crate::background::session_id(id).or_else(|| pty.probe(id).as_ref().and_then(disk_meta).and_then(|m| m.session_id));
-    Ok(SessionDetail { row, folder, cwd, transcript, session_id, cli_version: crate::cli::session_version(id) })
+    if wants("paths") {
+        let cwd =
+            pty.probe(id).map(|p| p.cwd).or_else(|| crate::background::working_dir(id)).filter(|c| !crate::pty::same_dir(c, &known.folder));
+        out.insert("folder".into(), json!(known.folder));
+        if let Some(cwd) = cwd {
+            out.insert("cwd".into(), json!(cwd));
+        }
+        if let Some(path) = transcript_path(pty, id) {
+            out.insert("transcript".into(), json!(path.to_string_lossy()));
+        }
+    }
+    if wants("diagnostics") {
+        let signs = crate::background::signs(id).unwrap_or_else(|| chat_signs(pty, id, known.provider));
+        if let Ok(Value::Object(fields)) = serde_json::to_value(signs) {
+            out.extend(fields);
+        }
+        out.insert("group".into(), json!(group));
+        if let Some(since) = left {
+            out.insert("deletesInMin".into(), json!(AUTO_DELETE_IDLE_MS.saturating_sub(now_ms().saturating_sub(since)).div_ceil(60_000)));
+        }
+        if let Some(session_id) =
+            crate::background::session_id(id).or_else(|| pty.probe(id).as_ref().and_then(disk_meta).and_then(|m| m.session_id))
+        {
+            out.insert("sessionId".into(), json!(session_id));
+        }
+        if let Some(version) = crate::cli::session_version(id) {
+            out.insert("cliVersion".into(), json!(version));
+        }
+    }
+    Ok(out)
 }
 
 /// One row of `luna_account_list`: an account agents may spawn on, and its
@@ -440,7 +325,7 @@ pub struct AccountSummary {
     pub provider: Provider,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<serde_json::Value>,
+    pub usage: Option<Value>,
 }
 
 /// `luna_account_list`: every account folder an agent may use, `provider`'s alone
@@ -585,7 +470,7 @@ mod tests {
         // Its own by default; every session with scope all.
         assert_eq!(ids("grp-me", SessionQuery::default()), ["grp-kid-0", "grp-kid-1", "grp-kid-2"]);
         // Groups go out 1-based, as the title bar counts them.
-        let by = |g: serde_json::Value| all(SessionQuery { group: Some(g), ..Default::default() });
+        let by = |g: Value| all(SessionQuery { group: Some(g), ..Default::default() });
         assert_eq!(ids("grp-me", by(serde_json::json!("mine"))), ["grp-me", "grp-peer"]);
         assert_eq!(ids("grp-me", by(serde_json::json!(1))), ["grp-far"]);
         assert_eq!(ids("grp-me", by(serde_json::json!("2"))), ["grp-me", "grp-peer"]);
@@ -608,39 +493,54 @@ mod tests {
         assert!(second.next_cursor.is_none());
         assert!(session_list("grp-me", &SessionQuery { cursor: Some("x".into()), ..Default::default() }).is_err());
         // A row is small: what it costs a caller that polls.
-        let row = serde_json::to_string(&first.sessions[0]).unwrap();
-        assert!(row.len() < 320, "{} chars: {row}", row.len());
-        assert!(serde_json::from_str::<serde_json::Value>(&row).unwrap().get("context").is_none());
+        assert_eq!(json!(first.sessions[0]), json!({ "id": "grp-kid-0", "state": "exited", "turnsEnded": 0 }));
         // Named, any session, and unknown ones said.
         let named =
             session_list("grp-me", &SessionQuery { ids: Some(vec!["grp-far".into(), "grp-gone".into()]), ..Default::default() }).unwrap();
         assert_eq!(named.sessions.len(), 1);
         assert_eq!(named.unknown, ["grp-gone"]);
+        register("grp-grandkid", Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("grp-kid-0"), false, json!({}));
+        let nested = session_list("grp-me", &SessionQuery { ids: Some(vec!["grp-grandkid".into()]), ..Default::default() }).unwrap();
+        assert_eq!(json!(nested.sessions[0])["parent"], "grp-kid-0");
+        crate::agents::teardown::forget("grp-grandkid");
         for i in 0..3 {
             crate::agents::teardown::forget(&format!("grp-kid-{i}"));
         }
     }
 
     #[test]
-    fn session_get_is_one_session_whole() {
+    fn session_get_has_only_the_groups_requested() {
         let none = serde_json::json!({});
-        register("sg-me", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("sg-me", Provider::Claude, "C:\\work\\luna", "C:/acc/anthropic/one", None, true, none.clone());
         register(
             "sg-kid",
             Provider::Claude,
             "C:\\work\\luna",
-            "C:\\acc\\anthropic\\one",
+            "C:/acc/anthropic/one",
             Some("sg-me"),
             false,
             serde_json::json!({ "model": "m", "modeFrom": "luna" }),
         );
-        let got = serde_json::to_value(session_get("sg-me", "sg-kid", false).unwrap()).unwrap();
-        assert_eq!((got["id"].as_str(), got["folder"].as_str()), (Some("sg-kid"), Some("C:\\work\\luna")));
-        assert_eq!(got["settings"]["model"], "m");
-        assert_eq!(got["settings"]["modeFrom"], "luna");
-        let listed = session_list("sg-me", &SessionQuery::default()).unwrap();
-        assert_eq!(listed.sessions[0].mode_from.as_deref(), Some("luna"));
-        assert!(session_get("sg-me", "sg-nobody", false).err().unwrap().contains("luna_session_list"));
+        let get = |groups: &[&str]| {
+            json!(session_get("sg-me", "sg-kid", false, &groups.iter().map(|g| g.to_string()).collect::<Vec<_>>()).unwrap())
+        };
+        assert_eq!(
+            get(&[]),
+            json!({
+                "id": "sg-kid", "name": "", "provider": "claude", "account": "one",
+                "state": "exited", "turnsEnded": 0, "parent": "sg-me"
+            })
+        );
+        assert_eq!(get(&["paths"])["folder"], "C:\\work\\luna");
+        assert_eq!(get(&["settings"])["settings"], json!({ "model": "m", "modeFrom": "luna" }));
+        assert!(get(&["diagnostics"]).get("turnStartedAt").is_some());
+        assert!(get(&["places"])["places"]["of"].is_number());
+        assert!(get(&["paths"]).get("settings").is_none());
+        let combined = get(&["settings", "paths"]);
+        assert_eq!(combined["settings"]["model"], "m");
+        assert_eq!(combined["folder"], "C:\\work\\luna");
+        assert!(combined.get("turnStartedAt").is_none() && combined.get("places").is_none());
+        assert!(session_get("sg-me", "sg-nobody", false, &[]).err().unwrap().contains("luna_session_list"));
         crate::agents::teardown::forget("sg-kid");
         crate::agents::teardown::forget("sg-me");
     }

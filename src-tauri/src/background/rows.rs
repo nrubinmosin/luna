@@ -86,13 +86,6 @@ pub fn changed() {
     crate::emit::to_ui("agent://background", background_helpers());
 }
 
-/// When a helper last did anything (its last event, a turn's start or end),
-/// off what Luna has seen of it alone: a listing's cheap look, with no
-/// transcript read (`signs` reads one).
-pub fn last_activity_ms(id: &str) -> Option<u64> {
-    activity_of(lock().entries.get(id)?)
-}
-
 fn activity_of(e: &Entry) -> Option<u64> {
     let o = &e.observed;
     let started = e.run.as_ref().map_or(0, |run| run.started_ms);
@@ -731,7 +724,7 @@ mod tests {
 
         let settings = dir.join("settings.json");
         std::fs::write(&settings, r#"{"autoCompactWindow": 195000}"#).unwrap();
-        let context = || serde_json::to_value(crate::agents::session_get(parent, kid, false).unwrap()).unwrap()["context"].clone();
+        let context = || crate::agents::session_get(parent, kid, false, &["diagnostics".into()]).unwrap()["context"].clone();
         let pane = || serde_json::to_value(crate::pty::probe::resumed_claude_look_for_test(kid, account, 1)).unwrap()["meta"].clone();
         assert_eq!(context(), json!({ "pct": 93, "tokens": 150_000, "window": 162_000, "basis": "autoCompact" }));
         assert_eq!(pane()["contextToCompact"], 12_000);

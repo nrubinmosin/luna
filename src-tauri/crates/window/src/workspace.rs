@@ -32,7 +32,7 @@
 //!   `HIDDEN_AFTER`, the looks come every `HIDDEN_EVERY`, and one comes at
 //!   once as the window is shown again.
 //! - The core is told every chat's name and board (`chat_names`, the page's
-//!   bridge), which `luna_session_list` shows: once the list is read, when
+//!   bridge), for list names and group filters: once the list is read, when
 //!   one changes and for each new core.
 //!   An answer is taken only for the core and the sessions it was asked of
 //!   (`Fence`); a call that fails or hangs changes nothing. The accounts
@@ -2130,8 +2130,7 @@ impl Workspace {
     }
 
     /// Tells the core every chat's name and board (`chat_names`), as the
-    /// page's bridge did: what `luna_session_list` calls the person's chats
-    /// and where it puts them. Only what differs from the last told, and
+    /// page's bridge did, for list names and group filters. Only what differs from the last told, and
     /// once the list has come: the names sent replace the core's, and an
     /// empty list sent before it would take every name away. One the core
     /// did not take is told at the next change, or to the next core.

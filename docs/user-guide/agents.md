@@ -60,15 +60,14 @@ can type into it and answer its model's questions with `scope: "all"`
   settings can override Luna's window. Codex's default scope compacts at the
   smaller of the selected limit and 90% of the model's window. Luna leaves
   the scope to Codex. The setting applies until a delegate is opened as a chat.
-  When Luna can calculate the estimate, `luna_session_get` gives the
+  When Luna can calculate the estimate, session get diagnostics give the
   delegate's remaining tokens before auto-compaction as `contextToCompact`.
   After a core restart, the estimate is omitted until the delegate starts
   its next turn.
 - When a helper or lead ends a turn with nothing of its own running (no job,
   subagent or helper of its own still at it,
   nothing waiting to go into it, a quota notice included),
-  its agent's notice adds "Nothing of its own is running: it will not go on
-  unless you send to it", whatever its last words said it was waiting for.
+  its agent's notice adds `[idle; send to resume]`, whatever its last words said it was waiting for.
 - A send may ask for no reply (`expectReply: false`): the helper's answer then
   wakes the agent only for a status word or a report.
 - An agent reads, waits on, sends text to and answers its own helpers. One of
@@ -174,8 +173,8 @@ can type into it and answer its model's questions with `scope: "all"`
   Agents & trust → Helpers (1 to 64). Only a helper at work takes a place: a
   turn running or waiting on a question, and a spawn under way. A helper
   between turns takes none, even with a background command it left running,
-  so a chat may keep more helpers than it has places. A spawn's result and
-  `luna_session_list` say how many are in use (`places`: `inUse`, the helpers
+  so a chat may keep more helpers than it has places. `luna_session_get` with
+  `include: ["places"]` says how many are in use (`places`: `inUse`, the helpers
   at work and spawns under way on the chat's line, of `of`, `underYou`, and
   `waiting`, the turns waiting for a place). A spawn past the limit is
   refused: the helper is told which of its own are at work, to wait for or
@@ -214,9 +213,8 @@ can type into it and answer its model's questions with `scope: "all"`
   would connect to the host an agent named: map the share to a drive letter and pass
   that. The folders you pick in the window are not affected. A blank `folder` is none
   named: the helper works where its caller does, which is refused in Luna's folder too.
-- The spawn reports what settings cannot: other live sessions in the same
-  directory (`sameFolder`), whose files and git it shares. `luna_session_list` names the
-  model a turn ran on, where the organization swapped the one asked for.
+- The spawn's `sameFolder` counts other live sessions in reach that share the
+  directory, files and git state. Get diagnostics for the model that answered.
 - A helper runs in the mode its spawn names, whatever mode the chat spawning
   it runs in, and never in or above Luna's data folder. What a mode or a
   sandbox lets through is the CLI's own: Luna does not rank or compare them.
@@ -227,7 +225,7 @@ can type into it and answer its model's questions with `scope: "all"`
   (`modeFrom: "luna"`). If Luna cannot read a Codex config layer or it
   names an unsupported mode, Luna passes `on-request` with `read-only`
   (`modeFrom: "closed"`). See the effective defaults in `luna_account_get`
-  and the mode source for a session in `luna_session_get`.
+  and the mode source in session get settings.
   Managed settings count as configured modes. If Claude Code's settings
   cannot be read or its `defaultMode` is not a string, the mode stays
   with Claude Code (`modeFrom: "cli"`).
@@ -241,7 +239,7 @@ can type into it and answer its model's questions with `scope: "all"`
   it starts in turn are told, last among their instructions, at every start,
   and resume. A spawn adds its own to the ones its caller carries, word
   for word; none is ever taken off (4 KB a spawn, 16 KB in all). They show in
-  the helper's settings (`luna_session_get`).
+  the helper with `luna_session_get` and `include: ["settings"]`.
   They are instructions, not permissions: what a helper may do is still its
   mode's. A helper you open as your own chat leaves them behind.
 - A helper started with Luna's tools is a **lead**, one without them a
@@ -257,9 +255,8 @@ can type into it and answer its model's questions with `scope: "all"`
   person's chat may look up another session's row by its id (`ids`,
   `luna_session_get`). With `scope: "all"` a chat lists every other session
   with `luna_session_list` (filtered by window `group`, account, state or
-  `q`), gets one whole with `luna_session_get` (its project folder, the
-  folder it works in where that differs, and the CLI's session id and
-  transcript path once known), reads or waits on any of them,
+  `q`), gets details with `luna_session_get` (request `paths` or
+  `diagnostics` in `include` for folders, transcripts and CLI session IDs), reads or waits on any of them,
   and types into your
   other chats with `luna_session_send` and answers their models' questions
   with `luna_session_answer`, so you can tell one chat to pass word to
@@ -372,7 +369,7 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   `rest` says how many messages it left out, and its cursor goes on from there.
 - `luna_session_wait` takes several sessions (`ids`, `mode: "any"` or `"all"`) and says
   which finished; the terminal comes only with `screen: true`. `luna_session_list` gives
-  compact rows a page at a time with filters; `luna_session_get` one session whole; accounts
+  compact rows a page at a time with filters. `luna_session_get` accepts `include` for details. Accounts
   are `luna_account_list` and `luna_account_get` (defaults, usage, models).
 - **Notices.** An agent that asked and ended its turn is not left idle: once the
   answer comes (or the helper asks something, stops on a permission, or exits),
@@ -405,8 +402,9 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   update), it says only that they were cut. Only subagents the helper
   started itself are named; theirs end with them.
   Work that must outlive a turn belongs in Luna helpers.
-- The notice says what happened, how many messages the helper wrote, the first
-  line of its report, and a file with all of them: the report (the longest
+- The notice quotes short answers. For longer ones, it gives a first-line preview
+  and `Report <path>:1–N` for the report's lines in the full file. A numbered
+  header summarizes the requests it covers. The file puts the report (the longest
   message, or the last when all are short — but a short turn the CLI started by
   itself, on a background job's end, leaves the report to the long message
   before it) first, then the last, then the rest.
@@ -424,7 +422,7 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   model did anything (an unknown `agent`, a model that is not there) is idle, not
   busy, and goes like any other.
 - A helper that ended its turn with a job running, or helpers of its own still
-  out, is announced as not done once; the next notice comes when that is over or
+  out, is announced once with `[job running]` or `[helpers pending]`; the next notice comes when that is over or
   it ends a turn of its own (a turn it only ran on a Luna notice does not count,
   unless that was its own helper's last awaited answer), so two chats with a
   stray process each do not keep waking each other. A background Claude Code
@@ -434,7 +432,7 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
 - A job's end the helper says nothing about rides with the next notice, alone
   only once nothing else is owed, nothing is at work, or after 10 minutes.
 - What turns left running (a server, a watcher, a forgotten `tail -F`) is named in
-  the notice and in `luna_session_get` as `leftRunning` (by name and pid, or a
+  the notice and in get diagnostics as `leftRunning` (by name and pid, or a
   count of shells). It keeps the helper, and the PC, active for as long as it is
   there, however idle. For a background helper `luna_session_stop`, or Stop in the
   helper list, ends it once the turn is over; the notice of its end comes when it
@@ -448,11 +446,11 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
 - An agent also gets a notice when an account its helpers run on reaches 90%
   and then 95% of a usage window, once each per window.
 
-`luna_session_list` shows per helper its state, the first line of its task and when it last
-did anything; `luna_session_get` adds its transcript and the CLI's own conversation id,
-when its turn began, the model it ran on (none until a model has answered), how full its
-context is after its last turn and the version of the CLI its process last started from
-(`cliVersion`).
+`luna_session_list` shows each helper's ID, name, state, turn count and any ask ID.
+It includes the parent's ID when the parent differs from the caller.
+`luna_session_get` adds the full ask and other core fields. Use `include` with
+`paths` for the transcript, `diagnostics` for activity, context, model and CLI
+details, `settings` for effective flags, and `places` for the caller's line capacity.
 `luna_account_list` names the accounts agents may use (the account alone is enough: it brings
 its own CLI) with their usage as the Accounts window shows it; `luna_account_get` adds the
 settings a helper would get there (read from the account's and the project's settings the way
@@ -464,7 +462,7 @@ that does not read as a model id (up to 256 letters, digits and `-._:/@+`) is gi
 
 - A helper goes by itself (`autoDelete`, on by default) once its answer reached
   the agent and it has sat idle 30 minutes with nobody reading or writing to it;
-  `luna_session_list` shows `deletesInMin`. It waits for jobs it left, however idle,
+  get diagnostics show `deletesInMin`. It waits for jobs it left, however idle,
   and helpers of its own.
 - A helper stopped with `luna_session_stop` is never auto-deleted; one you opened as a
   chat is yours and stays.

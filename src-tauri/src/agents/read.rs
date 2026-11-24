@@ -343,13 +343,13 @@ pub fn read(
 /// the last word of a conversation that went on in a transcript of its own.
 fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -> Reading {
     let pty = crate::pty::manager();
-    let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).map(|o| o.cursor);
+    let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).copied();
     let (path, moved) = transcript_seen(pty, id);
     let past_end = |at: u64| path.as_ref().is_some_and(|p| std::fs::metadata(p).is_ok_and(|m| at > m.len()));
     let from = match since {
         Some(at) if past_end(at) => 0,
         Some(at) => moved.unwrap_or(at),
-        None => moved.or(owed).unwrap_or(0),
+        None => moved.or_else(|| owed.map(|o| o.cursor)).unwrap_or(0),
     };
     let read_at = |at: u64| -> Messages {
         match &path {
@@ -364,7 +364,8 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -
     if found.is_empty() && since.is_none() && from > 0 {
         found = read_at(0).0.into_iter().last().into_iter().collect();
     }
-    let replies = crate::agents::said::said_of(found).asked(crate::agents::owed::requests_of(caller, id));
+    let previous = since.is_none().then(|| owed.and_then(|o| o.request_match)).flatten();
+    let replies = crate::agents::said::said_of(found).asked_after(crate::agents::owed::requests_of(caller, id), previous);
     let report_guessed = crate::agents::said::report_guessed(&replies);
     let mut cut = false;
     // The rest it said is a file away, report first, for a caller that wants it.
@@ -462,7 +463,7 @@ fn cut_to_max(text: &str) -> Option<String> {
     (n > MAX_TEXT).then(|| {
         let more = n - MAX_TEXT;
         format!(
-            "{}\n\n[cut: {more} more characters; the transcript luna_session_get names has it whole]",
+            "{}\n\n[cut: {more} more characters; transcript via luna_session_get include:[\"paths\"]]",
             text.chars().take(MAX_TEXT).collect::<String>()
         )
     })
@@ -610,6 +611,7 @@ mod tests {
         assert_eq!(r.messages.len(), 1);
         assert!(r.messages[0].text.starts_with("REPORT "), "the report");
         assert!(r.messages[0].text.contains("[cut: 507 more characters;"), "cut at MAX_TEXT like any read");
+        assert!(r.messages[0].text.contains(r#"luna_session_get include:["paths"]"#));
         assert_eq!(r.rest, 1, "the other message it said");
         assert_eq!(r.cursor, whole.len() as u64, "before the line still being written, not the file's end");
 

@@ -108,7 +108,12 @@ fn kind_of(spec: &Value) -> String {
         Some("boolean") => "true or false".into(),
         Some("integer") => "a whole number, 0 or more".into(),
         Some("object") => "an object".into(),
-        Some("array") if spec["items"]["type"] == "string" => "a list of strings".into(),
+        Some("array") if spec["items"]["type"] == "string" => match spec["items"]["enum"].as_array() {
+            Some(allowed) => {
+                format!("a list of these values ({})", allowed.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+            }
+            None => "a list of strings".into(),
+        },
         Some("array") => "a list".into(),
         _ => "a value".into(),
     }

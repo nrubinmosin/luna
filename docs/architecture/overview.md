@@ -129,7 +129,7 @@ sequenceDiagram
   R->>B: start: spec, first turn's prompt
   B->>S: one headless run (claude -p / codex app-server), prompt on stdin
   R->>R: owe_from: record the caller's debt for the answer
-  R-->>H: result: id, settings, sameFolder
+  R-->>H: result: id, sameFolder count
   H-->>A: tool result
   Note over A: caller may end its turn
   S-->>B: turn ends (its event stream)

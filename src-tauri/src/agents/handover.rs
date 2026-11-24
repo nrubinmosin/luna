@@ -132,6 +132,7 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     let mut owed: Vec<String> = r.owed.keys().filter(|(_, s)| s == id).map(|(c, _)| c.clone()).collect();
     owed.sort();
     r.owed.retain(|(_, s), _| s != id);
+    r.requests.retain(|(_, s), _| s != id);
     r.seen.retain(|(_, s), _| s != id);
     r.receipts.retain(|(_, s), _| s != id);
     r.delivery_floors.retain(|(_, s), _| s != id);
@@ -163,6 +164,7 @@ fn drained(id: &str) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     *r.handovers.entry(id.to_string()).or_default() += 1;
     r.owed.retain(|(_, s), _| s != id);
+    r.requests.retain(|(_, s), _| s != id);
     r.seen.retain(|(_, s), _| s != id);
     r.delivery_floors.retain(|(_, s), _| s != id);
 }
@@ -272,7 +274,7 @@ pub(super) fn taken_over_error(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::owed::owe_from;
+    use crate::agents::owed::{owe_asked, owe_from, Asked};
     use crate::agents::registry::{authorize, in_scope, parent_of, register};
     use crate::agents::teardown::{forget, news_for, Auto};
     use crate::provider::Provider;
@@ -332,8 +334,8 @@ mod tests {
             helper(&id, &parent, provider);
             crate::agents::registry::set_name(&id, "the job");
             reg().lock().unwrap().auto.insert(id.clone(), Auto::default());
-            owe_from(&parent, &id, 1, 10);
-            owe_from(&peer, &id, 1, 10);
+            owe_asked(&parent, &id, 1, 10, &Asked { text: "the parent's request", key: None, reply: true });
+            owe_asked(&peer, &id, 1, 10, &Asked { text: "the peer's request", key: None, reply: true });
             assert!(authorize(&parent, &id).is_ok());
 
             let queued = vec![
@@ -353,6 +355,7 @@ mod tests {
             {
                 let r = reg().lock().unwrap();
                 assert!(!r.owed.keys().any(|(_, s)| *s == id), "nothing more is owed by it, to anyone");
+                assert!(!r.requests.keys().any(|(_, s)| *s == id), "former callers' requests go too");
                 assert!(!r.auto.contains_key(&id), "nothing deletes it now but the person");
                 let mut settings = r.known[&id].settings.clone();
                 let kept = settings.as_object_mut().unwrap().remove(STARTED_WITH);
@@ -403,7 +406,7 @@ mod tests {
             let placed = crate::background::send(&id, "one more thing", Some(&parent)).unwrap();
             assert_eq!(placed, crate::background::Placed::Queued, "held while it opens");
             // A debt it had registered by then, which the handover clears.
-            let asked = crate::agents::owed::Asked { text: "one more thing", key: None, reply: true };
+            let asked = Asked { text: "one more thing", key: None, reply: true };
             owe_from_at(&parent, &id, 1, 0, before, &asked);
             take_over(&id, || Some(Vec::new())).unwrap();
             assert!(!owe_from_at(&parent, &id, 2, 0, before, &asked), "the send learns it was taken over");

@@ -206,9 +206,9 @@ Every consumer reads the record, and none keeps a verdict of its own:
 | Consumer | Its view |
 | --- | --- |
 | The power rule and keep-awake | `Summary.busy`: sessions active; `last_activity`: the one monotonic activity stamp (below) |
-| `luna_session_wait`, `read`, the notices ("NOT done yet", "Nothing of its own is running") | `TurnState::of`: `turn` (`Life::turn`; unknown reads busy), `busy` (turn not over), `turns_ended`, `children_busy` (`Background::any`) |
+| `luna_session_wait`, `read`, the notices ("NOT done yet", "[idle; send to resume]") | `TurnState::of`: `turn` (`Life::turn`; unknown reads busy), `busy` (turn not over), `turns_ended`, `children_busy` (`Background::any`) |
 | The rows' status (`sessions_meta`) | `Life::status` as the power board reads it: `busy`, `waiting`, `background` (turn over, work of its own beside it), `idle`; the disk's own word until a record exists; a live session with nothing on disk yet answers the record's word alone (unknown reads `busy`), not no meta |
-| `luna_session_get`'s `leftRunning` | the background's names, else its counts |
+| `luna_session_get` diagnostics' `leftRunning` | the background's names, else its counts |
 | The person's Delete dialog (`at_stake`) | a helper's phase and background |
 | autoDelete (`reap`) | not active, with no live helper under it, no answer owed and no wait on it, for 30 min (the clock starts over when one of these stops holding) |
 | The core's idle exit, `Welcome.sessions` and `left_only`, `close_if_left_only` | helpers active (`background::running_counts`); left only = active between turns, with only processes left in its job |

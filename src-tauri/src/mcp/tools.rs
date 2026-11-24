@@ -70,8 +70,8 @@ pub(super) fn tools_as(persons: bool) -> Value {
         {
             "name": "luna_session_list",
             "description": say(
-                "Your sessions as compact rows; scope all: every one; ids: those (others' task, askId: scope all). Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor. places.",
-                "Your sessions as compact rows; ids: those. Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor. places."
+                "Rows: id, name, state, turnsEnded, askId, parent if different (others: scope all). Default: yours. scope all: every session. nextCursor goes in cursor.",
+                "Rows: id, name, state, turnsEnded, askId, parent if different. nextCursor goes in cursor."
             ),
             "inputSchema": s(json!({
                 "scope": scope, "ids": strings, "state": strings, "provider": provider, "account": string,
@@ -82,15 +82,19 @@ pub(super) fn tools_as(persons: bool) -> Value {
         {
             "name": "luna_session_get",
             "description": say(
-                "One session whole: its row with settings, folder, cwd, transcript, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all).",
-                "One session whole: its row with settings, folder, cwd, transcript, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask."
+                "Identity, state, turnsEnded, task and ask (others' task and ask: scope all). Use include for details.",
+                "Identity, state, turnsEnded, task and ask. Use include for details."
             ),
-            "inputSchema": s(json!({ "id": string, "scope": scope }), &["id"]),
+            "inputSchema": s(json!({
+                "id": string, "scope": scope, "include": {
+                    "type": "array", "items": { "type": "string", "enum": ["places", "settings", "paths", "diagnostics"] }
+                }
+            }), &["id"]),
             "annotations": reads
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a background helper the user can watch or take over. Your CLI handles spawn approval. Mode: explicit, CLI config, then Claude Auto or Codex Auto-review (luna_account_get). For isolation, use `git worktree add`, pass it as folder, then remove it.",
+            "description": "Start a background helper. Returns id, sameFolder count, modeFrom if defaulted. First turn: wait with afterTurn 0 or omit it. See luna_guide_get for spawn rules.",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,

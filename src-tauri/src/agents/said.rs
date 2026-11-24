@@ -77,7 +77,7 @@ pub(super) struct Said {
 /// A request of a caller's that a debt covers: its number among the caller's
 /// requests to that session (a spawn 1, each send one more), the `requestKey`
 /// it came with, and how its text began, to find the turn it started by.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub(super) struct Request {
     pub(super) n: u32,
     pub(super) key: Option<String>,
@@ -99,10 +99,10 @@ fn flat(text: &str) -> String {
 }
 
 impl Request {
-    /// `request 2`, or `request 2 (requestKey "x")`, as notices and replies name it.
+    /// The heading used in answer files and tool replies.
     pub(super) fn name(&self) -> String {
         match &self.key {
-            Some(key) => format!("request {} (requestKey \"{key}\")", self.n),
+            Some(key) => format!("request {} (requestKey {key:?})", self.n),
             None => format!("request {}", self.n),
         }
     }
@@ -114,15 +114,18 @@ impl Said {
         Said { texts, last_turn: 0, starts: vec![0], ..Said::default() }
     }
 
-    /// These messages as answers to the caller's `requests`: with more than
-    /// one, each message is put down to the latest request whose text started
-    /// a turn at or before it, found among the prompts by its head, in order.
-    /// A message before any found is the request's before the first found (a
-    /// spawn's, whose prompt may lie before what was read). None found, none
-    /// is put down to any: the requests are still named, not whose is which.
-    pub(super) fn asked(mut self, requests: Vec<Request>) -> Said {
+    /// These messages as answers to requests, with no known match before the read.
+    #[cfg(test)]
+    pub(super) fn asked(self, requests: Vec<Request>) -> Said {
+        self.asked_after(requests, None)
+    }
+
+    /// Match prompts in order, with the last request in a batch taking its
+    /// reply. For text before the first match, prefer the match from a
+    /// previous notice or wait, if that request is still open.
+    pub(super) fn asked_after(mut self, requests: Vec<Request>, previous: Option<u32>) -> Said {
         self.re.clear();
-        if requests.len() > 1 {
+        if !requests.is_empty() {
             let mut from = 0;
             let found: Vec<Option<usize>> = requests
                 .iter()
@@ -130,14 +133,16 @@ impl Said {
                     let at = self.prompts.iter().skip(from).position(|(_, text)| !q.head.is_empty() && flat(text).contains(&q.head));
                     let at = at.map(|i| i + from);
                     if let Some(i) = at {
-                        from = i + 1;
+                        from = i;
                     }
                     at.map(|i| self.prompts[i].0)
                 })
                 .collect();
-            if let Some(first) = found.iter().position(Option::is_some) {
+            let prior = previous.and_then(|n| requests.iter().position(|q| q.n == n)).or_else(|| (requests.len() == 1).then_some(0));
+            let before_first = prior.or_else(|| found.iter().position(Option::is_some).map(|i| i.saturating_sub(1)));
+            if let Some(before_first) = before_first {
                 self.re = (0..self.texts.len())
-                    .map(|i| (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| at <= i)).unwrap_or(first.saturating_sub(1)))
+                    .map(|i| (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| at <= i)).unwrap_or(before_first))
                     .collect();
             }
         }
@@ -145,19 +150,19 @@ impl Said {
         self
     }
 
-    /// The requests these answer, when more than one: what a notice and a
-    /// reply name.
+    /// The requests these answer, in the order they were asked.
     pub(super) fn requests(&self) -> &[Request] {
-        if self.requests.len() > 1 {
-            &self.requests
-        } else {
-            &[]
-        }
+        &self.requests
     }
 
     /// The request message `i` answers, where that is known.
     pub(super) fn re_of(&self, i: usize) -> Option<&Request> {
         self.requests.get(*self.re.get(i)?)
+    }
+
+    /// The request the final run of messages belongs to.
+    pub(super) fn last_request(&self) -> Option<u32> {
+        self.re_of(self.texts.len().checked_sub(1)?).map(|q| q.n)
     }
 
     /// Messages `from..to` alone, their turns as they were.
@@ -176,7 +181,7 @@ impl Said {
     /// Runs of messages that answer one request each, newest first, each with
     /// its request: none unless they answer several and whose is which is known.
     fn by_request(&self) -> Vec<(&Request, Said)> {
-        if self.requests().is_empty() || self.re.len() != self.texts.len() {
+        if self.requests().len() <= 1 || self.re.len() != self.texts.len() {
             return Vec::new();
         }
         let mut runs: Vec<(usize, usize, usize)> = Vec::new();
@@ -243,35 +248,27 @@ pub(super) fn said_of(messages: Vec<Message>) -> Said {
 /// back anyway, and a long notice reaches the CLI as a paste.
 pub(super) fn answer_file(id: &str, replies: &Said) -> String {
     let text = answer_text(replies);
-    answer_where(note_file(id, &text).as_deref(), report_span(replies, &text))
+    answer_where(note_file(id, &text).as_deref(), report_span(replies))
 }
 
-/// Where the answer is, and with `span` (`report_span`) which lines of the file
-/// are the report: a caller that wants only the report reads those.
-pub(super) fn answer_where(file: Option<&std::path::Path>, span: Option<(usize, usize)>) -> String {
-    match (file, span) {
-        (Some(path), Some((report, all))) if report < all => {
-            format!("the answer is in {}, its report first (lines 1-{report} of {all})", path.display())
-        }
-        // The report is all there is: nothing to put first.
-        (Some(path), Some(_)) => format!("the answer is in {}", path.display()),
-        (Some(path), None) => format!("the answer is in {}, its report first", path.display()),
-        (None, _) => "luna_message_list gives the answer".into(),
+/// Where the answer is and which lines hold the report.
+pub(super) fn answer_where(file: Option<&std::path::Path>, lines: Option<usize>) -> String {
+    match (file, lines) {
+        (Some(path), Some(lines)) => format!("Report {}:1–{lines}", path.display()),
+        (Some(path), None) => format!("File {}", path.display()),
+        (None, _) => "Answer: luna_message_list".into(),
     }
 }
 
-/// How many lines of `text`, an answer file that opens with `replies`'s report
-/// (`answer_text`), are the report, and how many it has in all. None with
-/// nothing said.
-pub(super) fn report_span(replies: &Said, text: &str) -> Option<(usize, usize)> {
-    let all = text.lines().count().max(1);
-    // Answers to several requests: the newest one's heading and report lead.
+/// How many lines of the answer file hold the report, including the request
+/// heading and blank line when the file opens with a request section.
+pub(super) fn report_span(replies: &Said) -> Option<usize> {
     if let Some((_, part)) = replies.by_request().first() {
         let report = part.get(report_of(part))?;
-        return Some((report.lines().count().max(1) + 2, all));
+        return Some(report.lines().count().max(1) + 2);
     }
     let report = replies.get(report_of(replies))?;
-    Some((report.lines().count().max(1), all))
+    Some(report.lines().count().max(1))
 }
 
 /// The report alone (`report_of`), what `luna_report_get` gives; where the
@@ -421,7 +418,7 @@ pub(super) fn report_guessed(replies: &Said) -> bool {
 fn opening_line(report: &str) -> Option<String> {
     let label = |line: &str| {
         let t = line.trim_start();
-        t.starts_with('#') && t.trim_start_matches('#').split_whitespace().count() < HEADING_WORDS
+        t.starts_with('#') && !says_status(t) && t.trim_start_matches('#').split_whitespace().count() < HEADING_WORDS
     };
     let body: Vec<&str> = report.lines().filter(|l| !label(l)).collect();
     first_words(&body.join("\n"), NOTICE_QUOTE).or_else(|| first_words(report, NOTICE_QUOTE))
@@ -444,7 +441,7 @@ pub(super) fn inline_answer(replies: &Said) -> Option<String> {
     (!line.is_empty() && line.chars().count() <= INLINE_ANSWER).then_some(line)
 }
 
-/// The most of a helper's task `luna_session_list` gives: it comes with every row.
+/// The most of a helper's task `luna_session_get` gives.
 pub(super) const TASK_CHARS: usize = 100;
 
 /// The first line of `text` that says anything, as `opening_line` puts it, cut to
@@ -484,8 +481,10 @@ pub(super) fn first_words(text: &str, most: usize) -> Option<String> {
 /// Whether the report was picked by length is the reads' to say
 /// (`reportGuessed`); the file holds every message either way.
 pub(super) fn begins(replies: &Said) -> String {
-    match replies.get(report_of(replies)).and_then(|r| opening_line(r)) {
-        Some(line) => format!(". It begins: \"{line}\""),
+    let sections = replies.by_request();
+    let first = sections.first().map_or(replies, |(_, part)| part);
+    match first.get(report_of(first)).and_then(|r| opening_line(r)) {
+        Some(line) => format!(" \"{line}\""),
         None => String::new(),
     }
 }
@@ -494,6 +493,18 @@ pub(super) fn begins(replies: &Said) -> String {
 mod tests {
     use super::*;
     use crate::agents::read::Message;
+
+    #[test]
+    fn the_last_request_in_a_batch_owns_the_reply() {
+        let request = |n, head: &str| Request { n, key: None, head: head.into() };
+        let queued =
+            ["check the warnings", "check the tests"].map(|text| crate::background::Queued::new(Some("caller".into()), text.into()));
+        let message = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
+        let said = said_of(vec![message("user", crate::background::joined(&queued)), message("assistant", "Both checks passed.".into())])
+            .asked(vec![request(2, "check the warnings"), request(3, "check the tests")]);
+        assert_eq!(said.last_request(), Some(3));
+        assert!(answer_text(&said).starts_with("Re request 3:"));
+    }
 
     #[test]
     fn a_status_word_opens_the_first_line_as_written() {
@@ -528,7 +539,7 @@ mod tests {
             ])
         };
         let one = said().asked(vec![q(1, "first")]);
-        assert!(one.requests().is_empty() && answer_text(&one).starts_with("GO."), "one request: nothing set apart");
+        assert!(one.requests().len() == 1 && answer_text(&one).starts_with("GO."), "one request: nothing set apart");
         let two = said().asked(vec![q(1, "the first, spawned"), q(2, "Now the second one, please")]);
         assert_eq!(two.requests().len(), 2);
         assert_eq!(two.re_of(0).map(|q| q.n), Some(1), "before the second's prompt: the first's");
@@ -537,7 +548,7 @@ mod tests {
         let text = answer_text(&two);
         assert!(text.starts_with("Re request 2:\n\nGO.\n\n===\n\nRe request 1:\n\nNO-GO: tests fail."), "{text}");
         assert_eq!(report_text(&two).as_deref(), Some("Re request 2:\n\nGO."));
-        assert_eq!(report_span(&two, &text).map(|(report, _)| report), Some(3), "the heading, a blank, the report");
+        assert_eq!(report_span(&two), Some(3), "the heading, a blank, the report");
         // Neither found among the prompts: named, not set apart.
         let lost = said().asked(vec![q(1, "something else"), q(2, "and another")]);
         assert_eq!(lost.requests().len(), 2);
@@ -571,8 +582,8 @@ mod tests {
             "Nothing else changed.".to_string(),
         ]);
         let line = answer_file("span", &replies);
-        assert!(line.ends_with(", its report first (lines 1-3 of 15)"), "{line}");
-        let file = line.trim_start_matches("the answer is in ").split(", its report first").next().unwrap().to_string();
+        assert!(line.ends_with(":1–3"), "{line}");
+        let file = line.trim_start_matches("Report ").rsplit_once(":1–").unwrap().0.to_string();
         let whole = std::fs::read_to_string(&file).unwrap();
         let _ = std::fs::remove_file(&file);
         let head: Vec<&str> = whole.lines().take(3).collect();
@@ -580,17 +591,17 @@ mod tests {
         assert!(head[2].starts_with("line three"));
         assert_eq!(whole.lines().count(), 15);
         assert_eq!(report_text(&replies).unwrap().lines().count(), 3);
-        // A file that is the report alone says nothing of lines, nor of a report first.
+        // Even a file consisting of just the report gives its line range.
         let one = answer_file("span", &Said::one_turn(vec!["Done.".into()]));
-        assert!(!one.contains("report first"), "{one}");
-        let _ = std::fs::remove_file(one.trim_start_matches("the answer is in "));
+        assert!(one.ends_with(":1–1"), "{one}");
+        let _ = std::fs::remove_file(one.trim_start_matches("Report ").trim_end_matches(":1–1"));
         assert_eq!(report_text(&Said::default()), None);
     }
 
     #[test]
     fn an_answer_file_puts_the_report_first_and_the_last_word_next() {
         let read = |line: String| {
-            let file = line.trim_start_matches("the answer is in ").split(", its report first").next().unwrap().to_string();
+            let file = line.trim_start_matches("Report ").rsplit_once(":1–").unwrap().0.to_string();
             let whole = std::fs::read_to_string(&file).unwrap();
             let _ = std::fs::remove_file(&file);
             whole
@@ -626,7 +637,7 @@ mod tests {
         let whole = answer_text(&replies);
         assert!(whole.starts_with("R2 DONE FOURTH\nKIWI\n\n---\n\nEverything else it said, in order:\n\nI’ll run the ping"), "{whole}");
         assert!(!whole.contains("Its last message"), "it leads already");
-        assert_eq!(begins(&replies), ". It begins: \"R2 DONE FOURTH\"");
+        assert_eq!(begins(&replies), " \"R2 DONE FOURTH\"");
         // One that is not short is the report, wherever it is.
         let mut with_report = replies.texts.clone();
         with_report.insert(1, format!("Findings: {}", "a finding. ".repeat(40)));
@@ -689,7 +700,7 @@ mod tests {
         );
         assert_eq!(said.last_turn, 2, "the second prompt's turn starts at its first message");
         assert_eq!(said[report_of(&said)], second, "not the longest of all: that one is behind it");
-        assert!(begins(&said).starts_with(". It begins: \"The new tip is cfeb7186f."), "the notice quotes it too");
+        assert!(begins(&said).starts_with(" \"The new tip is cfeb7186f."), "the notice quotes it too");
         let whole = answer_text(&said);
         assert!(whole.starts_with("The new tip is cfeb7186f."), "{whole}");
         let (last, older) = (whole.find("Nothing pushed.").unwrap(), whole.find("The new tip is 5ce3b92d2.").unwrap());
@@ -720,7 +731,7 @@ mod tests {
         let whole = answer_text(&said);
         assert!(whole.starts_with("The new tip is 5ce3b92d2."), "{whole}");
         assert!(whole.contains("Its last message:\n\nA leftover wait loop"), "{whole}");
-        assert!(begins(&said).starts_with(". It begins: \"The new tip is 5ce3b92d2."));
+        assert!(begins(&said).starts_with(" \"The new tip is 5ce3b92d2."));
         // Two turns with reports before it: the newer's leads, though the
         // older's is longer — the newer has moved past it.
         let older = format!("The tip is a1. {}", "Older detail. ".repeat(150));
@@ -792,10 +803,7 @@ mod tests {
     #[test]
     fn the_same_answer_is_the_same_file() {
         let path = |replies: &[String]| {
-            answer_file("same", &Said::one_turn(replies.to_vec()))
-                .trim_start_matches("the answer is in ")
-                .trim_end_matches(", its report first")
-                .to_string()
+            answer_file("same", &Said::one_turn(replies.to_vec())).trim_start_matches("Report ").trim_end_matches(":1–1").to_string()
         };
         let replies = vec!["The report.".to_string()];
         let (first, again) = (path(&replies), path(&replies));
@@ -834,8 +842,9 @@ mod tests {
 
         let report = format!("# Report\nThe long one, with what was done. {}", "Details. ".repeat(50));
         let replies = Said::one_turn(vec!["Let me look.".to_string(), report, "Nothing else.".to_string()]);
-        assert!(begins(&replies).starts_with(". It begins: \"The long one, with what was done."), "a label of a heading is passed over");
+        assert!(begins(&replies).starts_with(" \"The long one, with what was done."), "a label of a heading is passed over");
         assert_eq!(opening_line("## Done: all tests pass\nDetails"), Some("Done: all tests pass".into()), "a heading that says it");
+        assert_eq!(opening_line("# DONE: passed\nDetails"), Some("DONE: passed".into()));
         assert_eq!(opening_line("# Report"), Some("Report".into()), "a heading alone is what there is");
         // Short, all of it goes inline; long, none.
         let short = Said::one_turn(vec!["Done.".into(), "Tests\n  pass.".into()]);
@@ -852,7 +861,7 @@ mod tests {
         let line = |text: &str| answer_file("same-ms", &Said::one_turn(vec![text.to_string()]));
         let lines: Vec<String> = (0..20).map(|i| line(&format!("answer {i}"))).collect();
         for (i, l) in lines.iter().enumerate() {
-            let file = l.trim_start_matches("the answer is in ").trim_end_matches(", its report first");
+            let file = l.trim_start_matches("Report ").trim_end_matches(":1–1");
             assert_eq!(std::fs::read_to_string(file).unwrap(), format!("answer {i}"));
             let _ = std::fs::remove_file(file);
         }

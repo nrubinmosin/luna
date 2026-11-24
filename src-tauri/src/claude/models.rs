@@ -837,7 +837,7 @@ fn known(account_path: &str) -> Known {
 }
 
 /// The list as far as it can be had without running the CLI, the aliases
-/// where nothing is known: for checking a spawn and for `luna_session_list`.
+/// where nothing is known: for checking a spawn and for `luna_account_get`.
 pub fn models_known(account_path: &str) -> Vec<ClaudeModel> {
     match known(account_path) {
         Known::Current(m) | Known::Stale(m) => m,

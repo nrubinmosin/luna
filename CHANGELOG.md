@@ -33,9 +33,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
-- The pane meter and `luna_session_get` show the share of the CLI's estimated
+- The pane meter and session get diagnostics show the share of the CLI's estimated
   auto-compaction limit when known, or the model window otherwise.
   `context.window` gives the denominator and `context.basis` names it.
+
+- Luna notices use compact request headers, status tags and report pointers.
+  The spawn result returns the ID and a same-folder count, and list rows show
+  identity, state, turn count and ask ID. Session get details are opt-in via
+  `include`. The guide index and delegation topics are shorter.
 
 - A Codex project trusted in Luna is no longer trusted by `codex` outside
   it. Luna saves the approved project with the chat and passes trust on

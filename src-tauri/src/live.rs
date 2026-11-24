@@ -219,7 +219,13 @@ impl Drop for Spawned {
     fn drop(&mut self) {
         // Its own helpers too (a lead's): removed before it, which would pass
         // them up to its caller rather than take them along.
-        let mut ids: Vec<String> = crate::agents::list_for_test(&self.caller, None, false).sessions.into_iter().map(|s| s.id).collect();
+        let mut ids: Vec<String> =
+            crate::agents::session_list(&self.caller, &crate::agents::SessionQuery { limit: Some(200), ..Default::default() })
+                .expect("live helpers")
+                .sessions
+                .into_iter()
+                .map(|s| s.id)
+                .collect();
         ids.retain(|id| *id != self.id);
         ids.push(self.id.clone());
         for id in ids {
@@ -422,8 +428,8 @@ fn a_lead_gets_its_helpers_answer_in_a_folder_without_git(provider: Provider) {
     assert!(reply.contains(&mine) && reply.contains(&theirs), "the lead's reply lacks {mine} or its helper's {theirs}: {reply:?}");
 
     // The helper is the lead's, was in its folder, and had its own turn.
-    let rows = crate::agents::list_for_test(&lead.caller, None, true).sessions;
-    let child = rows.iter().find(|r| r.parent.as_deref() == Some(lead.id.as_str())).expect("the lead's own helper");
+    let children = crate::agents::session_list(&lead.id, &Default::default()).expect("live helpers");
+    let child = children.sessions.first().expect("the lead's own helper");
     assert!(child.turns_ended >= 1, "the lead's helper ended no turn");
     let log = std::fs::read_to_string(crate::log::path()).unwrap_or_default();
     for tool in ["luna_session_spawn", "luna_session_wait"] {

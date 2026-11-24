@@ -412,7 +412,7 @@ Each helper has one job for its life; every turn's process joins it. Between
 turns what the turn left (`procs::left_in`, each process by name, pid and start,
 `Leftover`) is the helper's record's shells (`life_of`): active, holding the PC
 awake and a power-off back, for as long as it is there, however long it does
-nothing; `luna_session_get` shows it as `leftRunning`, and autoDelete waits for it.
+nothing; `luna_session_get` diagnostics show it as `leftRunning`, and autoDelete waits for it.
 A stop between turns ends only them and holds the helper (`Entry::ending_left`),
 so a send queues rather than start a CLI in a job being emptied. A turn whose
 CLI went before its model did anything (`Observed::acted` false: an unknown

@@ -5,7 +5,7 @@
 use crate::agents::lost::{put_undelivered_back, take_undelivered};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{is_descendant, is_dev, parent_of, reg, stands, waits_on_helpers_in, Registry};
-use crate::agents::said::{request_head, Request};
+use crate::agents::said::{replies_since, request_head, Request};
 use crate::throttle::now_ms;
 
 /// Text typed into a chat's terminal mid-turn is the CLI's to place: into
@@ -34,6 +34,8 @@ pub(super) struct Owed {
     /// of its questions still unanswered): what it said from there on is the
     /// answer, however many turns it took.
     pub(super) cursor: u64,
+    /// The open request matched before a pending reply advanced the cursor.
+    pub(super) request_match: Option<u32>,
     /// Asked by text typed into a chat's terminal mid-turn (see
     /// QUEUED_GRACE_MS).
     pub(super) queued: bool,
@@ -126,6 +128,7 @@ impl Owed {
             held: None,
             ready_at: None,
             cursor,
+            request_match: None,
             queued: false,
             late: false,
             lost: false,
@@ -172,22 +175,22 @@ pub(super) fn shown(caller: &str, id: &str, turns_ended: u32) {
 /// past what it asked about, or, `job_debt` being this very debt, the end of a
 /// job it was told of. In one hold of the lock, so that a question asked a
 /// moment later is a debt that stands. Returns whether what the session goes on
-/// to say is owed on (`owed_on`): Some, with whether the caller is above the
-/// session now, as it must still be when that debt is put in.
-fn take_debt(r: &mut Registry, key: &(String, String), turns_ended: u32, job_debt: Option<u64>) -> Option<bool> {
-    let o = r.owed.get(key)?;
+/// to say is owed on (`owed_on`), with the old debt and whether the caller
+/// is above the session now, as it must still be when that debt is put in.
+fn take_debt(r: &mut Registry, key: &(String, String), turns_ended: u32, job_debt: Option<u64>) -> Option<(bool, Owed)> {
+    let o = *r.owed.get(key)?;
     if turns_ended <= o.baseline && job_debt != Some(o.rev) {
         return None;
     }
     r.owed.remove(key);
-    waits_on_helpers_in(r, &key.1, &key.0).then(|| is_descendant(r, &key.0, &key.1))
+    waits_on_helpers_in(r, &key.1, &key.0).then(|| (is_descendant(r, &key.0, &key.1), o))
 }
 
 /// What a session says once its own helpers have answered it is what it was
 /// asked for: still owed, past what the caller has now, as a notice's "not
 /// done" leaves it. Off the lock, as this reads the transcript's length, and so
 /// behind a question asked meanwhile, whose debt covers that too.
-fn owed_on(key: (String, String), turns_ended: u32, goes_on: Option<bool>) {
+fn owed_on(key: (String, String), turns_ended: u32, goes_on: Option<(bool, Owed)>) {
     owed_on_for(key, turns_ended, goes_on, None);
 }
 
@@ -196,10 +199,25 @@ fn owed_on(key: (String, String), turns_ended: u32, goes_on: Option<bool>) {
 /// so a hand-over coming in next finds them tied. Returns the one put in, by
 /// `rev`: none when a question since stands there already, or when the caller
 /// was above the session as its debt was taken and is not now.
-fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<bool>, taken: Option<u64>) -> Option<u64> {
-    let above = goes_on?;
+fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<(bool, Owed)>, taken: Option<u64>) -> Option<u64> {
+    let (above, before) = goes_on?;
     #[cfg(test)]
     super::test_support::reached("owed on", &key.0);
+    let (provider, requests) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if r.owed.contains_key(&key) {
+            return None;
+        }
+        (r.known.get(&key.1).map(|k| k.provider), r.requests.get(&key).map(|q| q.open.clone()).unwrap_or_default())
+    };
+    let request_match = if let Some(provider) = provider.filter(|_| requests.len() > 1) {
+        replies_since(crate::pty::manager(), &key.1, provider, before.cursor, true)
+            .asked_after(requests, before.request_match)
+            .last_request()
+            .or(before.request_match)
+    } else {
+        requests.first().map(|q| q.n)
+    };
     let cursor = transcript_end(&key.1);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let r = &mut *r;
@@ -208,7 +226,7 @@ fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<bool>, t
         return None;
     }
     let rev = match r.owed.entry(key.clone()) {
-        std::collections::hash_map::Entry::Vacant(v) => v.insert(Owed::pending(turns_ended, cursor)).rev,
+        std::collections::hash_map::Entry::Vacant(v) => v.insert(Owed { request_match, ..Owed::pending(turns_ended, cursor) }).rev,
         std::collections::hash_map::Entry::Occupied(_) => return None,
     };
     if let Some(x) = r.receipts.get_mut(&key).filter(|x| taken.is_some() && x.stands_for.map(|(o, _)| o.rev) == taken) {
@@ -423,10 +441,11 @@ pub(super) fn owe_from_at(caller: &str, id: &str, baseline: u32, cursor: u64, ha
 /// A caller's requests to one session, by (caller, session): how many it has
 /// made, a spawn being the first, and those the debt that stands now covers,
 /// oldest first. What answers which is read off them (said.rs `Said::asked`).
-/// Kept in memory only: after a core restart an answer names no request.
-#[derive(Default)]
+/// Saved with the session's ties.
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 pub(super) struct Requests {
-    made: u32,
+    pub(super) made: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) open: Vec<Request>,
 }
 
@@ -488,13 +507,19 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
             *slot = Some(s);
         }
     }
-    r.owed.insert(key.clone(), Owed { resumed, no_reply, by_send, since, ..Owed::from(baseline.max(floor), cursor) });
-    let requests = r.requests.entry(key).or_default();
-    // A debt of its own: what earlier ones covered has been answered.
-    if before.is_none() {
+    let request_match = before.and_then(|o| o.request_match);
+    r.owed.insert(key.clone(), Owed { resumed, no_reply, by_send, since, request_match, ..Owed::from(baseline.max(floor), cursor) });
+    let requests = if before.is_none() {
+        // What earlier debts covered has been answered.
+        let requests = r.requests.entry(key).or_default();
         requests.open.clear();
-    }
-    if let Some(a) = asked {
+        Some(requests)
+    } else {
+        // Older saves can have a debt with no request history. Keep that
+        // whole debt unnumbered rather than assign a new number partway in.
+        r.requests.get_mut(&key)
+    };
+    if let (Some(a), Some(requests)) = (asked, requests) {
         requests.made += 1;
         requests.open.push(Request { n: requests.made, key: a.key.map(str::to_owned), head: request_head(a.text) });
     }
@@ -513,7 +538,8 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
 pub(super) fn told_before(r: &mut Registry, key: &(String, String), told: u64) {
     let Some(now) = r.owed.get(key).copied() else { return };
     let Some(s) = now.since.iter().flatten().find(|s| s.rev == told).copied() else { return };
-    let left = Owed { cursor: s.cursor, no_reply: s.no_reply, since: [None; SINCE_KEPT], held: None, ..now };
+    let request_match = now.request_match.filter(|n| *n > s.upto);
+    let left = Owed { cursor: s.cursor, no_reply: s.no_reply, since: [None; SINCE_KEPT], held: None, request_match, ..now };
     r.owed.insert(key.clone(), left);
     if let Some(q) = r.requests.get_mut(key) {
         q.open.retain(|q| q.n > s.upto);
@@ -899,14 +925,14 @@ mod tests {
         // A notice about the old one went in meanwhile: nor does that take it.
         settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Answered, &old);
         assert_eq!(owed().map(|o| o.rev), Some(new.rev));
-        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9), &old);
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9, None), &old);
         assert_eq!(owed().map(|o| (o.rev, o.baseline)), Some((new.rev, 3)));
         settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Waiting, &old);
         assert!(!owed().unwrap().told_waiting);
         // The one it told of it settles, and a debt a wait took stays gone.
         settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Answered, &new);
         assert!(owed().is_none());
-        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9), &new);
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9, None), &new);
         assert!(owed().is_none(), "a notice does not bring back what a wait handed over");
     }
 
