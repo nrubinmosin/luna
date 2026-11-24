@@ -308,8 +308,7 @@ fn a_turn_completes_with_an_answer(provider: Provider, plain: bool) {
     let Some(live) = live(provider) else { return };
     let word = nonce();
     let prompt = format!("Reply with exactly this word and nothing else, using no tools: {word}");
-    let s =
-        if plain { spawn_plain(&live, json!({ "budgetPct": 101, "budgetTokens": 0 }), &prompt) } else { spawn(&live, json!({}), &prompt) };
+    let s = if plain { spawn_plain(&live, json!({}), &prompt) } else { spawn(&live, json!({}), &prompt) };
     let w = first_turn(&s);
     assert_eq!(w.outcome, "turn_done", "{:?} {:?}", w.failed, w.screen);
     assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
@@ -376,6 +375,23 @@ fn claude_a_helper_answers_in_a_folder_without_git() {
 #[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
 fn codex_a_helper_answers_in_a_folder_without_git() {
     a_turn_completes_with_an_answer(Provider::Codex, true);
+}
+
+fn a_spawn_accepts_retired_context_options(provider: Provider) {
+    let Some(live) = live(provider) else { return };
+    let _helper = spawn(&live, json!({ "budgetPct": 101, "budgetTokens": 0 }), "Reply with OK.");
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn claude_a_spawn_accepts_retired_context_options() {
+    a_spawn_accepts_retired_context_options(Provider::Claude);
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_spawn_accepts_retired_context_options() {
+    a_spawn_accepts_retired_context_options(Provider::Codex);
 }
 
 /// A lead (a helper with Luna's tools) in a folder with no git spawns a

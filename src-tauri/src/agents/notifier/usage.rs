@@ -2,7 +2,6 @@
 
 use crate::agents::ask::live;
 use crate::agents::registry::{is_dev, reg, Registry};
-use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -206,6 +205,7 @@ mod tests {
     use super::*;
     use crate::agents::registry::register;
     use crate::agents::teardown::forget;
+    use crate::provider::Provider;
 
     #[test]
     fn a_window_is_told_once_per_level_until_it_resets() {
