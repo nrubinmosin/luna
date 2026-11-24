@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-25
+
+Panes stand apart in the dark theme and have a delete button, Claude Code
+2.1.330 drafts are no longer lost when a notice arrives, and the "helper has
+answered" desktop notifications are gone. Helpers start in Auto or
+Auto-review, compact on their own, cost fewer tokens per notice and wake
+their parent only when there is something to act on.
+
 ### Added
 
 - **Delegates' auto-compaction** in Settings → Agents & trust → Helpers sets
