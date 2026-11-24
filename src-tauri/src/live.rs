@@ -566,6 +566,115 @@ fn codex_a_chat_runs_in_a_folder_without_git() {
     a_chat_runs_in_a_folder_without_git(Provider::Codex);
 }
 
+/// A Claude Code chat's status hooks, Codex's curl command (claude/launch.rs
+/// `hook_command`), reach the hub and say each of its states: a prompt in
+/// (works), a permission asked, by `PermissionRequest` and the
+/// `permission_prompt` notification (asks), the turn over (waits), the
+/// session gone (ends); none refused, and none answered so that its
+/// transcript shows a hook error, which the model would read. Run once more
+/// with HTTP_PROXY set and NO_PROXY not (docs/testing.md).
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn claude_a_chats_hooks_say_its_states() {
+    let Some(live) = live(Provider::Claude) else { return };
+    live.luna();
+    let id = format!("live-hooks-{}", crate::background::mint_id());
+    let folder = live.plain_folder(&id);
+    let account = live.account.to_string_lossy().into_owned();
+    crate::claude::trust::trust_folder(&account, &folder).expect("trusting the folder in the throwaway account");
+    let model = std::env::var("LUNA_LIVE_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
+    let started = crate::runtime::block_on(crate::pty::ensure_claude_session(
+        id.clone(),
+        folder.clone(),
+        account.clone(),
+        model,
+        "low".into(),
+        "default".into(),
+        false,
+        None,
+        None,
+        Some(false),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ));
+    struct Chat(String, String);
+    impl Drop for Chat {
+        fn drop(&mut self) {
+            crate::pty::manager().delete(&self.0);
+            crate::agents::forget(&self.0);
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
+    }
+    let _chat = Chat(id.clone(), folder.clone());
+    assert!(started.is_ok(), "the hook test chat starts");
+    let file = crate::paths::data_dir().join("hooks").join(format!("{}.json", crate::paths::id_file_name(&id)));
+    let settings: Value = serde_json::from_slice(&std::fs::read(&file).expect("its settings file")).expect("JSON");
+    assert!(settings["hooks"]["Stop"][0]["hooks"][0]["type"] == "command", "the Stop hook runs a command");
+
+    let pty = crate::pty::manager();
+    let screen = || pty.screen(&id).unwrap_or_default();
+    let heard = || -> Vec<String> {
+        crate::hub::HEARD.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(c, _)| *c == id).map(|(_, e)| e.clone()).collect()
+    };
+    let wait = |what: &str, until: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + time_box();
+        while !until() {
+            assert!(pty.alive(&id), "the CLI exited before {what}");
+            assert!(Instant::now() < deadline, "no {what} within {:?}", time_box());
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    // Ready once the screen has stopped changing for a few seconds.
+    let last = std::cell::RefCell::new((String::new(), Instant::now()));
+    wait("settled screen", &|| {
+        let now = screen();
+        let mut last = last.borrow_mut();
+        if now != last.0 {
+            *last = (now, Instant::now());
+            return false;
+        }
+        !now.trim().is_empty() && last.1.elapsed() > Duration::from_secs(4)
+    });
+
+    let word = nonce().replace("LUNA-LIVE-", "").to_lowercase();
+    let typed =
+        format!("Use the Bash tool to run exactly this command and nothing else: mkdir live-{word}. Then reply with the word done.");
+    pty.write(&id, typed.as_bytes()).expect("typing into the chat");
+    std::thread::sleep(Duration::from_secs(1));
+    pty.write(&id, b"\r").expect("sending it");
+    let has = |e: &str| heard().iter().any(|h| h == e);
+    wait("prompt heard", &|| has("UserPromptSubmit"));
+    wait("permission asked", &|| has("PermissionRequest") && crate::activity::hook_turn(&id) == Some(crate::activity::Turn::Waiting));
+    wait("permission notification", &|| has("Notification permission_prompt"));
+    // Yes, the dialog's first option.
+    pty.write(&id, b"\r").expect("allowing it");
+    wait("turn over", &|| has("Stop") && crate::activity::hook_turn(&id) == Some(crate::activity::Turn::Idle));
+    assert!(has("PostToolUse"), "the hub heard PostToolUse");
+    assert!(Path::new(&folder).join(format!("live-{word}")).is_dir(), "the command ran");
+    pty.delete(&id);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !has("SessionEnd") {
+        assert!(Instant::now() < deadline, "no SessionEnd");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(!has("refused"), "the hub refused no events from the chat");
+    // Its transcript, the one that holds the word, shows no hook error.
+    let projects = live.account.join("projects");
+    let transcript = std::fs::read_dir(&projects)
+        .expect("the account's projects")
+        .flatten()
+        .flat_map(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten())
+        .map(|f| f.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .filter_map(|p| std::fs::read_to_string(&p).ok())
+        .find(|t| t.contains(&format!("live-{word}")))
+        .expect("the chat's transcript");
+    assert!(!transcript.contains("hook_non_blocking_error"), "a hook error in the transcript");
+}
+
 /// Waits, within the time box, for `until` to hold of helper `id`.
 fn wait_for(what: &str, until: impl Fn() -> bool) {
     let deadline = Instant::now() + time_box();

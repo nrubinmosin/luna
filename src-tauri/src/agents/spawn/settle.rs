@@ -96,6 +96,10 @@ pub(in crate::agents) fn settle_spawns() {
         let Registry { spawns, known, .. } = &mut *r;
         let mut due = Vec::new();
         for s in spawns.values_mut().filter(|s| s.left_by_core && !s.settled) {
+            #[cfg(test)]
+            if !crate::agents::sweep_includes(&s.caller) {
+                continue;
+            }
             let made = s.helper.as_ref().is_some_and(|h| known.contains_key(h));
             s.settled = true;
             due.push((s.clone(), made));
@@ -138,6 +142,10 @@ pub(in crate::agents) fn spawn_news(up_ms: u64) -> HashMap<String, Vec<(u64, Str
     let mut told: Vec<&SpawnTaken> = spawns.values().filter(|s| s.news.is_some()).collect();
     told.sort_by_key(|s| s.request);
     for s in told {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(&s.caller) {
+            continue;
+        }
         let line = s.news.clone().unwrap_or_default();
         match known.get(&s.caller) {
             Some(k) if !k.waiting && !is_dev(&s.caller) => news.entry(s.caller.clone()).or_default().push((s.request, line)),
@@ -160,26 +168,27 @@ mod tests {
     use crate::agents::registry::{reg, register};
     use crate::agents::spawn::SpawnTaken;
     use crate::agents::teardown::forget;
-    use crate::agents::test_support::{spawn_taken, spawns_to_myself, take_up};
+    use crate::agents::test_support::{spawn_taken, sweep_only, take_up};
     use crate::provider::Provider;
 
     #[test]
     fn what_a_spawn_came_to_decides_what_its_caller_is_told() {
-        let _one = spawns_to_myself();
+        let caller = "spawn-settle-caller";
+        let _sweep = sweep_only(&[caller]);
         // One that had come to a helper the last core saved: nothing to say of the
         // spawn, and that helper owes its caller as if the call had got there.
-        register("ws-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        register(caller, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         let background = serde_json::json!({ "background": true });
-        register("ws-made", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ws-caller"), false, background);
+        register("ws-made", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some(caller), false, background);
         crate::background::take_up_for_test("ws-made", "C:\\p", 1, &[], None);
         // Asked for again by a request above any the file holds.
-        let lost = spawn_taken(9_000_001, "ws-caller", None, false);
-        take_up(Vec::new(), Vec::new(), vec![spawn_taken(9_000_000, "ws-caller", Some("ws-made"), true), lost]);
+        let lost = spawn_taken(9_000_001, caller, None, false);
+        take_up(Vec::new(), Vec::new(), vec![spawn_taken(9_000_000, caller, Some("ws-made"), true), lost]);
         assert!(reg().lock().unwrap().next_request > 9_000_001);
         take_up_spawns();
         {
             let r = reg().lock().unwrap();
-            let o = r.owed[&("ws-caller".to_string(), "ws-made".to_string())];
+            let o = r.owed[&(caller.to_string(), "ws-made".to_string())];
             assert!(!o.cut_short && o.baseline == 0 && o.cursor == 0, "its turn ended: that is the answer");
         }
         settle_spawns();
@@ -195,20 +204,19 @@ mod tests {
         }
         // Told only once it is back, and what was told goes.
         let news = spawn_news(1000);
-        assert_eq!(news["ws-caller"].len(), 1);
-        reg().lock().unwrap().known.get_mut("ws-caller").unwrap().waiting = true;
-        assert!(!spawn_news(1000).contains_key("ws-caller"), "not started yet");
+        assert_eq!(news[caller].len(), 1);
+        reg().lock().unwrap().known.get_mut(caller).unwrap().waiting = true;
+        assert!(!spawn_news(1000).contains_key(caller), "not started yet");
         assert!(reg().lock().unwrap().spawns.contains_key(&9_000_001));
-        assert!(!spawn_news(CALLER_RETURN_MS).contains_key("ws-caller"));
+        assert!(!spawn_news(CALLER_RETURN_MS).contains_key(caller));
         assert!(!reg().lock().unwrap().spawns.contains_key(&9_000_001), "not back in time: to the log");
         crate::background::remove("ws-made");
         forget("ws-made");
-        forget("ws-caller");
+        forget(caller);
     }
 
     #[test]
     fn a_spawn_with_the_flag_is_started_afresh_and_says_so_or_why_not() {
-        let _one = spawns_to_myself();
         // No such caller to spawn for: as a spawn would fail, and the caller told.
         let s = SpawnTaken { left_by_core: true, ..spawn_taken(9_000_300, "af-nobody", None, true) };
         spawn_afresh(s);
@@ -226,7 +234,6 @@ mod tests {
     /// it.
     #[test]
     fn a_kept_folder_no_agent_may_name_is_refused_on_the_restart() {
-        let _one = spawns_to_myself();
         let own = std::env::temp_dir().join(format!("luna-kf-{}", std::process::id())).to_string_lossy().into_owned();
         register("kf-caller", Provider::Claude, &own, "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         let mut kept = vec![("project".to_string(), "folder: not a usable path")];

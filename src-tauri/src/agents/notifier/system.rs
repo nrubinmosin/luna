@@ -121,14 +121,26 @@ pub(super) fn breaker(r: &mut Registry, caller: &str, helper: &str, at: u64) {
 
 pub(super) fn news(pty: &crate::pty::PtyManager) -> HashMap<String, Vec<(SystemNews, String)>> {
     let snapshot = reg().lock().unwrap_or_else(|e| e.into_inner()).system_news.clone();
+    #[cfg(test)]
+    let snapshot: Vec<_> = snapshot.into_iter().filter(|n| crate::agents::sweep_includes(n.subject())).collect();
     let lifted: Vec<_> = snapshot.iter().filter(|n| n.lifted(pty)).collect();
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let Registry { system_news, known, stopped, .. } = &mut *r;
     let before = system_news.len();
-    system_news.retain(|n| !lifted.contains(&n) && n.active(known, stopped));
+    system_news.retain(|n| {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(n.subject()) {
+            return true;
+        }
+        !lifted.contains(&n) && n.active(known, stopped)
+    });
     let pruned = system_news.len() != before;
     let mut out: HashMap<String, Vec<_>> = HashMap::new();
     for n in &r.system_news {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(n.subject()) {
+            continue;
+        }
         let Some(chat) = n.recipient(&r) else { continue };
         if r.known.get(&chat).is_some_and(|k| !k.waiting) {
             if let Some(line) = n.line(&r) {
@@ -177,6 +189,7 @@ mod tests {
     #[test]
     fn a_folder_skills_failure_is_told_to_the_top_chat_once_until_it_changes() {
         let (chat, lead, helper) = ("skills-top", "skills-lead", "skills-helper");
+        let _sweep = crate::agents::test_support::sweep_only(&[helper]);
         let account = "C:/acc/anthropic/one";
         let bg = serde_json::json!({ "background": true });
         register(lead, Provider::Claude, "C:/p", account, Some(chat), true, bg.clone());
@@ -214,6 +227,7 @@ mod tests {
     #[test]
     fn a_restored_skills_line_goes_to_the_old_recipients_top_chat() {
         let (chat, lead, helper) = ("old-skills-top", "old-skills-lead", "old-skills-helper");
+        let _sweep = crate::agents::test_support::sweep_only(&[helper]);
         let line = |cause| format!("Your helper {helper} started a turn without the folder skills the library gives its folder: {cause}");
         let outcome = "Your helper stopped on a usage limit.".to_string();
         let account = "C:/acc/anthropic/one";
@@ -241,6 +255,7 @@ mod tests {
     #[test]
     fn take_up_restores_known_skills_and_ignores_old_breakers_and_unknown_kinds() {
         let (chat, lead, helper, gone) = ("restore-news-top", "restore-news-lead", "restore-news-helper", "restore-news-deleted");
+        let _sweep = crate::agents::test_support::sweep_only(&[helper, lead, gone]);
         let account = "C:/acc/anthropic/one";
         register(lead, Provider::Claude, "C:/p", account, Some(chat), true, serde_json::json!({ "background": true }));
         register(helper, Provider::Claude, "C:/p", account, Some(lead), false, serde_json::json!({ "background": true }));

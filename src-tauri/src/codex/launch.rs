@@ -650,7 +650,7 @@ mod tests {
             excluded: vec!["E:/acc/work/CLAUDE.md".to_string()],
             ..Default::default()
         };
-        let chat = claude_settings(Some("http://h/hook/c/s"), &library, "/d/core", None);
+        let chat = claude_settings(Some("/usr/bin/curl"), &library, "/d/core", None);
         let pre = chat["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 1);
         assert_eq!(pre[0]["matcher"], "AskUserQuestion");

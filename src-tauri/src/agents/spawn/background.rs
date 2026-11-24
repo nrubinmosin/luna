@@ -341,8 +341,7 @@ mod tests {
 
     #[test]
     fn the_spawn_result_echoes_the_mode_that_reaches_launch() {
-        use crate::agents::test_support::{spawn_taken, spawns_to_myself};
-        let _spawns = spawns_to_myself();
+        use crate::agents::test_support::spawn_taken;
         crate::codex::config::use_empty_machine_layers_for_test();
         let root = std::env::temp_dir().join(format!("luna-spawn-mode-result-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();

@@ -118,6 +118,10 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
     let marked: std::collections::HashSet<String> =
         reg().lock().unwrap_or_else(|e| e.into_inner()).held.iter().filter(|h| h.going_in.is_some()).map(|h| h.id.clone()).collect();
     for id in marked {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(&id) {
+            continue;
+        }
         if pty.alive(&id) {
             reconcile_held(pty, &id);
         }
@@ -128,6 +132,10 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
     };
     let mut stuck: std::collections::HashSet<String> = Default::default();
     for (caller, id, text, since) in held {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(&id) {
+            continue;
+        }
         let drop_it = |r: &mut Registry| {
             if let Some(i) = r.held.iter().position(|h| h.caller == caller && h.id == id && h.since == since) {
                 r.held.remove(i);

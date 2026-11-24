@@ -888,11 +888,9 @@ mod tests {
     fn the_log_gets_no_hub_secret() {
         crate::hub::start();
         let hook = crate::hub::hook_url("log-1").expect("the hub is listening");
-        let secret = hook.rsplit('/').next().unwrap().to_string();
         let args: Vec<String> = ["-c".into(), format!("hooks.Stop=[{{command='curl {hook}'}}]"), "--model".into(), "opus".into()].into();
         let shown = args_for_log("log-1", &args);
-        assert!(!shown.contains(&secret), "{shown}");
-        assert_eq!(shown, "-c hooks.Stop=[{command='curl <hook-url>'}] --model opus");
+        assert!(shown == "-c hooks.Stop=[{command='curl <hook-url>'}] --model opus", "only the hook URL is redacted");
     }
 
     #[test]
@@ -990,20 +988,24 @@ mod tests {
     #[test]
     fn a_failed_turns_log_line_holds_no_secret_shaped_words() {
         assert_eq!(redacted("API Error: 401 authentication_error"), "API Error: 401 authentication_error");
-        assert_eq!(redacted("Authorization: Bearer abc.def"), "Authorization: Bearer <redacted>");
-        assert_eq!(
-            redacted("posting to http://127.0.0.1:50101/hook/c1/0123456789abcdef?x=1 failed"),
-            "posting to http://127.0.0.1:50101/<redacted> failed"
-        );
         assert_eq!(redacted("https://api.anthropic.com"), "https://api.anthropic.com");
-        assert_eq!(redacted("key sk-ant-api03-abcdefgh12345678XYZ, then"), "key <redacted>, then");
-        assert_eq!(redacted("token=0123456789abcdef0123456789abcdef01234567;"), "token=<redacted>");
-        // JSON as a CLI or an SDK prints it, and user info in a URL.
-        assert_eq!(redacted(r#"headers {"authorization":"Bearer abc123"}"#), r#"headers {"authorization":"Bearer <redacted>"#);
-        assert_eq!(redacted(r#"{"token":"short","model":"x"}"#), r#"{"token":<redacted>"#);
-        assert_eq!(redacted(r#""access_token": "short", next"#), r#""access_token": <redacted> next"#);
-        assert_eq!(redacted("https://user:pass@proxy.example:8080/x?y"), "https://<redacted>@proxy.example:8080/<redacted>");
-        assert_eq!(redacted("socks5://u:p@host"), "socks5://<redacted>@host");
+        for (case, raw, want) in [
+            ("authorization header", "Authorization: Bearer abc.def", "Authorization: Bearer <redacted>"),
+            (
+                "hook URL",
+                "posting to http://127.0.0.1:50101/hook/c1/0123456789abcdef?x=1 failed",
+                "posting to http://127.0.0.1:50101/<redacted> failed",
+            ),
+            ("API key", "key sk-ant-api03-abcdefgh12345678XYZ, then", "key <redacted>, then"),
+            ("token assignment", "token=0123456789abcdef0123456789abcdef01234567;", "token=<redacted>"),
+            ("JSON bearer", r#"headers {"authorization":"Bearer abc123"}"#, r#"headers {"authorization":"Bearer <redacted>"#),
+            ("JSON token", r#"{"token":"short","model":"x"}"#, r#"{"token":<redacted>"#),
+            ("JSON access token", r#""access_token": "short", next"#, r#""access_token": <redacted> next"#),
+            ("HTTPS proxy", "https://user:pass@proxy.example:8080/x?y", "https://<redacted>@proxy.example:8080/<redacted>"),
+            ("SOCKS proxy", "socks5://u:p@host", "socks5://<redacted>@host"),
+        ] {
+            assert!(redacted(raw) == want, "{case}");
+        }
         assert_eq!(redacted("tokens: 5 used"), "tokens: 5 used", "a word that only begins like a key");
         assert_eq!(redacted("a_long_identifier_without_digits_at_all"), "a_long_identifier_without_digits_at_all");
         assert_eq!(first_chars("abcdef", 3), "abc…");
@@ -1017,7 +1019,7 @@ mod tests {
         // `Bearer` at one line's end, its value on the next, past the cut.
         let stderr = format!("{}\nAuthorization: Bearer\nshort-secret-value tail", "x".repeat(60));
         let cut = stderr_tail(&redacted(&stderr), 20);
-        assert!(!cut.contains("short-secret-value") && cut.ends_with("<redacted> tail"), "{cut}");
+        assert!(!cut.contains("short-secret-value") && cut.ends_with("<redacted> tail"), "multiline bearer is redacted before truncation");
     }
 
     /// What a failed turn's log line keeps of its stderr: the end, from a

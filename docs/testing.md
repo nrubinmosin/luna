@@ -170,6 +170,14 @@ same thread, and what the stopped command ran is gone; a saved thread
 Codex never wrote is started afresh with the text; an approval in
 `on-request` is held for the caller and its answer lets the command run.
 
+For Claude Code alone, a chat's status hooks are heard by the hub for each
+of its states: a prompt in, a Bash command's permission asked
+(`PermissionRequest` and the `permission_prompt` notification), the turn
+over, the session ended; none is refused, and its transcript shows no hook
+error (`claude_a_chats_hooks_say_its_states`). Run it once more with
+`HTTP_PROXY` and `HTTPS_PROXY` set to a proxy that logs what it carries and
+`NO_PROXY` unset: no hook may go through it.
+
 For Claude Code alone, the model ask (`claude/models.rs` `from_cli`) is run
 on the account with its token's `expiresAt` set two minutes ahead: the CLI
 renews it as it starts, and the renewed tokens must be on disk once the ask

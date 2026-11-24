@@ -64,6 +64,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   where it differs, under the CLI's own lock on the file; no other key's
   value changes, though the file is written out again, pretty-printed. As
   the account has it leaves the file alone.
+- A Claude Code chat's status hooks now run the curl a Codex chat's do: by
+  an absolute path, with no `.curlrc` and no proxy, the URL and the hub's
+  secret in the chat's environment (`LUNA_HOOK_URL`) rather than in its
+  settings file and on curl's command line, and no post for a notification
+  Luna does not read. A hook that cannot post no longer stops anything: it
+  ends 0 with empty stdout. On Windows, the shell may report a missing or
+  killed curl on stderr. Claude Code 2.1.330 uses only stdout for model-facing
+  success content. Chats of both CLIs get status hooks only with curl 8.3 or later,
+  which Luna now asks it first. Luna's listener also takes the secret as a bearer
+  token, and answers every hook it lets in with 204, one it reads nothing in
+  too, rather than 400.
 - Luna no longer raises a desktop notification when an unsent draft holds
   back a message or helper notice; the draft tag and balloon still show
   what waits.

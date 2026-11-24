@@ -180,8 +180,8 @@ pub fn submitting(chat_id: &str) {
     if state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id).is_some_and(done) {
         return;
     }
-    // Read before the lock, as a read of the job takes a moment and a hook's
-    // curl waits.
+    // Read before the lock, as a read of the job takes a moment and the
+    // hook waits.
     let before = crate::procs::in_job(p.job.as_deref(), p.pid);
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;

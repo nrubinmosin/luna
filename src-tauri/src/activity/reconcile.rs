@@ -221,7 +221,7 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
 ///
 /// The registry, rollouts, transcripts and jobs are read outside the state
 /// lock: a hook is answered only once `on_hook` has had it, and Claude Code
-/// holds its turn until the hook's curl returns.
+/// holds its turn until the hook's post is answered.
 pub fn reconcile(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<(String, Life)>) -> Summary {
     // Taken before the reads: one begun before a hook is not read as after it.
     let now = now_ms();

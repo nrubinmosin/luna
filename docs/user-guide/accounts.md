@@ -122,7 +122,7 @@ pass: Claude Code's copy-on-select (below).
   itself) and `-c tui.notifications=false` (Luna says when a chat is waiting),
   plus `--no-daemon` to run the chat in its own process and
   `-c tui.terminal_title=["thread-id"]` so Luna can pick up the thread ID.
-  When the local listener and curl are available, Luna passes `-c hooks.<event>`
+  When the local listener and curl 8.3 or later are available, Luna passes `-c hooks.<event>`
   for its status hooks and `-c hooks.state` to trust those hooks for that run.
 - **Codex on Windows:** chats and helpers in `read-only`, `read-only-net`,
   `workspace-write`, or Codex's own mode get `-c windows.sandbox="unelevated"`

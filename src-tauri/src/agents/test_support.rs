@@ -10,6 +10,7 @@ use crate::agents::spawn::SpawnTaken;
 use crate::agents::wait::REPLY_GRACE_MS;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
+use std::cell::RefCell;
 use std::sync::Mutex;
 
 /// A helper announced as not done, its job over, with a transcript on disk
@@ -60,11 +61,29 @@ pub(super) fn take_up(chats: Vec<SavedChat>, sends: Vec<SavedSend>, spawns: Vec<
     take_up_chats(serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap());
 }
 
-/// `settle_spawns` and its like go over every spawn there is, a test's or
-/// another's, as they do in a core: one test at a time.
-pub(super) fn spawns_to_myself() -> std::sync::MutexGuard<'static, ()> {
-    static ONE: Mutex<()> = Mutex::new(());
-    ONE.lock().unwrap_or_else(|e| e.into_inner())
+thread_local! {
+    static SWEEP_SESSIONS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A core sweeps the whole registry. A test sweeps only its fixtures,
+/// since other tests may be partway through setting up theirs.
+pub(super) fn sweep_only(ids: &[&'static str]) -> impl Drop {
+    struct Scope {
+        previous: Vec<&'static str>,
+        thread: std::marker::PhantomData<*const ()>,
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            SWEEP_SESSIONS.with_borrow_mut(|ids| *ids = std::mem::take(&mut self.previous));
+        }
+    }
+
+    Scope { previous: SWEEP_SESSIONS.replace(ids.to_vec()), thread: std::marker::PhantomData }
+}
+
+pub(crate) fn sweep_includes(id: &str) -> bool {
+    SWEEP_SESSIONS.with_borrow(|ids| ids.contains(&id))
 }
 
 pub(super) fn spawn_taken(request: u64, caller: &str, helper: Option<&str>, resume: bool) -> SpawnTaken {

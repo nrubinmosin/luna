@@ -176,6 +176,10 @@ pub fn takes_notices(id: &str) -> bool {
 pub fn listen_only_while_owed(owed: &std::collections::HashSet<String>) {
     let now = crate::throttle::now_ms();
     for (id, e) in lock().entries.iter_mut() {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(id) {
+            continue;
+        }
         listen_while_owed(e, owed.contains(id), now);
     }
 }

@@ -26,6 +26,10 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) read_only: bool,
     /// Luna's MCP config file and the token its header takes.
     pub(crate) mcp: Option<(&'a Path, &'a str)>,
+    /// The URL its status hooks post to, its secret in it (hub.rs
+    /// `hook_url`), which their curl reads from the environment
+    /// (codex/hooks.rs `HOOK_URL_ENV`), as a Codex chat's does.
+    pub(crate) hook_url: Option<&'a str>,
     /// The chat's role layers (pty/start.rs `claude_instructions_dir`), the
     /// file appended to its system prompt.
     pub(crate) instructions_file: Option<&'a Path>,
@@ -117,6 +121,9 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     if let Some((_, token)) = s.mcp {
         envs.push((CLAUDE_MCP_TOKEN_ENV, token.to_string()));
     }
+    if let Some(url) = s.hook_url {
+        envs.push((crate::codex::hooks::HOOK_URL_ENV, url.to_string()));
+    }
     envs.extend(crate::pty::session_envs(s.id, None));
     (args, envs, applied)
 }
@@ -181,7 +188,8 @@ pub(crate) fn settings_applied(
 ) -> Vec<Applied> {
     let mut applied = Vec::new();
     if hooks {
-        applied.push(Item::ActivityHooks.with(format!("hooks in --settings {path}")));
+        let env = crate::codex::hooks::HOOK_URL_ENV;
+        applied.push(Item::ActivityHooks.with(format!("hooks in --settings {path}; their URL in {env}, not shown")));
     }
     applied.push(Item::CoreReadDeny.with(format!("permissions.deny {} in --settings {path}", claude_read_deny(core, cfg!(windows)))));
     if let Some(notes) = notes {
@@ -398,16 +406,33 @@ pub(crate) const NO_AUTO_MEMORY_ENV: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 /// the variable that has its `CLAUDE.md` read.
 pub(crate) const CLAUDE_ADDED_DIR_MEMORY: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
 
-/// A hook command posting its stdin to `url`. curl.exe by name on Windows:
-/// there `curl` in PowerShell is an alias for Invoke-WebRequest. Its stdin —
-/// the hook's JSON — goes up as the body; a 204 answer has no body, so nothing
-/// comes back to print.
-fn hook_command(url: &str) -> String {
-    let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
-    format!("{curl} -s -m 3 -X POST --data-binary @- {url}")
+/// A status hook's command: a Codex chat's (codex/hooks.rs `command`), by
+/// the curl at `curl`, an absolute path found at the launch (pty/start.rs
+/// `codex_hook_curl`): quiet, no `.curlrc`, no proxy, the hook's JSON posted
+/// to the URL in `HOOK_URL_ENV`, which curl reads itself, so the hub's
+/// secret is on no command line and in no file. And it ends 0 whatever curl
+/// does: Claude Code takes a hook's exit 2 as a block (the prompt refused,
+/// the tool stopped, the turn kept going), and, where PowerShell stands in
+/// for a Git Bash it did not find, any other failure of a tool's hook too
+/// (2.1.330). On Windows, the shell may diagnose a missing or killed curl
+/// on stderr. A successful hook's model-facing content comes from stdout.
+pub(crate) fn hook_command(curl: &str) -> String {
+    if cfg!(windows) {
+        format!("{}; exit 0", crate::codex::hooks::command(&curl.replace('\\', "/"), true))
+    } else {
+        format!("exec >/dev/null 2>&1; {}; exit 0", crate::codex::hooks::command(curl, false))
+    }
 }
 
-/// `claude_settings_file`'s settings: the session's hooks to `hook_url`, the
+/// A status hook: `hook_command`, and what does not reach its own exit (a
+/// shell that will not start, a hook timed out) left to pass, which Claude
+/// Code otherwise takes for a block where PowerShell stands in for Git Bash
+/// (2.1.330).
+pub(crate) fn status_hook(curl: &str) -> serde_json::Value {
+    serde_json::json!({ "type": "command", "command": hook_command(curl), "timeout": 5, "onFailure": "continue" })
+}
+
+/// `claude_settings_file`'s settings: the session's hooks, run by `curl`, the
 /// skills and instructions it does not get (the account's, and the other
 /// memory `memory_excludes` names), `FULLSCREEN` for a session that draws into
 /// a terminal (no `helper`, which has none), and `core`, Luna's `core/`,
@@ -416,7 +441,7 @@ fn hook_command(url: &str) -> String {
 /// core took its clients by what the OS says of them (peer.rs, ADR-0021). A
 /// rule, not a sandbox: Bash, where it runs unasked, still reads anything.
 pub(crate) fn claude_settings(
-    hook_url: Option<&str>,
+    curl: Option<&str>,
     library: &crate::library::SessionSkills,
     core: &str,
     helper: Option<HelperSettings>,
@@ -436,23 +461,25 @@ pub(crate) fn claude_settings(
         }
     }
     let mut hooks = serde_json::Map::new();
-    if let Some(url) = hook_url {
-        let command = hook_command(url);
-        let hook = |timeout: u32| serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }]);
-        for event in ["UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "Notification", "SessionEnd", "PermissionRequest"] {
-            hooks.insert(event.into(), hook(5));
+    if let Some(curl) = curl {
+        let handler = status_hook(curl);
+        let hook = || serde_json::json!([{ "hooks": [handler] }]);
+        let only = |matcher: &str| serde_json::json!([{ "matcher": matcher, "hooks": [handler] }]);
+        for event in ["UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "SessionEnd", "PermissionRequest"] {
+            hooks.insert(event.into(), hook());
         }
+        // The two notifications Luna reads (activity/hooks.rs): a permission
+        // prompt or a question up. Not `idle_prompt` and the rest, which
+        // would each run a curl for nothing.
+        hooks.insert("Notification".into(), only("permission_prompt|elicitation_dialog"));
         // A subagent's life, which a background agent lives past the turn
         // that started it (activity/hooks.rs `HookEvent::AgentAtWork`).
-        hooks.insert("SubagentStart".into(), hook(5));
-        hooks.insert("SubagentStop".into(), hook(5));
+        hooks.insert("SubagentStart".into(), hook());
+        hooks.insert("SubagentStop".into(), hook());
         // What a prompt asks, which neither the screen nor the transcript
         // gives whole: the question and its options (the transcript gets the
         // call only once it is answered), the command up for leave.
-        hooks.insert(
-            "PreToolUse".into(),
-            serde_json::json!([{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }]),
-        );
+        hooks.insert("PreToolUse".into(), only("AskUserQuestion"));
     }
     if !hooks.is_empty() {
         settings.insert("hooks".into(), hooks.into());
@@ -565,10 +592,236 @@ mod tests {
         assert_eq!(claude_read_deny("/home/u/.local/share/luna/core", false), "Read(//home/u/.local/share/luna/core/**)");
         assert_eq!(claude_read_deny(r"/home/u/a\b/core", false), r"Read(//home/u/a\b/core/**)", "a backslash is part of a name there");
         let none = crate::library::SessionSkills::default();
-        for hook in [None, Some("http://h/hook/c/s")] {
+        for hook in [None, Some("/usr/bin/curl")] {
             let settings = claude_settings(hook, &none, "/d/core", None);
             let want = claude_read_deny("/d/core", cfg!(windows));
             assert_eq!(settings["permissions"], serde_json::json!({ "deny": [want] }), "{hook:?}");
         }
+    }
+
+    /// Every status hook runs Codex's curl command: quiet, off any proxy,
+    /// the URL and its secret in no argument; the notifications only that
+    /// Luna reads.
+    #[test]
+    fn a_chats_status_hooks_run_the_hardened_curl() {
+        let none = crate::library::SessionSkills::default();
+        // On Windows the path goes with forward slashes, which Git Bash and
+        // PowerShell both take.
+        let (found, runs) = if cfg!(windows) {
+            (r"C:\WINDOWS\System32\curl.exe", "C:/WINDOWS/System32/curl.exe")
+        } else {
+            ("/usr/bin/curl", "/usr/bin/curl")
+        };
+        let settings = claude_settings(Some(found), &none, "/d/core", None);
+        let hooks = settings["hooks"].as_object().unwrap();
+        assert_eq!(hooks.len(), 10);
+        assert_eq!(hooks["Notification"][0]["matcher"], "permission_prompt|elicitation_dialog");
+        assert_eq!(hooks["PreToolUse"][0]["matcher"], "AskUserQuestion");
+        let prefix = if cfg!(windows) { "" } else { "exec >/dev/null 2>&1; " };
+        let command = format!("{prefix}{}; exit 0", crate::codex::hooks::command(runs, cfg!(windows)));
+        for hook in hooks.values() {
+            let want = serde_json::json!({ "type": "command", "command": command, "timeout": 5, "onFailure": "continue" });
+            assert_eq!(hook[0]["hooks"][0], want);
+        }
+        for part in [format!("{runs} -q "), "--noproxy \"*\"".into(), "--expand-url \"{{LUNA_HOOK_URL}}\"".into()] {
+            assert!(command.contains(part.as_str()), "{command}");
+        }
+        let held = settings_applied("/s.json", true, &none, "/d/core", None);
+        assert_eq!(held[0].value, "hooks in --settings /s.json; their URL in LUNA_HOOK_URL, not shown");
+    }
+
+    /// `command` run as Claude Code runs a hook, in each shell it may: `sh`
+    /// off Windows, there whichever of Git Bash, Windows PowerShell and pwsh
+    /// this machine has, PowerShell's with the end Claude Code adds to it
+    /// (2.1.330). The shell's name, how it ended, and what it printed.
+    fn in_each_shell(command: &str, url: Option<&str>) -> Vec<(String, std::process::Output)> {
+        in_each_shell_with(command, url, |_| {})
+    }
+
+    fn in_each_shell_with(command: &str, url: Option<&str>, started: impl Fn(&std::process::Child)) -> Vec<(String, std::process::Output)> {
+        let mut shells: Vec<(String, Vec<String>)> = Vec::new();
+        if cfg!(windows) {
+            let path: Vec<_> = std::env::split_paths(&std::env::var_os("PATH").unwrap()).collect();
+            let has = |dir: &Path, exe: &str| Some(dir.join(exe)).filter(|p| p.is_file());
+            let git = path.iter().filter(|d| d.join("git.exe").is_file());
+            let bash = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH")
+                .map(std::path::PathBuf::from)
+                .filter(|p| p.is_file())
+                .or_else(|| git.flat_map(|d| d.ancestors().take(4)).find_map(|d| has(d, r"bin\bash.exe")))
+                .or_else(|| {
+                    ["ProgramFiles", "ProgramFiles(x86)", "LocalAppData"].into_iter().filter_map(std::env::var_os).find_map(|dir| {
+                        has(Path::new(&dir), r"Git\bin\bash.exe").or_else(|| has(Path::new(&dir), r"Programs\Git\bin\bash.exe"))
+                    })
+                });
+            if let Some(bash) = bash {
+                shells.push((bash.to_string_lossy().into(), vec!["-c".into(), command.into()]));
+            } else {
+                eprintln!("skipped Git Bash: Git for Windows is not installed where Claude Code looks");
+            }
+            let end = "\n; if (-not $?) { if ($LASTEXITCODE -eq 2) { exit 2 } }\n; if (-not $?) { exit 1 }";
+            let flags = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"].map(String::from);
+            let args: Vec<String> = flags.into_iter().chain([format!("{command}{end}")]).collect();
+            let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+            if let Some(powershell) = has(&system, r"WindowsPowerShell\v1.0\powershell.exe") {
+                shells.push((powershell.to_string_lossy().into(), args.clone()));
+            } else {
+                eprintln!("skipped Windows PowerShell: powershell.exe is missing from System32");
+            }
+            let pwsh = path.iter().find_map(|d| has(d, "pwsh.exe")).or_else(|| {
+                ["ProgramFiles", "ProgramFiles(x86)"]
+                    .into_iter()
+                    .filter_map(std::env::var_os)
+                    .find_map(|dir| has(Path::new(&dir), r"PowerShell\7\pwsh.exe"))
+            });
+            if let Some(pwsh) = pwsh {
+                shells.push((pwsh.to_string_lossy().into(), args));
+            } else {
+                eprintln!("skipped pwsh: pwsh.exe is absent from PATH and the standard installation folders");
+            }
+        } else {
+            shells.push(("/bin/sh".into(), vec!["-c".into(), command.into()]));
+        }
+        let run = |(shell, args): (String, Vec<String>)| {
+            use std::io::Write;
+            let mut cmd = std::process::Command::new(&shell);
+            cmd.args(args).env_remove("LUNA_HOOK_URL").envs(url.map(|u| ("LUNA_HOOK_URL", u)));
+            let piped = std::process::Stdio::piped;
+            let mut child = cmd.stdin(piped()).stdout(piped()).stderr(piped()).spawn().unwrap();
+            // A command that ends without reading it breaks the pipe.
+            let _ = child.stdin.take().unwrap().write_all(b"{\"hook_event_name\":\"Stop\"}\n");
+            started(&child);
+            (shell, child.wait_with_output().unwrap())
+        };
+        shells.into_iter().map(run).collect()
+    }
+
+    /// Curl's own failures stay quiet and the Claude hook exits 0. Codex
+    /// blocks on exit 2 only with a reason on stderr. Use this machine's curl
+    /// where it has a version that takes the hook command.
+    #[test]
+    fn a_status_hook_that_cannot_post_is_silent_and_ends_0() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let found = crate::pty::codex_hook_curl();
+        assert!(found.is_some() || cfg!(not(windows)), "Windows has a curl of its own");
+        let Some(curl) = found else { return };
+        let url = |port: u16| format!("http://127.0.0.1:{port}/hook/c/secret");
+        // Answers with a body, which stays out of the hook's stdout.
+        let hub = TcpListener::bind("127.0.0.1:0").unwrap();
+        let posted = url(hub.local_addr().unwrap().port());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for conn in hub.incoming() {
+                let mut conn = conn.unwrap();
+                let (mut got, mut buf) = (Vec::new(), [0; 4096]);
+                while !got.ends_with(b"}\n") {
+                    match conn.read(&mut buf) {
+                        Ok(n) if n > 0 => got.extend_from_slice(&buf[..n]),
+                        _ => break,
+                    }
+                }
+                let _ = conn.write_all(b"HTTP/1.1 500 No\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnoise");
+                let _ = tx.send(String::from_utf8_lossy(&got).into_owned());
+            }
+        });
+        // Takes connections and answers none.
+        let mute = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mute = (url(mute.local_addr().unwrap().port()), mute);
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+
+        let ours = hook_command(&curl);
+        let codex = crate::codex::hooks::command(&curl, cfg!(windows));
+        // An option this curl has never heard of: what `--variable` is to one
+        // before 8.3.
+        let old = |command: &str| command.replace("--variable", "--no-such-option");
+        for (what, url, broken) in [
+            ("answered", Some(posted.as_str()), false),
+            ("the variable unset", None, false),
+            ("refused", Some(url(closed).as_str()), false),
+            ("timed out", Some(mute.0.as_str()), false),
+            ("a curl too old", Some(posted.as_str()), true),
+        ] {
+            let command = if broken { old(&ours) } else { ours.clone() };
+            for (shell, out) in in_each_shell(&command, url) {
+                assert_eq!(out.status.code(), Some(0), "{what}, {shell}");
+                assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{what}, {shell}: both streams empty");
+                if what == "answered" {
+                    let got = rx.recv_timeout(std::time::Duration::from_secs(10)).expect(&shell);
+                    assert!(
+                        got.starts_with("POST /hook/c/secret ") && got.ends_with("\r\n\r\n{\"hook_event_name\":\"Stop\"}\n"),
+                        "{shell}: request reached the hook endpoint with its body"
+                    );
+                }
+            }
+            let command = if broken { old(&codex) } else { codex.clone() };
+            // Codex runs Windows PowerShell or pwsh on Windows.
+            for (shell, out) in in_each_shell(&command, url).into_iter().filter(|(s, _)| !s.ends_with("bash.exe")) {
+                assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{what}, Codex in {shell}: both streams empty");
+                if what == "answered" {
+                    rx.recv_timeout(std::time::Duration::from_secs(10)).expect(&shell);
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_missing_or_terminated_curl_exits_0_in_windows_hook_shells() {
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+        let curl = crate::pty::codex_hook_curl().expect("System32 curl 8.3 or later");
+        let gone = Path::new(&curl).with_file_name(format!("luna-absent-{}.exe", std::process::id()));
+        assert!(!gone.exists());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let missing = in_each_shell(&hook_command(gone.to_str().unwrap()), Some(&url));
+        let terminated = in_each_shell_with(&hook_command(&curl), Some(&url), |shell| {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            loop {
+                if let Some((child, _)) = crate::procs::listed(None, Some(shell.id()))
+                    .and_then(|children| children.into_iter().find(|(_, name)| name.eq_ignore_ascii_case("curl.exe")))
+                {
+                    assert!(crate::procs::end(child.pid, child.started_ms), "could not terminate curl");
+                    break;
+                }
+                assert!(Instant::now() < deadline, "the shell did not start curl");
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        });
+        assert!(!missing.is_empty(), "no Windows hook shell was found");
+        // Only these two cases may leave shell diagnostics on stderr.
+        // The refused, timed-out and old-curl cases above require both streams empty.
+        for (case, outputs) in [("missing", missing), ("terminated", terminated)] {
+            for (shell, out) in outputs {
+                assert_eq!(out.status.code(), Some(0), "{case}, {shell}");
+                assert!(out.stdout.is_empty(), "{case}, {shell}: stdout empty");
+            }
+        }
+    }
+
+    /// And off Windows whatever it is that stands at curl's path: one that
+    /// prints and fails of its own, is killed, or is gone.
+    #[cfg(unix)]
+    #[test]
+    fn no_curl_gets_a_word_or_an_exit_code_past_the_hook() {
+        let dir = std::env::temp_dir().join(format!("luna-hook-curl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, end) in ["exit 2", "exit 1", "exit 28", "kill -9 $$", "exit 0"].into_iter().enumerate() {
+            let curl = dir.join(format!("curl{i}"));
+            // Written by a process of its own: a file this one had open to
+            // write, a child another test forks may hold, and it does not run.
+            let write = format!("printf '#!/bin/sh\\necho out\\necho err >&2\\n{end}\\n' > {0} && chmod 755 {0}", curl.display());
+            assert!(std::process::Command::new("/bin/sh").args(["-c", &write]).status().unwrap().success());
+            for (_, out) in in_each_shell(&hook_command(curl.to_str().unwrap()), Some("http://127.0.0.1:9/")) {
+                assert_eq!(out.status.code(), Some(0), "{end}");
+                assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{end}: both streams empty");
+            }
+        }
+        for (_, out) in in_each_shell(&hook_command(dir.join("gone").to_str().unwrap()), None) {
+            assert_eq!(out.status.code(), Some(0), "gone");
+            assert!(out.stdout.is_empty() && out.stderr.is_empty(), "gone: both streams empty");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

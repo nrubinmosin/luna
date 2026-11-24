@@ -225,7 +225,7 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
   (`copy_on_select_override`). `--no-daemon` keeps the chat in its own
   process, and `-c tui.terminal_title=["thread-id"]` lets the core track the
   active thread through the terminal title. With the listener and curl
-  available, `codex/hooks.rs` `status_hook_args` adds Luna's status hooks and
+  8.3 or later available, `codex/hooks.rs` `status_hook_args` adds Luna's status hooks and
   their trust hashes through `-c hooks.<event>` and `-c hooks.state`.
   The URL goes in `LUNA_HOOK_URL`.
 - Codex helper: `background/command.rs` passes

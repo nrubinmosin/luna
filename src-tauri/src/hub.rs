@@ -1,15 +1,17 @@
 //! The door the CLIs knock on: a loopback HTTP listener the sessions' hooks
 //! post to. It is how Luna learns the exact moment a Claude Code turn starts,
 //! ends, or stops for a permission — without polling the registry and without
-//! a word reaching the model (the hook commands print nothing, and nothing
-//! silent costs context).
+//! a word reaching the model (the hooks print nothing, every one is answered
+//! 204, and nothing silent costs context).
 //!
 //! Loopback only, on a port picked at start; every request carries its chat's
 //! secret, derived from a key minted for this run, so a stray local process
-//! cannot feed the activity tracker, and a session that knows its own hook
-//! URL cannot post as another chat. Each session's hook file names the port
-//! and its secret, and is rewritten at spawn, so a session that outlives a Luna restart simply stops
-//! being heard and the registry poll covers it.
+//! cannot feed the activity tracker, and a session that knows its own secret
+//! cannot post as another chat. The secret comes in the path of the hook's
+//! URL, which both CLIs' curl hooks read from the session's environment, or
+//! as a bearer token, for a client that sends it so. Each session's hook URL
+//! names the port, and is made anew at spawn, so a session that outlives a
+//! Luna restart simply stops being heard and the registry poll covers it.
 //!
 //! The HTTP around it is Luna's own, the head parsed by `httparse`, and only
 //! as much of it as the clients speak: one request per connection, its body
@@ -36,6 +38,12 @@ struct Listener {
 }
 
 static LISTENER: OnceLock<Listener> = OnceLock::new();
+
+/// What the hub let in and turned away, for the live suite (live.rs): each
+/// hook as its chat and event (a notification's with its type), each refusal
+/// as its chat and `refused`.
+#[cfg(test)]
+pub(crate) static HEARD: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
 /// A request's line and headers, the most any client here sends by far.
 const HEAD_MAX: usize = 16 * 1024;
@@ -95,10 +103,20 @@ pub fn start() {
     std::thread::Builder::new().name("luna-hub".into()).spawn(move || serve(listener, LIMITS)).expect("spawn hub thread");
 }
 
-/// The URL a session's hooks post to, or None while the listener is off.
+/// The URL a session's hooks post to, its secret in the path, or None while
+/// the listener is off: for a hook that runs a command (curl), whose URL is
+/// all it carries.
 pub fn hook_url(chat_id: &str) -> Option<String> {
+    let (url, secret) = hook_endpoint(chat_id)?;
+    Some(format!("{url}/{secret}"))
+}
+
+/// The URL a session's hooks post to without the secret, and the secret,
+/// which goes in the path (`hook_url`) or up as `Authorization: Bearer
+/// <secret>`, or None while the listener is off.
+pub fn hook_endpoint(chat_id: &str) -> Option<(String, String)> {
     let l = LISTENER.get()?;
-    Some(format!("http://127.0.0.1:{}/hook/{}/{}", l.port, chat_id, chat_secret(&l.key, chat_id)))
+    Some((format!("http://127.0.0.1:{}/hook/{}", l.port, chat_id), chat_secret(&l.key, chat_id)))
 }
 
 /// The secret of one chat's hook URL: HMAC-SHA256 of its id under
@@ -234,26 +252,36 @@ fn route(head: &Head) -> Result<Route, (u16, Option<String>)> {
     if !post {
         return Err((405, None));
     }
-    let (chat_id, secret) = parse_path(path, "/hook/").ok_or((404, None))?;
+    let (chat_id, in_path) = parse_path(path, "/hook/").ok_or((404, None))?;
     let Some(l) = LISTENER.get() else { return Err((503, None)) };
+    // In the path (the hooks' curl), or else as a bearer token; none is no
+    // secret.
+    let secret =
+        in_path.or_else(|| head.header("authorization").and_then(|v| v.strip_prefix("Bearer ")).map(str::trim)).unwrap_or_default();
     // The secret of the chat the path names, so it is that chat's events or
     // none.
     if !crate::secret::same(secret, &chat_secret(&l.key, chat_id)) {
+        #[cfg(test)]
+        HEARD.lock().unwrap_or_else(|e| e.into_inner()).push((chat_id.to_string(), "refused".into()));
         return Err((403, None));
     }
     Ok(Route::Hook(chat_id.to_string()))
 }
 
-/// A hook's post: its stdin, forwarded as the body.
+/// A hook's post: its stdin, forwarded as the body. Answered 204 whatever
+/// it says, one Luna reads nothing in too: a hook client may take an answer
+/// other than 2xx for an error and say so where the model reads it.
 fn on_hook(chat_id: &str, body: &str) -> u16 {
-    crate::agents::on_hook(chat_id, body);
-    match crate::activity::HookEvent::parse(body) {
-        Some(ev) => {
-            crate::activity::on_hook_about(chat_id, ev, crate::activity::HookEvent::subject(body));
-            204
-        }
-        None => 400,
+    #[cfg(test)]
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        let event = [&v["hook_event_name"], &v["notification_type"]].iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+        HEARD.lock().unwrap_or_else(|e| e.into_inner()).push((chat_id.to_string(), event));
     }
+    crate::agents::on_hook(chat_id, body);
+    if let Some(ev) = crate::activity::HookEvent::parse(body) {
+        crate::activity::on_hook_about(chat_id, ev, crate::activity::HookEvent::subject(body));
+    }
+    204
 }
 
 struct Head {
@@ -366,17 +394,23 @@ fn reply(stream: &TcpStream, status: u16, json: Option<&str>, within: Duration) 
     };
     let body = json.unwrap_or_default();
     let kind = if json.is_some() { "Content-Type: application/json\r\n" } else { "" };
-    let msg = format!("HTTP/1.1 {status} {reason}\r\n{kind}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    // A 204 has no body and may carry no length (RFC 9110, 8.6).
+    let length = if status == 204 { String::new() } else { format!("Content-Length: {}\r\n", body.len()) };
+    let msg = format!("HTTP/1.1 {status} {reason}\r\n{kind}{length}Connection: close\r\n\r\n{body}");
     let _ = Deadline::new(stream, within).write_all(msg.as_bytes());
     let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
-/// `<prefix><chat id>/<secret>` → (chat id, secret).
-fn parse_path<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
+/// `<prefix><chat id>/<secret>` → (chat id, secret); `<prefix><chat id>` →
+/// (chat id, None), its secret to come in a header.
+fn parse_path<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, Option<&'a str>)> {
     let rest = path.strip_prefix(prefix)?;
     let rest = rest.split('?').next()?;
-    let (id, secret) = rest.split_once('/')?;
-    (!id.is_empty() && !secret.is_empty() && !secret.contains('/')).then_some((id, secret))
+    let (id, secret) = match rest.split_once('/') {
+        Some((id, secret)) => (id, Some(secret)),
+        None => (rest, None),
+    };
+    (!id.is_empty() && secret.is_none_or(|s| !s.is_empty() && !s.contains('/'))).then_some((id, secret))
 }
 
 /// 256 bits from the OS's CSPRNG, as 64 hex characters.
@@ -481,9 +515,13 @@ mod tests {
 
     #[test]
     fn parses_hook_paths() {
-        assert_eq!(parse_path("/hook/abc/s3cr3t", "/hook/"), Some(("abc", "s3cr3t")));
-        assert_eq!(parse_path("/hook/abc/s3cr3t?x=1", "/hook/"), Some(("abc", "s3cr3t")));
-        assert_eq!(parse_path("/hook/abc", "/hook/"), None);
+        assert!(parse_path("/hook/abc/s3cr3t", "/hook/") == Some(("abc", Some("s3cr3t"))), "secret in path");
+        assert!(parse_path("/hook/abc/s3cr3t?x=1", "/hook/") == Some(("abc", Some("s3cr3t"))), "secret before query");
+        assert_eq!(parse_path("/hook/abc", "/hook/"), Some(("abc", None)), "its secret in a header");
+        assert_eq!(parse_path("/hook/abc?x=1", "/hook/"), Some(("abc", None)));
+        assert_eq!(parse_path("/hook/abc/", "/hook/"), None);
+        assert_eq!(parse_path("/hook/abc/s/t", "/hook/"), None);
+        assert_eq!(parse_path("/hook/", "/hook/"), None);
         assert_eq!(parse_path("/hook//s", "/hook/"), None);
         assert_eq!(parse_path("/other/abc/s", "/hook/"), None);
         assert_eq!(parse_path("/guard/abc/s3cr3t", "/hook/"), None, "only /hook/ paths are hooks'");
@@ -600,13 +638,17 @@ mod live {
         // Its own secret is no key to another chat.
         let (_, own) = url.rsplit_once('/').unwrap();
         let other = hook_url("chat-hub-other").unwrap();
-        assert_ne!(other.rsplit_once('/').unwrap().1, own);
+        assert!(other.rsplit_once('/').unwrap().1 != own, "each chat has its own secret");
         let forged = format!("{}/{own}", other.rsplit_once('/').unwrap().0);
         let stop = r#"{"hook_event_name":"Stop"}"#;
         assert_eq!(post_to(&forged, stop), Some(403));
         assert_eq!(crate::activity::hook_turn("chat-hub-other"), None, "nothing reached the tracker as that chat");
         assert_eq!(post_to(&other, stop), Some(204), "its own secret lets it in");
-        assert_eq!(post("not json"), Some(400));
+        // A body Luna reads nothing in is no error to the CLI: a non-2xx
+        // would show in a Claude Code transcript.
+        assert_eq!(post("not json"), Some(204));
+        assert_eq!(post(r#"{"hook_event_name":"Notification","notification_type":"idle_prompt"}"#), Some(204));
+        assert_eq!(crate::activity::hook_turn("chat-hub-test"), Some(crate::activity::Turn::Idle), "and changes nothing");
         assert_eq!(status(http.get(&url).call()), Some(405));
         // An MCP call without a token, and one past the hooks' body cap.
         let mcp = mcp_url().unwrap();
@@ -614,7 +656,107 @@ mod live {
         let addr: SocketAddr = format!("127.0.0.1:{}", LISTENER.get().unwrap().port).parse().unwrap();
         let path = url.split_once("127.0.0.1").unwrap().1.split_once('/').unwrap().1;
         let big = send(addr, format!("POST /{path} HTTP/1.1\r\nContent-Length: {}\r\n\r\n", HOOK_BODY_MAX + 1).as_bytes());
-        assert!(big.starts_with("HTTP/1.1 413"), "{big}");
+        assert!(big.starts_with("HTTP/1.1 413"), "body over the hook limit");
+    }
+
+    /// The secret as a bearer token, the URL without it. A wrong one,
+    /// another chat's, none, or one not given as `Bearer` is refused, and
+    /// nothing reaches the tracker; the path's form still lets a hook in.
+    #[test]
+    fn a_hook_with_its_secret_in_a_header_reaches_the_tracker() {
+        start();
+        let chat = "chat-hub-header";
+        let (url, secret) = hook_endpoint(chat).expect("listener up");
+        assert!(!url.contains(&secret), "the bearer endpoint has no secret in its path");
+        assert!(hook_url(chat) == Some(format!("{url}/{secret}")), "one secret, either form");
+        let http = crate::http::Agent::new(crate::http::Timeouts {
+            connect: Duration::from_secs(5),
+            read: Duration::from_secs(10),
+            total: Some(Duration::from_secs(20)),
+        })
+        .unwrap();
+        let post = |auth: Option<&str>, body: &str| {
+            let req = http.post(&url).header("Content-Type", "application/json").body(body);
+            let req = match auth {
+                Some(v) => req.header("Authorization", v),
+                None => req,
+            };
+            match req.call() {
+                Ok(r) => Some(r.status()),
+                Err(crate::http::Error::Status(code, ..)) => Some(code),
+                Err(crate::http::Error::Transport(_)) => None,
+            }
+        };
+        let prompt = r#"{"hook_event_name":"UserPromptSubmit","session_id":"s"}"#;
+        let other = hook_endpoint("chat-hub-header-other").unwrap().1;
+        for (case, refused) in [
+            ("missing", None),
+            ("wrong", Some("Bearer nope".to_string())),
+            ("another chat", Some(format!("Bearer {other}"))),
+            ("wrong scheme", Some(secret.clone())),
+            ("empty bearer", Some("Bearer ".into())),
+        ] {
+            assert_eq!(post(refused.as_deref(), prompt), Some(403), "{case}");
+        }
+        assert_eq!(crate::activity::hook_turn(chat), None, "nothing reached the tracker");
+        let bearer = format!("Bearer {secret}");
+        assert_eq!(post(Some(&bearer), prompt), Some(204));
+        assert_eq!(crate::activity::hook_turn(chat), Some(crate::activity::Turn::Busy));
+        assert_eq!(post(Some(&bearer), r#"{"hook_event_name":"Stop"}"#), Some(204));
+        assert_eq!(crate::activity::hook_turn(chat), Some(crate::activity::Turn::Idle));
+        assert_eq!(post(Some(&bearer), "{}"), Some(204), "an event Luna reads nothing in");
+        // The path's form, as before: no header needed, a wrong one ignored.
+        let path_url = hook_url(chat).unwrap();
+        let prompt_status = match http.post(&path_url).header("Authorization", "Bearer nope").body(prompt).call() {
+            Ok(r) => r.status(),
+            Err(crate::http::Error::Status(code, ..)) => code,
+            Err(crate::http::Error::Transport(_)) => panic!("path authentication request did not complete"),
+        };
+        assert_eq!(prompt_status, 204);
+        assert_eq!(crate::activity::hook_turn(chat), Some(crate::activity::Turn::Busy));
+    }
+
+    /// The header as a client may spell it, raw: the name in any case and
+    /// the value's spaces are taken; a lowercase `bearer`, a second header
+    /// after a wrong first one, and a wrong secret in the path beside a right
+    /// header are not.
+    #[test]
+    fn a_hooks_bearer_header_is_read_strictly() {
+        let addr = listener(LIMITS);
+        let chat = "chat-hub-raw";
+        let (url, secret) = hook_endpoint(chat).unwrap();
+        let path = url.split_once("127.0.0.1").unwrap().1.split_once('/').unwrap().1.to_string();
+        let post = |path: &str, headers: &str| {
+            let out = send(addr, format!("POST /{path} HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n{PROMPT}", PROMPT.len()).as_bytes());
+            out.get(9..12).and_then(|status| status.parse::<u16>().ok())
+        };
+        for (case, (headers, want)) in [
+            (format!("AUTHORIZATION: Bearer {secret}\r\n"), 204),
+            (format!("authorization:   Bearer {secret}   \r\n"), 204),
+            (format!("Authorization: Bearer   {secret}\r\n"), 204),
+            (format!("Authorization: bearer {secret}\r\n"), 403),
+            (format!("Authorization: Bearer nope\r\nAuthorization: Bearer {secret}\r\n"), 403),
+            (format!("Authorization: Bearer {secret}\r\nAuthorization: Bearer nope\r\n"), 204),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(post(&path, &headers), Some(want), "bearer header case {case}");
+        }
+        assert_eq!(post(&format!("{path}/nope"), &format!("Authorization: Bearer {secret}\r\n")), Some(403), "the path's secret decides");
+    }
+
+    /// A hook's answer as it goes over the wire: no body, and no length of
+    /// one, which a 204 may not carry; any other answer says its own.
+    #[test]
+    fn a_hooks_answer_has_no_body_and_no_length() {
+        let addr = listener(LIMITS);
+        let post = |path: &str| send(addr, format!("POST {path} HTTP/1.1\r\nContent-Length: {}\r\n\r\n{PROMPT}", PROMPT.len()).as_bytes());
+        assert!(post(&hook_path("chat-hub-204")) == "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n", "accepted framing");
+        assert!(
+            post("/hook/chat-hub-204/nope") == "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "refused framing"
+        );
     }
 
     /// A listener of its own on the run's secret, with these limits.
@@ -654,7 +796,7 @@ mod live {
         assert_eq!(send(addr, &[b'A'; HEAD_MAX + 10]), "", "a head past its cap");
         assert_eq!(send(addr, b"POST /hook/a/b HTTP/1.1\r\nHost: x\r\n"), "", "a head cut short");
         let cut = format!("POST {} HTTP/1.1\r\nContent-Length: 100\r\n\r\n{{\"hook", hook_path("chat-hub-cut"));
-        assert_eq!(send(addr, cut.as_bytes()), "", "a body cut short");
+        assert!(send(addr, cut.as_bytes()).is_empty(), "a body cut short");
         assert_eq!(crate::activity::hook_turn("chat-hub-cut"), None, "and nothing reached the tracker");
         let huge = format!("POST {} HTTP/1.1\r\nContent-Length: {}\r\n\r\n", hook_path("chat-hub-cut"), BODY_MAX * 2);
         assert!(send(addr, huge.as_bytes()).starts_with("HTTP/1.1 413"));
@@ -664,14 +806,14 @@ mod live {
     fn a_transfer_encoding_is_refused_before_anything_is_heard() {
         let addr = listener(LIMITS);
         let body = format!("{:x}\r\n{PROMPT}\r\n0\r\n\r\n", PROMPT.len());
-        for te in ["Transfer-Encoding: chunked", "Transfer-Encoding: chunked\r\nContent-Length: 5"] {
+        for (case, te) in ["Transfer-Encoding: chunked", "Transfer-Encoding: chunked\r\nContent-Length: 5"].into_iter().enumerate() {
             let req = format!("POST {} HTTP/1.1\r\n{te}\r\n\r\n{body}", hook_path("chat-hub-te"));
             let out = send(addr, req.as_bytes());
-            assert!(out.is_empty() || out.starts_with("HTTP/1.1 400"), "{out}");
+            assert!(out.is_empty() || out.starts_with("HTTP/1.1 400"), "transfer encoding case {case}");
         }
         let req = format!("POST {} HTTP/1.1\r\nContent-Length: +5\r\n\r\n{PROMPT}", hook_path("chat-hub-te"));
         let out = send(addr, req.as_bytes());
-        assert!(out.is_empty() || out.starts_with("HTTP/1.1 400"), "{out}");
+        assert!(out.is_empty() || out.starts_with("HTTP/1.1 400"), "signed content length");
         assert_eq!(crate::activity::hook_turn("chat-hub-te"), None, "nothing reached the tracker");
     }
 
@@ -684,7 +826,7 @@ mod live {
             PROMPT.len()
         );
         let out = send(addr, req.as_bytes());
-        assert!(out.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 204"), "{out}");
+        assert!(out.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 204"), "accepted after Continue");
         assert_eq!(crate::activity::hook_turn("chat-hub-continue"), Some(crate::activity::Turn::Busy));
     }
 

@@ -40,6 +40,8 @@ pub(crate) mod spawn;
 mod teardown;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+pub(crate) use test_support::sweep_includes;
 mod wait;
 
 pub(crate) use admission::{command_prefix, command_reach_now};
