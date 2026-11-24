@@ -462,7 +462,10 @@ fn notify_once_since_start(
             }
             let Some(k) = known.get(id) else { continue };
             if o.wake.delivery_expired.is_some()
-                || (!o.active() && !o.watches_later_turns() && o.upto == 0)
+                || (!o.active()
+                    && !o.watches_later_turns()
+                    && o.upto == 0
+                    && !o.wake.silent.is_some_and(|turn| o.late_transcript_cursor(turn).is_some()))
                 || known.get(caller).is_none_or(|k| k.waiting)
             {
                 continue;
@@ -607,7 +610,7 @@ fn notify_once_since_start(
                     .filter(|(_, how)| o.active() && matches!(how, Settled::Waiting | Settled::Asked(_) | Settled::Exited))
                     .map(|(text, how)| (text, how, LineEvidence::default()))
                     .or_else(|| {
-                        if !matches!(said, Some((_, Settled::Answered | Settled::Failed, _))) {
+                        if !matches!(said, Some((_, Settled::Answered, _))) {
                             return None;
                         }
                         let ts = crate::activity::turn_state(id)?;
@@ -828,6 +831,9 @@ fn settle_control(caller: &str, id: &str, o: &Owed, how: Settled, read_to: Optio
         Settled::Skip(..) | Settled::Silent(..) | Settled::UnusedTurn(..) | Settled::PlanFyi(..) => {
             if matches!(how, Settled::Silent(_, true) | Settled::PlanFyi(_, _, true)) {
                 current.wake.unread_to = current.wake.unread_to.max(read_to);
+            }
+            if let (Some(to), Settled::Skip(ended, ..) | Settled::Silent(ended, _) | Settled::PlanFyi(ended, ..)) = (read_to, &how) {
+                current.note_transcript_check(*ended, to);
             }
             settle_told(&mut r, key, how, o);
             drop(r);

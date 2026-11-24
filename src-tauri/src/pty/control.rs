@@ -1053,6 +1053,20 @@ pub(super) mod tests {
         pub(crate) input: std::sync::mpsc::Receiver<String>,
     }
 
+    impl NoticeTerminal<'_> {
+        pub(crate) fn show_output(&self, output: &str) {
+            let sessions = manager().sessions.lock().unwrap();
+            let mut scrollback = sessions[self.id].scrollback.lock().unwrap();
+            scrollback.bytes.extend(output.as_bytes());
+            scrollback.written += output.len() as u64;
+        }
+
+        pub(crate) fn typed_at(&self, at: u64) {
+            let sessions = manager().sessions.lock().unwrap();
+            sessions[self.id].typed_ms.store(at, Ordering::Relaxed);
+        }
+    }
+
     impl Drop for NoticeTerminal<'_> {
         fn drop(&mut self) {
             manager().sessions.lock().unwrap().remove(self.id);

@@ -437,6 +437,8 @@ fn notice_line_inner(
         return None;
     }
     let o = if between_turns { o.with_late_transcript(ended, || transcript_end(id)) } else { o };
+    let late_status = turn == Some(crate::activity::Turn::Idle)
+        && o.late_transcript_cursor(ended).is_some_and(|from| status_after(pty, id, k.provider, from));
     let notice_baseline = o.notice_baseline();
     let cut = crate::background::cut_short(id) || o.cut_short;
     let unopened = between_turns && crate::background::unopened_turn(id, ended);
@@ -454,7 +456,7 @@ fn notice_line_inner(
     let cut = cut && covered_turn;
     let failed = failed.filter(|_| covered_turn);
     let o = Owed { cut_short: o.cut_short && cut, ..o };
-    if !o.active() && !o.watches_later_turns() && !cut && failed.is_none() {
+    if !o.active() && !o.watches_later_turns() && !cut && failed.is_none() && !late_status {
         return None;
     }
     let standing = standing_line(pty, who, id, k, o);
@@ -511,7 +513,7 @@ fn notice_line_inner(
     if !job_debt && now == Verdict::JobOver {
         now = Verdict::Nothing;
     }
-    if between_turns && (alive && cut || failed.is_some() && matches!(now, Verdict::AtWork | Verdict::Nothing)) {
+    if late_status || between_turns && (alive && cut || failed.is_some() && matches!(now, Verdict::AtWork | Verdict::Nothing)) {
         now = Verdict::TurnOver;
     }
     if now == Verdict::OnlyNotices {
@@ -534,6 +536,7 @@ fn notice_line_inner(
         } else {
             // Keep an interim boundary only while work remains. If this
             // was the last turn on a dependency, its words can be the answer.
+            evidence.read_to = Some(read_to);
             return Some((None, Settled::Skip(ended, if work_left { read_to } else { o.held_to.unwrap_or(o.cursor) }, background)));
         }
     }
@@ -651,7 +654,7 @@ fn notice_line_inner(
         };
         // Asked mid-turn: the CLI may start a turn on the text right after.
         let settle_ms = if o.queued { settle_ms.max(QUEUED_GRACE_MS) } else { settle_ms };
-        if settle_ms > 0 {
+        if settle_ms > 0 && !late_status {
             match o.held {
                 Some((n, at)) if n == ended => {
                     if now_ms().saturating_sub(at) < settle_ms {
@@ -678,6 +681,7 @@ fn notice_line_inner(
                 note_delegates(pty, id, k.provider, left.as_deref().filter(|_| background));
             }
             if status.is_none() {
+                evidence.read_to = Some(read_to);
                 return Some((None, Settled::Skip(ended, read_to, background)));
             }
         }
@@ -861,6 +865,10 @@ fn notice_line_inner(
     standing_line(pty, who, id, k, o)
 }
 
+fn status_after(pty: &crate::pty::PtyManager, id: &str, provider: Provider, from: u64) -> bool {
+    transcript_end(id) > from && fresh_status(&written_range(pty, id, provider, from).0).is_some()
+}
+
 fn notice_replies(pty: &crate::pty::PtyManager, caller: &str, id: &str, provider: Provider, o: Owed, ended: u32) -> (Said, u64) {
     let cursor = o.notice_cursor();
     let mut requests = requests_through(caller, id, o, ended);
@@ -1031,8 +1039,12 @@ impl WorkGraph {
             .chain(r.spawns.values().filter(|s| s.left_by_core || s.news.is_some()).map(|s| s.caller.clone()))
             .collect();
         let sessions = r.known.iter().map(|(id, k)| (id.clone(), (k.provider, k.parent.clone()))).collect();
-        let debts: Vec<_> =
-            r.owed.iter().filter(|(_, o)| o.active()).map(|(pair, o)| (pair.clone(), *o, r.stopped.get(pair).copied())).collect();
+        let debts: Vec<_> = r
+            .owed
+            .iter()
+            .filter(|(_, o)| o.active() || o.wake.silent.is_some_and(|turn| o.late_transcript_cursor(turn).is_some()))
+            .map(|(pair, o)| (pair.clone(), *o, r.stopped.get(pair).copied()))
+            .collect();
         drop(r);
 
         let mut graph = Self {
@@ -1050,19 +1062,40 @@ impl WorkGraph {
                 let floor = graph.queued.entry(peer.clone()).or_default();
                 *floor = (*floor).max(owed.baseline);
             }
-            if owed.no_reply {
-                continue;
-            }
             let state = graph.turns.entry(peer.clone()).or_insert_with(|| crate::activity::turn_state(&peer));
-            let due = (owed.resumed
-                || owed.job_went
-                || owed.cut_short
-                || state.is_some_and(|t| t.turns_ended > owed.notice_baseline() || owed.told_pending))
-                && stopped.is_none_or(|at| breaker_lifted(pty, &from, &peer, at));
+            let known = graph.sessions.get(&peer);
+            let provider = known.map(|(provider, _)| *provider);
+            let open = stopped.is_none_or(|at| breaker_lifted(pty, &from, &peer, at));
+            let late_status = open
+                && state
+                    .filter(|t| t.turn == crate::activity::Turn::Idle)
+                    .and_then(|t| owed.late_transcript_cursor(t.turns_ended))
+                    .is_some_and(|at| provider.is_some_and(|p| status_after(pty, &peer, p, at)));
+            let due = late_status
+                || open
+                    && owed.active()
+                    && (owed.resumed
+                        || owed.job_went
+                        || owed.cut_short
+                        || state.is_some_and(|t| t.turns_ended > owed.notice_baseline() || owed.told_pending));
+            let can_go = if late_status {
+                Some(true)
+            } else if owed.no_reply || !owed.active() {
+                let parent = known.and_then(|(_, parent)| parent.as_ref()) == Some(&from);
+                if !due
+                    || state.is_some_and(|t| t.turn != crate::activity::Turn::Idle)
+                    || !(owed.resumed || owed.job_went || graph.news.can_go(pty, &from, &peer, owed, provider, parent))
+                {
+                    continue;
+                }
+                Some(true)
+            } else {
+                None
+            };
             if due {
                 graph.upstream.entry(peer.clone()).or_default().push(from.clone());
             }
-            graph.edges.entry(from).or_default().push(WorkEdge { peer, owed, due, can_go: None });
+            graph.edges.entry(from).or_default().push(WorkEdge { peer, owed, due, can_go });
         }
         graph
     }

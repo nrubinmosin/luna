@@ -296,6 +296,11 @@ pub(crate) fn in_turn_for_test(id: &str) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn acknowledge_delivery_for_test(id: &str, q: &Queued) {
+    received(lock().entries.get_mut(id).expect("a test helper"), q);
+}
+
 /// A test helper in a turn that has said nothing for `quiet` ms.
 #[cfg(test)]
 pub(crate) fn quiet_for_test(id: &str, quiet: u64) {

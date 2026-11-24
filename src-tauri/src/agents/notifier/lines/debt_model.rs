@@ -201,7 +201,8 @@ fn ordinary(f: &mut Fixture, rng: &mut Seed) {
     f.session(WORKER, Some(TOP), false);
     let wants_reply = rng.coin();
     let status = rng.coin();
-    let words = if status { "DONE: completed" } else { "Ordinary result." };
+    let ordinary = "Ordinary result. ".repeat(if wants_reply { 1 } else { 40 });
+    let words = if status { "DONE: completed" } else { &ordinary };
     f.send(TOP, WORKER, 0, "First task", wants_reply, false);
     f.append(WORKER, "user", "First task", false);
     at_time_for_test(f.now, || crate::background::in_turn_for_test(WORKER));
@@ -585,6 +586,112 @@ fn failed_batch(f: &mut Fixture, rng: &mut Seed) {
     f.checkpoint(&[]);
 }
 
+fn acknowledgments(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    let terminal = crate::pty::notice_terminal(TOP, f.provider, false);
+    let request = f.send(TOP, WORKER, 0, "Do the work", true, false);
+    f.append(WORKER, "assistant", "Unrelated commentary.", false);
+    f.idle(WORKER, 1, false);
+    f.checkpoint(&[]);
+    f.requests(TOP, WORKER, &[1]);
+
+    // This confirmation arrived too late to cover the first turn.
+    crate::background::acknowledge_delivery_for_test(WORKER, &request);
+    f.checkpoint(&[]);
+    f.requests(TOP, WORKER, &[1]);
+    crate::background::in_turn_for_test(WORKER);
+    f.append(WORKER, "assistant", "The requested result.", false);
+    crate::background::exited_for_test(WORKER, Some(0));
+    let expected: &[(&str, &[&str])] = &[(TOP, &["The requested result."])];
+    let draft = f.look();
+    let composer = match f.provider {
+        Provider::Claude => "───\r\n❯ Unsubmitted notice",
+        Provider::Codex => "› Unsubmitted notice",
+    };
+    // Enter misses and the terminal still shows the draft.
+    expect(&f.deliver_while(draft, WriteResult::Ambiguous, || terminal.show_output(composer)), expected);
+    f.requests(TOP, WORKER, &[1]);
+    terminal.show_output("\x1b[2J\x1b[H");
+    crate::pty::manager().set_draft(TOP, 0);
+
+    // The next write either gets a synchronous confirmation or clears the
+    // composer before confirmation. Both settle, only the former marks a turn.
+    let result = if rng.coin() { WriteResult::Started } else { WriteResult::Ambiguous };
+    expect(&f.tick(result), expected);
+    f.requests(TOP, WORKER, &[]);
+    f.checkpoint(&[]);
+}
+
+fn late_transcript(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), true);
+    let working = rng.coin();
+    if working {
+        f.session(DELEGATE, Some(WORKER), false);
+        owe_from(WORKER, DELEGATE, 0, 0);
+        crate::background::in_turn_for_test(DELEGATE);
+    }
+    f.send(TOP, WORKER, 0, "Heads up", false, false);
+    f.append(WORKER, "user", "Heads up", false);
+    f.append(WORKER, "assistant", "Ordinary commentary.", false);
+    f.idle(WORKER, 1, false);
+    expect(&f.tick(WriteResult::Started), &[]);
+    f.advance(2_000);
+    f.append(WORKER, "assistant", "More ordinary commentary.", false);
+    expect(&f.tick(WriteResult::Started), &[]);
+    let expires = rng.coin();
+    f.advance(if expires { 7_000 } else { 2_000 });
+    f.append(WORKER, "assistant", "DONE: late final status", false);
+    let expected: &[(&str, &[&str])] = if expires { &[] } else { &[(TOP, &["DONE: late final status"])] };
+    expect(&f.tick(WriteResult::Started), expected);
+    f.checkpoint(&[]);
+}
+
+fn peer_fyi(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), true);
+    f.session(PEER, None, true);
+    f.send(TOP, WORKER, 0, "Do the work", true, false);
+    f.append(WORKER, "user", "Do the work", false);
+    f.append(WORKER, "assistant", "Waiting for the peer.", false);
+    f.idle(WORKER, 1, false);
+    f.send(WORKER, PEER, 0, "Heads up", false, false);
+    f.append(PEER, "user", "Heads up", false);
+    let status = rng.coin();
+    let words = if status { "DONE: peer result" } else { "Acknowledged." };
+    f.append(PEER, "assistant", words, false);
+    f.idle(PEER, 1, false);
+    let expected: &[(&str, &[&str])] = if status { &[(WORKER, &["DONE: peer result"])] } else { &[(TOP, &["Waiting for the peer."])] };
+    expect(&f.tick(WriteResult::Started), expected);
+}
+
+fn lifted_breaker(f: &mut Fixture, _: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    let terminal = crate::pty::notice_terminal(TOP, f.provider, false);
+    reg().lock().unwrap().stopped.insert((TOP.into(), WORKER.into()), f.now);
+    let fail = |baseline| {
+        f.send(TOP, WORKER, baseline, "Do the work", true, false);
+        f.append(WORKER, "user", "Do the work", false);
+        f.append(WORKER, "assistant", "An attempt.", false);
+        crate::background::set_running_for_test(WORKER);
+        crate::background::exited_for_test(WORKER, Some(1));
+    };
+    let expected: &[(&str, &[&str])] = &[(TOP, &["stopped on an error"])];
+    fail(0);
+    expect(&f.tick(WriteResult::Started), expected);
+    f.requests(TOP, WORKER, &[]);
+    fail(1);
+    expect(&f.tick(WriteResult::Started), &[]);
+    f.requests(TOP, WORKER, &[2]);
+    f.advance(GRACE);
+    terminal.typed_at(f.now);
+    expect(&f.tick(WriteResult::Started), expected);
+    f.requests(TOP, WORKER, &[]);
+    f.checkpoint(&[]);
+}
+
 #[test]
 fn seeded_debt_interleavings() {
     let _sweep = crate::agents::test_support::sweep_only(&SESSIONS);
@@ -603,22 +710,23 @@ fn seeded_debt_interleavings() {
         held_and_collected,
         overlapping_requests,
         failed_batch,
+        acknowledgments,
+        late_transcript,
+        peer_fyi,
+        lifted_breaker,
     ];
-    let mut failed = vec![false; cases.len()];
+    let mut failed = 0;
     for index in 0..sequences {
         let case = (index % cases.len() as u64) as usize;
-        if failed[case] {
-            continue;
-        }
         let seed = 0x5337_c243_d089_61e1 ^ index.wrapping_mul(0x9e37_79b9_7f4a_7c15);
         let mut rng = Seed(seed);
         let provider = if rng.coin() { Provider::Claude } else { Provider::Codex };
         let mut fixture = Fixture::new(dir.clone(), provider);
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cases[case](&mut fixture, &mut rng))).is_err() {
-            eprintln!("notifier oracle case {case}, sequence {index}, seed {seed:#018x}, provider {provider:?}");
-            failed[case] = true;
-        }
+        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cases[case](&mut fixture, &mut rng))).is_ok();
+        let result = if ok { "passed" } else { "failed" };
+        eprintln!("notifier oracle case {case}, sequence {index}, seed {seed:#018x}, provider {provider:?}: {result}");
+        failed += usize::from(!ok);
     }
     fs::remove_dir_all(dir).unwrap();
-    assert!(!failed.into_iter().any(|failed| failed));
+    assert_eq!(failed, 0, "failed notifier oracle sequences");
 }

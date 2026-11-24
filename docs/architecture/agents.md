@@ -604,7 +604,8 @@ turn, stopped on a prompt (once per stop) or exited.
   request after the CLI confirms delivery or its transcript shows the prompt. An untold request
   that wants a reply gets one idle stall, carrying what the session said.
   Work, queued inputs and due replies keep that stall back. A peer's due
-  reply holds it even while the peer is idle. Callers inside the same idle
+  reply holds it even while the peer is idle, including an actionable status
+  from an FYI. Callers inside the same idle
   cycle can get their own stalls. Callers outside the cycle wait for those
   due replies. The notifier samples the dependency graph once per tick and
   reuses transcript, failure, and activity checks across notices. A draft holds only its
@@ -612,9 +613,13 @@ turn, stopped on a prompt (once per stop) or exited.
   stays readable. After a PLAN, the idle stall stays covered through that
   turn and later turns started by FYIs or a lead's delegate notices. A
   joined FYI stays part of the original turn. A turn seen before its prompt
-  is written is reconsidered if its transcript grows. Permission prompts,
+  is written is reconsidered if its transcript grows. For eight seconds
+  after a silent or skipped end, a status appended past the last complete
+  line the notifier read can still wake the caller. Permission prompts,
   failures, exits and restart
-  interruptions still go to the caller. A failure or restart cut after a
+  interruptions still go to the caller. A tripped breaker allows the first
+  failure of a pair and leaves later failures owed for another outcome or
+  when the breaker lifts. A failure or restart cut after a
   silent settlement wakes that caller for a later PLAN turn or a turn
   started by one of its requests. A separate allowance per task covers
   the 30-minute quiet check, including when a turn waits for its own background

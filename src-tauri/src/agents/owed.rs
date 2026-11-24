@@ -15,6 +15,9 @@ use std::collections::HashMap;
 /// more than one activity sample.
 pub(super) const QUEUED_GRACE_MS: u64 = 8_000;
 
+/// Allow a few notifier samples for the transcript writer to catch up.
+const LATE_TRANSCRIPT_MS: u64 = 8_000;
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Owed {
     /// Turns over when the caller asked; the answer ends a later one.
@@ -118,6 +121,9 @@ pub(super) struct WakeState {
     /// unused turn if more of its transcript arrives.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) unused_to: Option<(u32, u64)>,
+    /// A silent or skipped turn, checked through this byte at this time.
+    #[serde(skip)]
+    pub(super) late_check: Option<(u32, u64, u64)>,
     /// The older turn a merged send must still let the notifier consider.
     pub(super) after: Option<u32>,
     /// A settled idle answer, left readable from its original cursor.
@@ -213,6 +219,7 @@ impl Owed {
         self.transcript_rev = generation;
         self.wake.unread_to = None;
         self.wake.reported_to = None;
+        self.wake.late_check = None;
         if self.wake.unused_to.take().is_some_and(|(ended, _)| self.wake.unused_turn == Some(ended)) {
             self.wake.unused_turn = None;
         }
@@ -247,6 +254,24 @@ impl Owed {
 
     fn unused_observation(self) -> Option<(u32, u64)> {
         self.wake.unused_to.filter(|(turn, _)| self.wake.unused_turn == Some(*turn))
+    }
+
+    pub(super) fn note_transcript_check(&mut self, ended: u32, to: u64) {
+        let (to, at) = self
+            .wake
+            .late_check
+            .filter(|(turn, _, _)| *turn == ended)
+            .map_or_else(|| (to, now_ms()), |(_, checked, at)| (checked.max(to), at));
+        self.wake.late_check = Some((ended, to, at));
+    }
+
+    pub(super) fn late_transcript_cursor(self, ended: u32) -> Option<u64> {
+        let (turn, to, at) = self.wake.late_check?;
+        (self.wake.delivery_expired.is_none()
+            && turn == ended
+            && (self.wake.silent == Some(turn) || self.wake.skipped == Some(turn))
+            && now_ms().saturating_sub(at) < LATE_TRANSCRIPT_MS)
+            .then(|| to.max(self.notice_cursor()))
     }
 
     pub(super) fn notice_cursor(self) -> u64 {
@@ -859,6 +884,7 @@ pub(super) fn owe_in(
     });
     wake.skipped = None;
     wake.silent = None;
+    wake.late_check = None;
     // The debt before may be told this very moment, by a notice that settles
     // it only as it was (notifier `settle_told`): what this ask owes of its own
     // is kept, to be all that is left once that one is told.
