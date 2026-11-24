@@ -1077,7 +1077,7 @@ mod tests {
         pty.sessions.lock().unwrap().insert(id.to_string(), session);
         crate::agents::register(id, provider, account, account, None, false, serde_json::json!({}));
 
-        let get = || serde_json::to_value(crate::agents::session_get(id, id, false).unwrap()).unwrap()["context"].clone();
+        let get = || crate::agents::session_get(id, id, false, &["diagnostics".into()]).unwrap()["context"].clone();
         let context = get();
         let pane = serde_json::to_value(super::super::probe::session_meta(id, account.to_string())).unwrap();
         alive.store(false, Ordering::SeqCst);

@@ -33,7 +33,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
-- The pane meter and `luna_session_get` show the share of the CLI's estimated
+- The pane meter and session get diagnostics show the share of the CLI's estimated
   auto-compaction limit when known, or the model window otherwise.
   `context.window` gives the denominator and `context.basis` names it.
 

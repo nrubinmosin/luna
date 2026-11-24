@@ -60,7 +60,7 @@ can type into it and answer its model's questions with `scope: "all"`
   settings can override Luna's window. Codex's default scope compacts at the
   smaller of the selected limit and 90% of the model's window. Luna leaves
   the scope to Codex. The setting applies until a delegate is opened as a chat.
-  When Luna can calculate the estimate, `luna_session_get` gives the
+  When Luna can calculate the estimate, session get diagnostics give the
   delegate's remaining tokens before auto-compaction as `contextToCompact`.
   After a core restart, the estimate is omitted until the delegate starts
   its next turn.

@@ -29,7 +29,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   fields with `include` (a list): `settings` (effective flags and constraints), `paths`
   (folder, cwd if different, transcript), `diagnostics` (group, CLI/session IDs, turn and
   activity times in UTC, resolvedModel, context, leftRunning, deletesInMin), `places` (your line).
-  `contextToCompact` estimates tokens to compaction after a delegate's first turn in this core.
+  `context.basis` is `autoCompact` or `model`; `contextToCompact` estimates tokens left after a delegate's first turn in this core.
 - Another session's `task`, `askId` and `ask` come only with `scope: "all"`. Without it, you
   read, wait on, send to and answer only sessions you spawned and theirs; with it, you read and
   wait on any session but your own, and send to and answer the user's other chats, your text
@@ -96,7 +96,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - Constraints are instructions, not permissions; they append (4 KB/spawn, 16 KB total).
 - Identical `requestKey` and args replay spawn/send/delete success for an hour in this core
   (128 characters, 64 keys). Failures retry. Changed args are refused.
-- `budgetPct` adds context to notices (0 off); 85% alerts once. `budgetTokens` is deprecated.
+- `budgetPct` and `budgetTokens` are ignored.
 
 ## Getting the answer
 - End your turn for a Luna notice or wait. Short replies are quoted. `Report <path>:1–N` locates
