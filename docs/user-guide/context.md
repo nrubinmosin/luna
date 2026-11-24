@@ -183,6 +183,6 @@ included. Checked by `context_page.rs`.
 | `guide-accounts` | 1,284 | 321 |
 | `guide-spawning` | 1,490 | 373 |
 | `guide-getting` | 1,649 | 412 |
-| `guide-answering` | 2,705 | 676 |
-| `guide-restart` | 1,073 | 268 |
-| `guide-working` | 2,246 | 562 |
+| `guide-answering` | 2,616 | 654 |
+| `guide-restart` | 1,013 | 253 |
+| `guide-working` | 2,215 | 554 |
