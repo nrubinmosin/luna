@@ -667,6 +667,8 @@ fn late_transcript(f: &mut Fixture, rng: &mut Seed) {
         crate::background::in_turn_for_test(WORKER);
         f.append(WORKER, "user", "An unrelated turn", false);
         expect(&f.tick(WriteResult::Started), &[]);
+        f.advance(9_000);
+        expect(&f.tick(WriteResult::Started), &[]);
         f.idle(WORKER, 2, false);
     }
     let expected: &[(&str, &[&str])] = if expires { &[] } else { &[(TOP, &["DONE: late final status"])] };

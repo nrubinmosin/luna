@@ -757,18 +757,16 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
             continue;
         }
         let Some(turn) = crate::activity::turn_state(id) else { continue };
-        if turn.turn == crate::activity::Turn::Busy {
-            continue;
-        }
-        let late_status = (turn.turn == crate::activity::Turn::Idle)
-            .then(|| o.late_transcript_cursor())
-            .flatten()
-            .filter(|(checked, _)| *checked <= turn.turns_ended)
-            .and_then(|(checked, from)| lines::status_after(pty, id, provider, from, checked < turn.turns_ended));
+        let busy = turn.turn == crate::activity::Turn::Busy;
+        let late_status = o.late_transcript_cursor().filter(|(checked, _)| *checked <= turn.turns_ended).and_then(|(checked, from)| {
+            (busy || turn.turn == crate::activity::Turn::Idle)
+                .then(|| lines::status_after(pty, id, provider, from, busy || checked < turn.turns_ended))
+                .flatten()
+        });
         let end = if let Some(end) = late_status {
             end
         } else {
-            if turn.turns_ended <= o.with_late_transcript(turn.turns_ended, || super::read::transcript_end(id)).notice_baseline() {
+            if busy || turn.turns_ended <= o.with_late_transcript(turn.turns_ended, || super::read::transcript_end(id)).notice_baseline() {
                 continue;
             }
             let from = o.wake.unread_to.unwrap_or_else(|| o.notice_cursor()).max(o.cursor);
