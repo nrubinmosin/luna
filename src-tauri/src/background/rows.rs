@@ -717,7 +717,7 @@ mod tests {
         .unwrap();
         std::fs::create_dir_all(dir.join("sessions")).unwrap();
         std::fs::write(dir.join("sessions/1.json"), json!({ "cwd": account, "sessionId": sid }).to_string()).unwrap();
-        crate::background::test_helper(kid, account, Some(sid), false);
+        test_helper(kid, account, Some(sid), false);
         crate::agents::register(parent, Provider::Claude, account, account, None, true, json!({}));
         crate::agents::register(kid, Provider::Claude, account, account, Some(parent), false, json!({}));
         lock().entries.get_mut(kid).unwrap().compaction = Some(crate::to_compact::Launch {
@@ -742,7 +742,7 @@ mod tests {
         assert!(pane()["contextToCompact"].is_null());
         assert_eq!(pane()["context"], 0.75);
 
-        crate::background::gone_for_test(kid);
+        gone_for_test(kid);
         crate::agents::forget(kid);
         crate::agents::forget(parent);
         let _ = std::fs::remove_dir_all(&dir);

@@ -85,10 +85,6 @@ pub(super) fn spawn_taken(request: u64, caller: &str, helper: Option<&str>, resu
     }
 }
 
-pub(super) fn tooled(id: &str) {
-    register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
-}
-
 /// A place in production code a test may stop a call at (`stop_at`), to put
 /// something of its own between two of the call's steps: the call stops at
 /// `reached` with the same point and session, until the test lets it go.
