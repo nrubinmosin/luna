@@ -21,22 +21,22 @@ pub struct AccountRow {
     pub name: String,
     /// The settings a helper gets here unless the spawn says otherwise, for
     /// the caller's folder: the flags as `spawn` echoes them.
-    pub defaults: serde_json::Value,
+    pub defaults: Value,
     /// The models a helper may ask for here, each with its name and levels:
     /// the account's own list for Claude Code (a full id works too; the four
     /// aliases where Luna knows none yet), Codex's catalog. Only
     /// when asked (`models: true`): Codex's catalog is most of what a listing
     /// weighs, and a caller lists far more often than it picks a model.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub models: Option<Vec<serde_json::Value>>,
+    pub models: Option<Vec<Value>>,
     /// Its usage as the window last showed it (see `account_usage`); none
     /// before the window has said.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<serde_json::Value>,
+    pub usage: Option<Value>,
 }
 
 /// The models a helper may ask for on the account at `path`.
-fn models_of(provider: Provider, path: &str) -> Vec<serde_json::Value> {
+fn models_of(provider: Provider, path: &str) -> Vec<Value> {
     match provider {
         Provider::Claude => crate::claude::models::models_known(path)
             .into_iter()
@@ -92,7 +92,7 @@ pub struct SessionQuery {
     pub provider: Option<String>,
     pub account: Option<String>,
     /// A window group, 1-based as the title bar counts (I = 1), or `mine`.
-    pub group: Option<serde_json::Value>,
+    pub group: Option<Value>,
     /// Text in the name, folder, account or id, any case.
     pub q: Option<String>,
     pub limit: Option<usize>,
@@ -151,7 +151,7 @@ fn ids_in_reach(r: &Registry, caller: &str, ids: &[String]) -> Result<(), String
 }
 
 /// The 1-based group `group` asks for, `mine` resolved against the caller's.
-fn group_asked(group: Option<&serde_json::Value>, mine: Option<u32>) -> Result<Option<u32>, String> {
+fn group_asked(group: Option<&Value>, mine: Option<u32>) -> Result<Option<u32>, String> {
     let Some(v) = group else { return Ok(None) };
     if v.as_str().is_some_and(|s| s.trim().eq_ignore_ascii_case("mine")) {
         return mine.map(Some).ok_or_else(|| "your session is in no window group, so \"mine\" matches nothing".to_string());
@@ -320,7 +320,7 @@ pub struct AccountSummary {
     pub provider: Provider,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<serde_json::Value>,
+    pub usage: Option<Value>,
 }
 
 /// `luna_account_list`: every account folder an agent may use, `provider`'s alone
@@ -465,7 +465,7 @@ mod tests {
         // Its own by default; every session with scope all.
         assert_eq!(ids("grp-me", SessionQuery::default()), ["grp-kid-0", "grp-kid-1", "grp-kid-2"]);
         // Groups go out 1-based, as the title bar counts them.
-        let by = |g: serde_json::Value| all(SessionQuery { group: Some(g), ..Default::default() });
+        let by = |g: Value| all(SessionQuery { group: Some(g), ..Default::default() });
         assert_eq!(ids("grp-me", by(serde_json::json!("mine"))), ["grp-me", "grp-peer"]);
         assert_eq!(ids("grp-me", by(serde_json::json!(1))), ["grp-far"]);
         assert_eq!(ids("grp-me", by(serde_json::json!("2"))), ["grp-me", "grp-peer"]);

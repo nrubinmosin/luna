@@ -482,8 +482,8 @@ person's. `send` into a session on a blocking dialog refuses.
   that exits first is announced as such (`Owed::lost`).
 - The window sends chat names and boards as `chat_names` when they change and
   when it joins a new core. `luna_session_list` uses them.
-- `list` adds per helper: `task`, `Signs` (turn start, last activity, model, `context` via
-  `Context::of`), `leftRunning`, `deletesInMin`, `settings`. Codex's model is
+- Session get returns `task` and on request `Signs` (turn start, last activity, model, `context` via
+  `Context::of`), `leftRunning`, `deletesInMin` and `settings`. Codex's model is
   the rollout's `turn_context` of a turn its model actually answered.
   `defaults` per account come from `claude::defaults::flags` /
   `codex::defaults::helper_defaults`; `usage` is what the window last sent

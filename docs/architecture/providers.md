@@ -379,8 +379,8 @@ Claude model moves it to that model's default only where the model does not
 take the level shown, and then whoever chose it (`draft.force`); a model that
 takes no effort shows no effort buttons and runs without `--effort`. What Codex actually ran
 is read from the rollout's `turn_context` (`modelSeen`). The core normalizes and
-supplies the values nothing names (Codex's own, or Luna's stock where it picks) so the dialog, `luna_session_spawn` and
-`luna_session_list` say the same thing.
+supplies the values nothing names (Codex's own, or Luna's stock where it picks) so the dialog and a spawn use the same rules. The effective settings are available
+from `luna_session_get` with `include: ["settings"]`.
 
 ## Models
 
@@ -442,7 +442,7 @@ supplies the values nothing names (Codex's own, or Luna's stock where it picks) 
   or stale, so a list narrowed or widened since is asked for again. Each
   format is read strictly: a surprise skips that source, logged once per
   account. `models_known` never runs the CLI (spawn checks,
-  `luna_session_list`, `claude_defaults`, and `claude_models` with
+  `claude_defaults`, and `claude_models` with
   `ask: false`, which every start's defaults read, a quick chat's included);
   `models_for` (`claude_models`) may.
   What `--model` gets (`slug`): a family's main model by its alias, so the

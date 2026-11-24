@@ -225,7 +225,7 @@ can type into it and answer its model's questions with `scope: "all"`
   (`modeFrom: "luna"`). If Luna cannot read a Codex config layer or it
   names an unsupported mode, Luna passes `on-request` with `read-only`
   (`modeFrom: "closed"`). See the effective defaults in `luna_account_get`
-  and the mode source for a session in `luna_session_get`.
+  and the mode source in session get settings.
   Managed settings count as configured modes. If Claude Code's settings
   cannot be read or its `defaultMode` is not a string, the mode stays
   with Claude Code (`modeFrom: "cli"`).
@@ -239,7 +239,7 @@ can type into it and answer its model's questions with `scope: "all"`
   it starts in turn are told, last among their instructions, at every start,
   and resume. A spawn adds its own to the ones its caller carries, word
   for word; none is ever taken off (4 KB a spawn, 16 KB in all). They show in
-  the helper's settings (`luna_session_get`).
+  the helper with `luna_session_get` and `include: ["settings"]`.
   They are instructions, not permissions: what a helper may do is still its
   mode's. A helper you open as your own chat leaves them behind.
 - A helper started with Luna's tools is a **lead**, one without them a
