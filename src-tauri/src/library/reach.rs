@@ -412,11 +412,10 @@ mod tests {
     }
 
     /// A library laid out on a Claude Code and a Codex account with all a
-    /// rename has to carry: instructions for the person's chats alone (their
-    /// line in the copy), a copy changed there since the last pass, one about
-    /// to be no longer wanted (`old`), a skill named for the
-    /// accounts, and a folder's skill waiting for the Codex account's sessions
-    /// there. The ledger saved.
+    /// rename has to carry: instructions in the account's own file, a copy
+    /// changed there since the last pass, one about to be no longer wanted
+    /// (`old`), a skill named for the accounts, and a folder's skill waiting
+    /// for the Codex account's sessions there. The ledger saved.
     fn laid_for_a_rename(f: &Fixture) -> LibrarySettings {
         for s in ["review", "old", "notes"] {
             f.skill(s, "v1");
@@ -424,7 +423,7 @@ mod tests {
         f.instructions("main", "Be brief.\n");
         let repo = f.base.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        let mut lib = LibrarySettings {
+        let lib = LibrarySettings {
             instructions: first(all()),
             skills: BTreeMap::from([("review".into(), reach(&["claude/work", "codex/home"])), ("old".into(), all())]),
             folders: vec![LibraryFolder {
@@ -435,8 +434,6 @@ mod tests {
             }],
             ..Default::default()
         };
-        lib.audience.instructions.insert("main".into(), Audience::CHATS);
-        lib.laid_out.insert("main".into());
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         for i in [0, 1] {
@@ -496,8 +493,8 @@ mod tests {
 
     /// After a rename the next pass finds every copy as it left it: one
     /// changed there still Luna's to write over rather than someone else's,
-    /// one no longer wanted still Luna's to take out, its line still Luna's,
-    /// and the Codex account's folder copy in its plugin.
+    /// one no longer wanted still Luna's to take out, its instructions still
+    /// Luna's, and the Codex account's folder copy in its plugin.
     #[test]
     fn a_renamed_account_keeps_all_the_library_knew_of_it() {
         let mut f = Fixture::new("rename-carry");
@@ -516,7 +513,7 @@ mod tests {
             assert!(!account.join("skills").join("old").exists(), "account {i}: taken out as Luna's");
             let file = account.join(instructions_name(f.accounts[i].provider));
             assert_eq!(Fixture::status(&p, &file), Status::Current, "account {i}");
-            assert_eq!(unworded(&std::fs::read(&file).unwrap(), Audience::CHATS), b"Be brief.\n", "account {i}: its line still on it");
+            assert_eq!(std::fs::read(&file).unwrap(), b"Be brief.\n", "account {i}");
         }
         let plugin = codex_plugin_dir(&f.accounts[1], "repo").join("skills").join("notes");
         assert_eq!(Fixture::status(&p, &plugin), Status::Current);

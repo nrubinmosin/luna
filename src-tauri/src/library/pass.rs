@@ -17,9 +17,7 @@ pub(super) struct Unit {
     /// Which instructions, for instructions.
     pub(super) instructions: Option<String>,
     target: Target,
-    /// What the library has for it, or why it has nothing fit to lay out:
-    /// for instructions laid out for the person's chats alone, with the line
-    /// saying so before them (audience.rs `worded`).
+    /// What the library has for it, or why it has nothing fit to lay out.
     pub(super) source: Result<Files, String>,
 }
 
@@ -85,8 +83,9 @@ pub(super) struct Pass {
 /// Luna's, and in a skill's folder which files (`luna_part`): a destination
 /// holding anything else is someone else's file, only reported, never
 /// written over or taken out, and what else lies in a folder of Luna's is
-/// never looked at. A copy changed there goes to the backups before it is
-/// written over or taken out, and each such one is logged; one that changes
+/// never looked at. Account instructions no longer wanted are left in place
+/// if changed. A changed copy that is written over or taken out goes to
+/// the backups first, and each such one is logged; one that changes
 /// again while the pass is at it is left for the next. `accounts` and
 /// `folders` (every folder the library lists) are where a copy no longer
 /// wanted may lie (files.rs `top_of`).
@@ -139,14 +138,29 @@ pub(super) fn pass(
             }
         };
         let want = hashes(source);
+        let read = read_at(&u.dest, u.file);
         let noted = ledger.written.get(&key).cloned();
+        // An account's copy an earlier Luna laid out for the chats alone and
+        // edited there since, where other instructions go now: the person's
+        // (audience.rs `edited_chats_copy`), a file Luna did not lay from
+        // here on, never written over.
+        if let (Ok(Some(all)), Some(w)) = (&read, &noted) {
+            if edited_chats_copy(dirs, &u.dest, all, w) {
+                if act {
+                    ledger.written.remove(&key);
+                    ledger.disowned.insert(key.clone());
+                    log_edited_instructions_kept(&key);
+                }
+                out.places.push(place(Status::Taken, None));
+                continue;
+            }
+        }
         // What of the destination is Luna's to look at: in a skill's folder,
         // the files it wrote there and those the library has for it.
         let owned: Vec<String> = noted.iter().flat_map(|h| h.keys()).chain(want.keys()).cloned().collect();
         let part = |all: Files| luna_part(all, u.file, &owned);
         let disowned = ledger.disowned.iter().find(|d| ident(Path::new(d)) == id).cloned();
-        let read = read_at(&u.dest, u.file);
-        // A place 0.19 left as the person's own is theirs for as long as
+        // A place Luna left as the person's own is theirs for as long as
         // anything is there, whatever it holds; once nothing is, the
         // library's copy may go there as anywhere.
         if let Some(d) = &disowned {
@@ -221,10 +235,11 @@ pub(super) fn pass(
         for key in gone {
             let h = ledger.written.remove(&key).unwrap_or_default();
             let dest = PathBuf::from(&key);
+            let id = ident(&dest);
             let file = is_file(&h);
             // Another spelling of a copy still wanted is that copy's file:
             // only the note goes.
-            if wanted.contains_key(&ident(&dest)) || in_library(dirs, &dest) {
+            if wanted.contains_key(&id) || in_library(dirs, &dest) {
                 continue;
             }
             let in_account = accounts.iter().any(|a| within(&dest, Path::new(&a.path)));
@@ -290,6 +305,14 @@ pub(super) fn pass(
                 continue;
             }
             let changed = hashes(&there) != h;
+            // An account's instructions no longer wanted go only as Luna
+            // wrote them. A changed file is the person's, even if it later
+            // comes to hold exactly what the library wants there.
+            if changed && file && accounts.iter().any(|a| ident(&Path::new(&a.path).join(instructions_name(a.provider))) == id) {
+                ledger.disowned.insert(key.clone());
+                log_edited_instructions_kept(&key);
+                continue;
+            }
             // A copy an earlier Luna laid into a listed folder, changed there
             // since, is that folder's own, wherever the folder lies. Not one in
             // `library-folders/`, Luna's own whatever folder is listed around
@@ -466,8 +489,7 @@ pub(super) fn units(
         // of its copies out.
         let source = match instructions.as_ref().map(|found| &found[name]) {
             Ok(Ok(None)) => continue,
-            // Laid out for the person's chats alone, it says so (audience.rs).
-            Ok(Ok(Some(text))) => Ok(Files::from([(String::new(), worded(text, banner_of(lib, name)))])),
+            Ok(Ok(Some(text))) => Ok(Files::from([(String::new(), text.clone())])),
             Ok(Err(e)) | Err(e) => Err(e.clone()),
         };
         out.push(Unit {
@@ -740,10 +762,10 @@ mod tests {
         assert!(f.account(1).join("skills").is_dir(), "only the skill's own folder goes");
     }
 
-    /// Luna's copies no longer wanted go, changed there or not, in a Claude
-    /// Code and a Codex account alike: a changed one backed up first.
+    /// A skill no longer wanted goes, a changed one backed up first.
+    /// Account instructions go only as Luna wrote them.
     #[test]
-    fn a_copy_no_longer_wanted_goes_changed_there_or_not() {
+    fn unwanted_skills_go_and_edited_account_instructions_stay() {
         let f = Fixture::new("unwanted");
         f.skill("review", "v1");
         f.instructions("main", "Be brief.\n");
@@ -761,13 +783,25 @@ mod tests {
         assert!(p.removed.iter().any(|r| Path::new(r) == claude_skill), "a pass says what it took out: {:?}", p.removed);
         assert!(p.written.is_empty() && p.not_removed.is_empty());
         assert!(!claude_skill.exists() && !codex_skill.exists());
-        assert!(!f.account(0).join("CLAUDE.md").exists() && !f.account(1).join("AGENTS.md").exists());
+        assert!(!f.account(0).join("CLAUDE.md").exists());
+        let edited = f.account(1).join("AGENTS.md");
+        assert_eq!(std::fs::read_to_string(&edited).unwrap(), "Be long.\n");
         assert!(f.account(2).join("skills").is_dir(), "only the skill's own folder goes");
         assert!(ledger.written.is_empty(), "no longer laid out");
-        let backed = backed_up(&f.dirs);
-        assert!(backed.iter().any(|b| b == "edited there"), "{backed:?}");
-        assert!(backed.iter().any(|b| b == "Be long.\n"), "{backed:?}");
-        assert!(!backed.iter().any(|b| b == "Be brief.\n"), "what was still Luna's is not backed up: {backed:?}");
+        assert_eq!(backed_up(&f.dirs), ["edited there"]);
+        assert!(ledger.disowned.contains(&*edited.to_string_lossy()));
+
+        // Even when the library wants those very bytes, sync leaves them
+        // under the person's ownership across a restart.
+        std::fs::create_dir_all(&f.dirs.data).unwrap();
+        ledger.save(&f.dirs).unwrap();
+        let mut ledger = Ledger::load(&f.dirs);
+        f.instructions("main", "Be long.\n");
+        assert_eq!(Fixture::status(&f.run(&lib, &mut ledger, true), &edited), Status::Taken);
+        f.instructions("main", "A different version.\n");
+        assert_eq!(Fixture::status(&f.run(&lib, &mut ledger, true), &edited), Status::Taken);
+        assert_eq!(std::fs::read_to_string(&edited).unwrap(), "Be long.\n");
+        assert_eq!(backed_up(&f.dirs), ["edited there"]);
     }
 
     /// A copy an earlier Luna laid into a listed folder itself, changed there

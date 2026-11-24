@@ -81,7 +81,6 @@ they stay in its context all along.
 | The note after a task (`[A note, not part of the task: …]`): the task comes from an agent; rules for a chat with a person do not apply | leads and helpers | Claude Code: after the first task, once; Codex: after every task, so it adds up in the conversation | 42 | Library → System texts, `note` (one for leads and helpers; one line; it cannot be empty) |
 | Constraints: a heading, then each constraint word for word | a helper spawned with `constraints`, and every session under it | layers, last | 57 + the constraints | the agent that spawns; nothing removes one |
 | The library's instructions for some roles: a heading `# Instructions: <name>`, then your file | the roles you ticked | layers | ~5 + your file | the library's **For** column |
-| The line before instructions an earlier Luna laid out for chats only ("For chats with a person only: …") | every session of that account (Codex reads the account's `AGENTS.md` in all of them; Claude Code leaves it out of leads and helpers) | every request, with the file | 25 | tick another role for that file: it then goes per session instead |
 
 ## Skills
 

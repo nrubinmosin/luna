@@ -12,9 +12,9 @@ User-facing behavior: [user guide](../user-guide/library.md).
 - Give folders' sessions extra skills, hidden skills or other instructions at
   every start, writing nothing into the folder: a Claude Code session's folder
   skills are a plugin made for that session alone.
-- Make every copy Luna's ledger names the library's again (written over, put
-  back or taken out, what a change there made backed up first), and never
-  write over or take out a file Luna did not write.
+- Restore or replace managed copies the library still wants. Remove unwanted
+  copies under the pass's cleanup rules. An edited account instructions file
+  no longer wanted becomes the person's file and stays in place.
 
 ## Key modules
 
@@ -22,7 +22,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | --- | --- |
 | `library/mod.rs` | the library's folders, the ledger, the pass lock |
 | `library/reach.rs` | whom a skill or instructions file is for |
-| `library/audience.rs` | whose sessions one is for (every session, or some of chat, lead, helper); where each goes; the wording of a copy laid out for the chats |
+| `library/audience.rs` | which roles each entry reaches and how it is delivered; recognition of old chats-only copies at paths wanted by every-session entries |
 | `library/role.rs` | what a session is told of its role: its role's system texts, the layers composed, Codex's `developer_instructions`, the notes served |
 | `library/skills.rs` | the library's own files, read and checked fit to copy |
 | `library/files.rs` | copies on disk, backups |
@@ -97,18 +97,35 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   join that competition with a reach it was never given against them:
   `library_set_audience` refuses it while another laid entry, or
   `no_instructions`, names one of its reach's entries
-  (`every_session_refused`), naming the entry and the accounts. The exception is
-  `LibrarySettings::laid_out`: entries an earlier Luna laid out for the
-  person's chats (seeded from `"chats"` when a file without `roles` is read) stay in the
-  accounts with a line before them (`banner_of`, `worded`), so chats started
-  outside Luna keep them. Setting such an entry's audience to anything else
-  takes it out of `laid_out`, and the next pass takes its copies out as no
-  longer wanted. A rename moves its
-  `laid_out` with its reach and audience (`rename_instructions`); a delete
-  drops it, and new instructions under the name never inherit it
-  (`forget_instructions`). An old helpers-only
-  entry leaves the accounts the same way; `chosen` may then give an account
-  another file, which the pass reports.
+  (`every_session_refused`), naming the entry and the accounts. The person's
+  chats' entries are no exception (`laid_into_accounts` is `is_every` alone),
+  on either CLI.
+- **The chats' copies of before.** Up to 0.21 Luna kept laying the person's
+  chats' entries into accounts, with a line before them saying whose they
+  were (its `laidOut`, now passed over when the settings are read). A Codex
+  lead or helper read them all the same. Nothing lays them out now, and the
+  copies are Luna's in the ledger like any other. Wanted nowhere, they go
+  through the pass's own step for copies no longer wanted (pass.rs `pass`,
+  the `gone` loop): one still byte for byte what the ledger says Luna wrote
+  is taken out, with that step's residual (a save between its look and the
+  delete, R6). A hash mismatch ends Luna's ownership. The pass leaves the
+  file in place, replaces its ownership note with a `disowned` entry, and
+  logs the change once. Every session on the account reads it until the
+  person removes it.
+  Where an every-session entry wants the same path, the pass checks for
+  either old opening line (with either line ending and an optional byte
+  order mark) or the saved hash of either line before the current text
+  of a library entry (`audience.rs` `edited_chats_copy`). A recognized edit
+  becomes `disowned` and shows as `taken`. With the line removed,
+  recognition can fail if the matching text changed, was deleted, cannot
+  be read, or the instructions folder cannot be listed. A pass with a usable
+  replacement backs up and replaces the edited copy if recognition fails.
+  A copy that cannot go (a delete Windows refuses,
+  a link on the way) or lies in an account not listed now keeps its note and
+  is tried at a later pass. A session running on the account holds nothing
+  back: a pass writes and takes out instructions files under running
+  sessions as ever (it runs before every start, `lay_out_for`, and a CLI
+  never writes the file back), so there is no `account_use` hold here.
 - **Claude Code:** the instructions a session would read from its account or
   a folder — a folder's (`folder_instructions`), else the account's own — if
   not for its role, are none: the account's `CLAUDE.md` goes in
@@ -128,22 +145,13 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   `AGENTS.md` cannot be left out of one session (0.167.2: the app-server
   installs `CodexHomeUserInstructionsProvider` unconditionally, which reads
   `AGENTS.override.md` or `AGENTS.md` from `CODEX_HOME`, an empty override
-  skipped; `model_instructions_file` replaces the base prompt). So an entry
-  still laid out for the chats goes `worded`: a line before it saying whose it
-  is, `FOR_CHATS`. Claude Code copies get the same line, for the sessions Luna
-  does not start. A copy says so (`carries_banner`) while that line (this
-  Luna's or an earlier one's, `wordings`) and the blank line after it are
-  still there word for word with either line ending (`unworded`). A copy
-  still opening on an earlier Luna's line is Luna's own, behind, and the next
-  pass rewrites it.
+  skipped; `model_instructions_file` replaces the base prompt). So only every
+  session's instructions go there; an entry for some roles reaches a Codex
+  chat in its `developer_instructions` and a Codex helper in its thread's.
 - What the audience decided goes in `SessionSkills::audience` and is applied
   as `library.audience` (a UserAction, ADR-0016) beside the mechanism's own
-  items (`library.hidden-skills`, `library.account-instructions-off`). A Codex
-  session is said to be told whose its instructions are only when the
-  account's `AGENTS.md` opens on that line now (`carries_banner`); a copy
-  changed there or not written is `library.audience-unkept` instead.
-- Nothing is written into an account per launch: the wording is part of the
-  copy, written by the pass like any other change of the library.
+  items (`library.hidden-skills`, `library.account-instructions-off`).
+- Nothing is written into an account per launch.
 
 ## Role layers
 
@@ -349,15 +357,19 @@ only one holding the library's files and nothing else becomes Luna's.
 | equal to the ledger, behind the library | `behind` | written |
 | different from the ledger (changed there) | `behind` | backed up, then written over |
 | no ledger entry and different | `taken` | nothing: someone else's |
-| a place 0.19 kept (`disowned`) holding anything | `taken` | nothing, even equal to the library |
+| a place marked as the person's (`disowned`) holding anything | `taken` | nothing, even equal to the library |
 | no longer wanted, equal to the ledger | not shown | taken out |
-| no longer wanted, different from the ledger | not shown | backed up, then taken out |
+| account instructions no longer wanted, different from the ledger | not shown | file stays, ownership note becomes `disowned` |
+| skill no longer wanted, different from the ledger | not shown | backed up, then taken out |
 | no longer wanted, changed, in a listed folder | not shown | its note goes, the file stays |
 | in an account not listed now, or a folder no longer listed | not shown | nothing; the note stays |
 
-For a place without a ledger note, if the foreign file is removed, the next
-pass can write the library's copy there. Places 0.19 kept as `disowned`
-remain untouched.
+Removing a foreign file frees its path for the next pass to lay out a
+library copy. A `disowned` entry also clears when an acting pass finds the
+wanted path empty. Some editors briefly leave the path empty during an
+atomic save. If a pass sees that gap and lays down the library copy, Luna
+records ownership again. If the editor then saves its version, the next
+pass backs it up and replaces it with the library copy.
 
 What a change there had made goes to `<data>/library-backups/` (swept after
 30 days) before the library's goes over it or it is taken out, each backup in
@@ -601,7 +613,8 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
 | --- | --- |
 | A file held open mid-save | that unit is `failed` for the pass; copies stay |
 | A copy of Luna's edited in place (by hand or a model) | backed up, then the library's written over it at the next acting pass, logged; the edit is in `library-backups/` for 30 days |
-| A copy of Luna's edited in place, then no longer wanted there | backed up, then taken out, logged |
+| Account instructions edited in place, then no longer wanted there | kept as the person's, ownership note dropped, logged once |
+| A skill copy edited in place, then no longer wanted there | backed up, then taken out, logged |
 | A file Luna did not write where a copy goes | `taken`, left alone; the library's copy goes there once it is gone |
 | The backups will not write | the changed copy is neither written over nor taken out: `failed` for the pass, tried again at the next |
 | A copy saved again while the pass is at it | left for the next pass, logged; nothing of it lost |

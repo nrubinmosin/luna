@@ -302,9 +302,6 @@ pub struct SessionSkills {
     /// What of the above the entries' audience decided (library/audience.rs),
     /// said as what Luna applied (`audience_applied`).
     pub audience: Vec<String>,
-    /// Codex: instructions not meant for this session's role that it reads
-    /// all the same, its account's copy not saying whose they are.
-    pub unkept: Vec<String>,
 }
 
 /// What a session Luna starts gets of the library's folders, for each folder
@@ -376,47 +373,28 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
             }
         }
     }
-    // The instructions the library lays out in the account's own file: what a
-    // session gets where no folder decides.
-    let account_has = chosen(lib, |n| dirs.instructions_file(n).is_file(), a);
-    let fits = |n: &str| instructions_audience(lib, n).takes(role);
-    match a.provider {
-        Provider::Claude => {
-            let folder_choice = folder_instructions(lies_in.iter().map(|(f, _)| *f), a);
-            // Instructions not meant for this session's role are none for
-            // it: a folder's, or else the account's own.
-            let unfit = folder_choice.unwrap_or(account_has).filter(|&n| !fits(n));
-            if let Some(n) = unfit {
-                out.audience.push(kept_note("instructions", n, instructions_audience(lib, n)));
-            }
-            let choice = if unfit.is_some() { Some(None) } else { folder_choice };
-            if let Some(choice) = choice {
-                let own = Path::new(&a.path).join(instructions_name(a.provider));
-                // Instructions the library no longer has are none.
-                let text = choice.and_then(|n| std::fs::read(dirs.instructions_file(n)).ok());
-                // What the account's file holds already stays, as the library
-                // lays it out there (`worded`); anything else — none at all,
-                // or a copy of the account's changed there — leaves out
-                // whatever it holds, the library's or not.
-                let laid_out = |n: &str, t: &[u8]| worded(t, banner_of(lib, n));
-                let there =
-                    choice.zip(text.as_ref()).is_some_and(|(n, t)| std::fs::read(&own).is_ok_and(|o| o == laid_out(n, t.as_slice())));
-                if !there {
-                    out.excluded.push(own.to_string_lossy().replace('\\', "/"));
-                    out.instructions = choice.filter(|_| text.as_ref().is_some_and(|t| !t.is_empty())).map(|n| dirs.instructions_file(n));
-                }
-            }
+    // Codex reads its account's own file in every session and no folder's in
+    // its place. That file holds only every session's instructions, which
+    // fit every role: only a folder's choice can be unfit for this one.
+    if a.provider == Provider::Claude {
+        let folder_choice = folder_instructions(lies_in.iter().map(|(f, _)| *f), a);
+        let unfit = folder_choice.flatten().filter(|&n| !instructions_audience(lib, n).takes(role));
+        if let Some(n) = unfit {
+            out.audience.push(kept_note("instructions", n, instructions_audience(lib, n)));
         }
-        // Read in every session, whoever's: the copy says whose it is, where
-        // it does — one changed there or not written does not.
-        Provider::Codex => {
-            if let Some(n) = account_has.filter(|&n| !fits(n)) {
-                let audience = instructions_audience(lib, n);
-                if carries_banner(&Path::new(&a.path).join(instructions_name(a.provider)), banner_of(lib, n)) {
-                    out.audience.push(worded_note(n, audience));
-                } else {
-                    out.unkept.push(unworded_note(n, audience));
-                }
+        let choice = if unfit.is_some() { Some(None) } else { folder_choice };
+        if let Some(choice) = choice {
+            let own = Path::new(&a.path).join(instructions_name(a.provider));
+            // Instructions the library no longer has are none.
+            let text = choice.and_then(|n| std::fs::read(dirs.instructions_file(n)).ok());
+            // What the account's file holds already stays, as the library
+            // lays it out there; anything else — none at all, or a copy of
+            // the account's changed there — leaves out whatever it holds,
+            // the library's or not.
+            let there = text.as_ref().is_some_and(|t| std::fs::read(&own).is_ok_and(|o| o == *t));
+            if !there {
+                out.excluded.push(own.to_string_lossy().replace('\\', "/"));
+                out.instructions = choice.filter(|_| text.as_ref().is_some_and(|t| !t.is_empty())).map(|n| dirs.instructions_file(n));
             }
         }
     }

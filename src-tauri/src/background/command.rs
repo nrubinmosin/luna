@@ -1712,7 +1712,8 @@ mod tests {
     }
 
     // A helper's turn on a library whose every entry is the person's chats'
-    // (library/audience.rs): kept from all of it that its CLI can keep. The
+    // (library/audience.rs): given none of its instructions, which reach the
+    // chats per session and lie in no account, and kept from its skill. The
     // person's chats on the same library: pty/start.rs.
 
     #[test]
@@ -1726,16 +1727,15 @@ mod tests {
         assert_eq!(t.dir, "<project>");
         let mut settings = golden::claude_helper_settings(golden::claude_settings_alone());
         settings["skillOverrides"] = json!({ "report": "off" });
-        settings["claudeMdExcludes"] = json!(["<acc>/CLAUDE.md"]);
-        assert_eq!(t.settings, Some(settings));
+        assert_eq!(t.settings, Some(settings), "the account's own file left as it is: nothing of the chats' in it");
         assert_eq!(t.instructions.as_deref(), Some(golden::role_layers(crate::library::Role::Helper).as_str()), "its role alone");
-        assert_eq!(t.value("library.audience"), Some("instructions main (chats only); skill report (chats only)"));
+        assert_eq!(t.value("library.audience"), Some("skill report (chats only)"));
         assert_eq!(t.value("library.hidden-skills"), Some("skillOverrides off: report"));
-        assert_eq!(t.value("library.account-instructions-off"), Some("claudeMdExcludes <acc>/CLAUDE.md"));
+        assert_eq!(t.value("library.account-instructions-off"), None);
     }
 
     #[test]
-    fn golden_headless_codex_turn_is_kept_from_skills_meant_for_chats_and_told_whose_its_instructions_are() {
+    fn golden_headless_codex_turn_is_kept_from_what_the_library_means_for_chats() {
         const ID: &str = "golden-bg-codex-chats-only";
         let lib = crate::library::GoldenLibrary::chats_only("bg-codex-audience");
         let (mut e, r) = library_entry(ID, &lib, Provider::Codex);
@@ -1747,10 +1747,8 @@ mod tests {
         want.extend(apps_off());
         want.extend(strings(&["-c", "skills.config=[{path=\"<acc>/skills/report/SKILL.md\",enabled=false}]"]));
         assert_eq!(t.args, want);
-        assert_eq!(
-            t.value("library.audience"),
-            Some("instructions main (chats only): AGENTS.md says so, as Codex reads it in every session; skill report (chats only)")
-        );
+        assert!(!std::path::Path::new(&lib.codex()).join("AGENTS.md").exists(), "nothing of the chats' in the account's own file");
+        assert_eq!(t.value("library.audience"), Some("skill report (chats only)"));
         assert_eq!(
             t.value("library.hidden-skills"),
             Some("-c skills.config=[{path=\"<acc>/skills/report/SKILL.md\",enabled=false}], thread config skills.config (1 selector)")

@@ -14,11 +14,14 @@
 //!   memory of a folder of the session's own, Codex in its
 //!   `developer_instructions`. Every such entry whose audience takes the role
 //!   and whose reach takes the account goes in, in name order.
-//! - Instructions for the person's chats alone that an earlier Luna laid into
-//!   accounts stay there (`LibrarySettings::laid_out`), with a line before
-//!   them saying whose they are (`worded`): a Codex session reads its
-//!   account's `AGENTS.md` whoever's it is, and chats started outside Luna
-//!   read them there.
+//!   The person's chats' alone go so too, on both CLIs: an earlier Luna laid
+//!   those into accounts with a line saying whose they were, which a Codex
+//!   helper read all the same. The copies it left are Luna's own in the
+//!   ledger and no longer wanted, so a pass takes one still as Luna wrote it
+//!   out (pass.rs `pass`). One edited in the account since is the person's:
+//!   left where it is, and read by every session on the account. Where an
+//!   every-session entry wants that path, `edited_chats_copy` recognizes
+//!   an edited old chats-only copy before the pass lays out instructions.
 //!
 //! What each CLI allows for what is in an account:
 //! - Claude Code leaves a file out of one session (`claudeMdExcludes`) and
@@ -27,7 +30,8 @@
 //! - Codex turns a skill off for one run (`skills.config`), but reads its
 //!   account's `AGENTS.md` in every session with no switch to leave it out
 //!   (0.167.0: `CodexHomeUserInstructionsProvider` in `codex-rs/codex-home`,
-//!   installed unconditionally by the app-server).
+//!   installed unconditionally by the app-server): only every session's
+//!   instructions go there.
 
 use super::*;
 
@@ -58,83 +62,45 @@ pub(super) fn skill_audience(lib: &LibrarySettings, name: &str) -> Audience {
     lib.audience.skills.get(name).copied().unwrap_or_default()
 }
 
-/// Whether the instructions `name` are laid into accounts: every session's,
-/// or the person's chats' that an earlier Luna laid out (`laid_out`). The
-/// rest reach their sessions one session at a time.
+/// Whether the instructions `name` are laid into accounts: every session's
+/// alone. The rest reach their sessions one session at a time.
 pub(super) fn laid_into_accounts(lib: &LibrarySettings, name: &str) -> bool {
-    let audience = instructions_audience(lib, name);
-    audience.is_every() || (audience == Audience::CHATS && lib.laid_out.contains(name))
+    instructions_audience(lib, name).is_every()
 }
 
-/// The line an account's copy of the instructions `name` opens on: the
-/// person's chats' where they are laid out for them, none for every
-/// session's.
-pub(super) fn banner_of(lib: &LibrarySettings, name: &str) -> Audience {
-    match laid_into_accounts(lib, name) && !instructions_audience(lib, name).is_every() {
-        true => Audience::CHATS,
-        false => Audience::EVERY,
-    }
+/// The lines earlier Lunas put before the person's chats' instructions they
+/// laid into accounts: the last one's, then the one's before roles.
+const CHATS_LINES: [&str; 2] = [
+    "> For chats with a person only: a session whose task came from another agent skips this whole file.",
+    "> For the person's own chats only: a helper session — one another agent started and briefed, through Luna or as a \
+     subagent — skips this whole file.",
+];
+
+/// Whether `there`, read at `dest`, a copy the ledger notes as Luna's
+/// (`noted`), is one of the account copies an earlier Luna laid out for the
+/// person's chats alone, edited there since: an instructions file changed
+/// from what Luna wrote, where either the file still opens on one of
+/// `CHATS_LINES`, whatever an editor made of its line ends or put before it
+/// (a byte order mark), or Luna's note is of such a line before instructions
+/// as the library has them now. Used where every-session instructions want
+/// the same path. If the line is gone and the old text has changed, was
+/// deleted, or cannot be read or listed, the hash cannot identify the copy.
+pub(super) fn edited_chats_copy(dirs: &Dirs, dest: &Path, there: &Files, noted: &Hashes) -> bool {
+    let named = Provider::ALL.into_iter().any(|p| dest.file_name().is_some_and(|f| f == instructions_name(p)));
+    let Some(text) = there.get("").filter(|_| named && is_file(noted) && hashes(there) != *noted) else { return false };
+    let text = text.strip_prefix("\u{feff}".as_bytes()).unwrap_or(text);
+    let opens = |line: &str| text.strip_prefix(line.as_bytes()).is_some_and(|t| t.starts_with(b"\n") || t.starts_with(b"\r\n"));
+    let wrote = |line: &str, of: &[u8]| hashes(&Files::from([(String::new(), [line.as_bytes(), b"\n\n", of].concat())])) == *noted;
+    CHATS_LINES.into_iter().any(opens)
+        || read_instructions(dirs)
+            .is_ok_and(|found| found.into_values().filter_map(|t| t.ok().flatten()).any(|t| CHATS_LINES.into_iter().any(|l| wrote(l, &t))))
 }
 
-/// What goes before instructions laid into accounts for the person's chats
-/// alone. Named by how a session's task came to it, which every session can
-/// tell of itself: the note on a task from another agent says so.
-const FOR_CHATS: &str = "> For chats with a person only: a session whose task came from another agent skips this whole file.";
-
-/// The lines earlier Lunas put there, for the person's chats and for helpers:
-/// a copy still opening on one is Luna's own line, not the person's text.
-const FOR_CHATS_BEFORE: &str = "> For the person's own chats only: a helper session — one another agent started and briefed, \
-through Luna or as a subagent — skips this whole file.";
-const FOR_HELPERS_BEFORE: &str = "> For helper sessions only — those another agent started and briefed, through Luna or as a \
-subagent: the person's own chats skip this whole file.";
-
-fn wording(banner: Audience) -> Option<&'static str> {
-    (banner == Audience::CHATS).then_some(FOR_CHATS)
-}
-
-/// Every line a copy written for `banner` may open on: this Luna's, then
-/// earlier ones'.
-fn wordings(banner: Audience) -> Vec<&'static str> {
-    if banner == Audience::CHATS {
-        vec![FOR_CHATS, FOR_CHATS_BEFORE]
-    } else if banner == Audience::of(&[Role::Lead, Role::Helper]) {
-        vec![FOR_HELPERS_BEFORE]
-    } else {
-        Vec::new()
-    }
-}
-
-/// Instructions as their copies in accounts hold them: for the person's
-/// chats alone, the line saying whose they are and a blank line before them.
-pub(super) fn worded(text: &[u8], banner: Audience) -> Vec<u8> {
-    match wording(banner) {
-        Some(line) => [line.as_bytes(), b"\n\n", text].concat(),
-        None => text.to_vec(),
-    }
-}
-
-/// A copy's instructions as the library keeps them: without the line `worded`
-/// put before them for `banner` — the one Luna's ledger says it wrote there,
-/// every session's where it wrote none — this Luna's line or an earlier one's,
-/// while that line and the blank one after it are still there word for word,
-/// with either line ending (an editor may have turned the copy's into CRLF).
-/// Anything else is the person's text, taken whole: the same words in a copy
-/// Luna wrote no line into are theirs.
-pub(super) fn unworded(text: &[u8], banner: Audience) -> Vec<u8> {
-    wordings(banner)
-        .into_iter()
-        .flat_map(|line| ["\n\n", "\r\n\r\n"].map(|end| [line.as_bytes(), end.as_bytes()].concat()))
-        .find_map(|head| text.strip_prefix(head.as_slice()))
-        .unwrap_or(text)
-        .to_vec()
-}
-
-/// Whether the copy at `path` opens on a line `worded` puts there for
-/// `banner`, with either line ending: what a session reading it is told, not
-/// what the settings would have it told. A copy changed there or not yet written may not.
-pub(super) fn carries_banner(path: &Path, banner: Audience) -> bool {
-    let Ok(text) = std::fs::read(path) else { return false };
-    wording(banner).is_some() && unworded(&text, banner).len() < text.len()
+/// Said once when the pass gives an edited instructions copy to the person.
+pub(super) fn log_edited_instructions_kept(key: &str) {
+    #[cfg(test)]
+    tests::LEFT.with(|l| l.borrow_mut().push(key.to_string()));
+    crate::log::info("library", &format!("left {key} as it is, no longer Luna's: edited there since Luna laid it out"));
 }
 
 /// What the library keeps from this session for its audience, as said in
@@ -149,30 +115,12 @@ pub(super) fn given_note(name: &str, audience: Audience) -> String {
     format!("instructions {name} ({}): given to this session alone", label(audience))
 }
 
-/// Codex's instructions meant for the person's chats: still read, with the
-/// line saying whose they are.
-pub(super) fn worded_note(name: &str, audience: Audience) -> String {
-    format!("instructions {name} ({}): AGENTS.md says so, as Codex reads it in every session", label(audience))
-}
-
-/// Codex's instructions meant for the person's chats, read by this session
-/// from a copy that does not say so (changed there or not written).
-pub(super) fn unworded_note(name: &str, audience: Audience) -> String {
-    format!(
-        "instructions {name} ({}): the account's AGENTS.md does not say so — changed there or not written — and Codex reads it in every session",
-        label(audience)
-    )
-}
-
-/// What a start says of the audience it went by (`SessionSkills::audience`),
-/// and of what it could not keep from the session (`SessionSkills::unkept`).
+/// What a start says of the audience it went by (`SessionSkills::audience`)
+/// and of the skills it could not hide (`SessionSkills::unhidden`).
 pub fn audience_applied(s: &SessionSkills) -> Vec<crate::applied::Applied> {
     let mut out = Vec::new();
     if !s.audience.is_empty() {
         out.push(crate::applied::Item::LibraryAudience.with(s.audience.join("; ")));
-    }
-    if !s.unkept.is_empty() {
-        out.push(crate::applied::Item::LibraryAudienceUnkept.with(s.unkept.join("; ")));
     }
     if !s.unhidden.is_empty() {
         out.push(crate::applied::Item::LibraryHiddenTrimmed.with(format!("{} stay visible: {}", s.unhidden.len(), s.unhidden.join(", "))));
@@ -258,11 +206,10 @@ fn stand_ins(lib: &LibrarySettings, r: &str) -> Vec<AccountInfo> {
 }
 
 /// Whose sessions a skill or instructions file is for; every session's drops
-/// it from the settings. Instructions given any other audience than the
-/// person's chats' alone stop being laid into accounts (`laid_out`): from
-/// then on they reach their sessions one session at a time. Instructions
-/// made every session's where that would leave them reaching nobody are
-/// refused (`every_session_refused`).
+/// it from the settings. Instructions given any other audience stop being
+/// laid into accounts: from then on they reach their sessions one session at
+/// a time. Instructions made every session's where that would leave them
+/// reaching nobody are refused (`every_session_refused`).
 pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview, String> {
     let (skill, name) = match entry {
         Entry::Skill(n) => (true, n),
@@ -282,9 +229,6 @@ pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview
             if refused.is_some() {
                 return;
             }
-        }
-        if !skill && audience != Audience::CHATS {
-            l.laid_out.remove(&name);
         }
         let map = if skill { &mut l.audience.skills } else { &mut l.audience.instructions };
         match audience.is_every() {
@@ -342,50 +286,6 @@ mod tests {
         assert!(why.contains("main already goes into every codex account, and the rest of it is set to get none"), "{why}");
         lib.no_instructions.clear();
         assert_eq!(every_session_refused(&lib, "review"), None, "every other codex account is its");
-        // A chats' entry an earlier Luna laid out competes already.
-        lib.audience.instructions.insert("review".into(), Audience::CHATS);
-        lib.laid_out.insert("review".into());
-        assert_eq!(every_session_refused(&lib, "review"), None);
-    }
-
-    #[test]
-    fn instructions_for_the_chats_are_worded_and_come_back_plain() {
-        let text = b"# Me\n\nSpeak Russian to me.\n";
-        assert_eq!(worded(text, Audience::EVERY), text);
-        assert_eq!(worded(text, LEADS_AND_HELPERS), text, "only the chats' are laid out with a line");
-        let w = worded(text, Audience::CHATS);
-        assert!(w.ends_with(text) && w.len() > text.len());
-        assert_eq!(unworded(&w, Audience::CHATS), text, "taken back into the library as it was");
-        // An editor that turned the copy's line endings into CRLF.
-        let crlf = String::from_utf8_lossy(&w).replace('\n', "\r\n").into_bytes();
-        assert_eq!(unworded(&crlf, Audience::CHATS), b"# Me\r\n\r\nSpeak Russian to me.\r\n", "the line goes, the rest as it is");
-        assert!(String::from_utf8_lossy(&w).starts_with("> For chats with a person only:"));
-        // Only the line Luna wrote there comes off.
-        assert_eq!(unworded(&w, Audience::EVERY), w, "a copy Luna wrote no line into: the same words are the person's");
-        assert_eq!(unworded(&w, LEADS_AND_HELPERS), w, "nor another line than the one it wrote");
-        // A line edited there is the person's text now, kept whole.
-        let edited = b"> For the person's own chats, mostly.\n\nRest.\n";
-        assert_eq!(unworded(edited, Audience::CHATS), edited);
-    }
-
-    #[test]
-    fn the_lines_of_before_roles_still_come_off() {
-        let text = b"Be brief.\n";
-        for (line, banner) in [(FOR_CHATS_BEFORE, Audience::CHATS), (FOR_HELPERS_BEFORE, LEADS_AND_HELPERS)] {
-            for end in ["\n\n", "\r\n\r\n"] {
-                let old = [line.as_bytes(), end.as_bytes(), text].concat();
-                assert_eq!(unworded(&old, banner), text, "{line:?}");
-                assert_eq!(unworded(&old, Audience::EVERY), old);
-            }
-        }
-        let dir = std::env::temp_dir().join(format!("luna-banner-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("AGENTS.md");
-        std::fs::write(&file, worded(text, Audience::CHATS)).unwrap();
-        assert!(carries_banner(&file, Audience::CHATS));
-        std::fs::write(&file, text).unwrap();
-        assert!(!carries_banner(&file, Audience::CHATS));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -403,79 +303,397 @@ mod tests {
     }
 
     #[test]
-    fn only_every_sessions_and_the_chats_laid_out_go_into_accounts() {
+    fn only_every_session_s_instructions_go_into_accounts() {
         let mut lib = LibrarySettings::default();
         assert!(laid_into_accounts(&lib, "main"), "every session's");
-        lib.audience.instructions.insert("main".into(), Audience::CHATS);
-        assert!(!laid_into_accounts(&lib, "main"), "a new chats' entry is given per session");
-        lib.laid_out.insert("main".into());
-        assert!(laid_into_accounts(&lib, "main"));
-        assert_eq!(banner_of(&lib, "main"), Audience::CHATS);
-        lib.audience.instructions.insert("main".into(), LEADS_AND_HELPERS);
-        assert!(!laid_into_accounts(&lib, "main"), "laid out for the chats alone");
-        assert_eq!(banner_of(&lib, "main"), Audience::EVERY);
+        for audience in [Audience::CHATS, LEADS_AND_HELPERS, Audience::of(&[Role::Chat, Role::Helper])] {
+            lib.audience.instructions.insert("main".into(), audience);
+            assert!(!laid_into_accounts(&lib, "main"), "{audience:?}: given per session");
+        }
     }
 
+    /// Instructions made the person's chats' alone, or leads' and helpers',
+    /// leave the accounts: Luna's own copies go, in a Claude Code and a Codex
+    /// account alike.
     #[test]
-    fn a_codex_copy_says_whose_it_is_and_a_change_of_audience_rewrites_it() {
-        let f = Fixture::new("audience-worded");
-        f.instructions("main", "Be brief.\n");
-        let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
-        let mut ledger = Ledger::default();
-        f.run(&lib, &mut ledger, true);
-        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n", "every session's: the library's word for word");
-        lib.audience.instructions.insert("main".into(), Audience::CHATS);
-        lib.laid_out.insert("main".into());
-        let p = f.run(&lib, &mut ledger, false);
-        assert_eq!(Fixture::status(&p, &f.account(1).join("AGENTS.md")), Status::Behind, "Luna's own copy, behind");
-        f.run(&lib, &mut ledger, true);
-        assert_eq!(f.read(1, "AGENTS.md"), format!("{FOR_CHATS}\n\nBe brief.\n"));
-        assert_eq!(f.read(0, "CLAUDE.md"), format!("{FOR_CHATS}\n\nBe brief.\n"), "worded on Claude Code too");
-        lib.audience = Default::default();
-        f.run(&lib, &mut ledger, true);
-        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n", "rewritten without it");
+    fn instructions_for_some_roles_leave_the_accounts() {
+        for (tag, audience) in [("chats", Audience::CHATS), ("helpers", LEADS_AND_HELPERS)] {
+            let f = Fixture::new(&format!("audience-leave-{tag}"));
+            f.instructions("main", "Be brief.\n");
+            let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
+            let mut ledger = Ledger::default();
+            f.run(&lib, &mut ledger, true);
+            assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
+            lib.audience.instructions.insert("main".into(), audience);
+            f.run(&lib, &mut ledger, true);
+            assert!(!f.account(1).join("AGENTS.md").exists(), "{tag}: Luna's own copy goes: given per session from now on");
+            assert!(!f.account(0).join("CLAUDE.md").exists(), "{tag}");
+        }
     }
 
-    #[test]
-    fn a_copy_with_the_line_of_before_roles_is_rewritten_with_this_ones() {
-        let f = Fixture::new("audience-reworded");
+    /// The lines earlier Lunas put before the person's chats' instructions
+    /// they laid into accounts: the last one's, and the one's before roles.
+    const FOR_CHATS_LAST: &str = CHATS_LINES[0];
+    const FOR_CHATS_BEFORE_ROLES: &str = CHATS_LINES[1];
+
+    thread_local! {
+        /// The copies `log_edited_instructions_kept` said were left, in this test.
+        pub(super) static LEFT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Account `i`'s instructions file.
+    fn copy_in(f: &Fixture, i: usize) -> PathBuf {
+        f.account(i).join(instructions_name(f.accounts[i].provider))
+    }
+
+    /// The settings and ledger an earlier Luna left with `main` for the
+    /// person's chats laid into every account, read as this Luna reads the
+    /// file (its `laidOut` passed over), each copy opening on `line` and
+    /// noted as Luna's.
+    fn left_before(f: &Fixture, line: &str) -> (LibrarySettings, Ledger) {
         f.instructions("main", "Be brief.\n");
-        let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
-        lib.audience.instructions.insert("main".into(), Audience::CHATS);
-        lib.laid_out.insert("main".into());
+        let file =
+            r#"{"library": {"instructions": true, "audience": {"roles": {"instructions": {"main": ["chat"]}}}, "laidOut": ["main"]}}"#;
+        let lib = serde_json::from_str::<crate::settings::Settings>(file).unwrap().library;
+        assert_eq!(lib.audience.instructions["main"], Audience::CHATS);
         let mut ledger = Ledger::default();
-        f.run(&lib, &mut ledger, true);
-        // As an earlier Luna left it: its line in the copy, and in the ledger.
-        let old = format!("{FOR_CHATS_BEFORE}\n\nBe brief.\n");
-        for i in [0, 1] {
-            let name = if i == 0 { "CLAUDE.md" } else { "AGENTS.md" };
-            let dest = f.account(i).join(name);
+        let old = format!("{line}\n\nBe brief.\n");
+        for i in 0..f.accounts.len() {
+            let dest = copy_in(f, i);
             std::fs::write(&dest, &old).unwrap();
             ledger.wrote(&dest.to_string_lossy(), hashes(&Files::from([(String::new(), old.clone().into_bytes())])));
         }
-        let p = f.run(&lib, &mut ledger, false);
-        assert_eq!(Fixture::status(&p, &f.account(1).join("AGENTS.md")), Status::Behind, "Luna's copy, behind: not the person's");
+        (lib, ledger)
+    }
+
+    /// A pass that does nothing: nothing written or taken out, the ledger as
+    /// it was, no backup made and no copy said to be left.
+    fn does_nothing(f: &Fixture, lib: &LibrarySettings, ledger: &mut Ledger) {
+        let (backups, notes) = (backed_up(&f.dirs), ledger.written.clone());
+        LEFT.with(|l| l.borrow_mut().clear());
+        let p = f.run(lib, ledger, true);
+        assert!(p.written.is_empty() && p.removed.is_empty() && p.not_removed.is_empty());
+        assert_eq!(backed_up(&f.dirs), backups);
+        assert_eq!(ledger.written, notes);
+        assert!(LEFT.with(|l| l.borrow().is_empty()));
+    }
+
+    /// The person's chats' instructions an earlier Luna laid into accounts,
+    /// each copy still as it wrote it, with either of its lines: looking
+    /// takes nothing out; the first pass takes every copy out, in a Claude
+    /// Code and a Codex account alike, with nothing backed up (the library
+    /// has them); a second does nothing.
+    #[test]
+    fn chats_copies_laid_out_before_go_once_as_luna_wrote_them() {
+        for (tag, line) in [("last", FOR_CHATS_LAST), ("roles", FOR_CHATS_BEFORE_ROLES)] {
+            let f = Fixture::new(&format!("audience-move-{tag}"));
+            let (lib, mut ledger) = left_before(&f, line);
+            let p = f.run(&lib, &mut ledger, false);
+            assert!(p.places.is_empty(), "{tag}: no account wants a copy: {:?}", p.places);
+            assert!((0..3).all(|i| copy_in(&f, i).is_file()), "{tag}: looking takes nothing out");
+
+            let p = f.run(&lib, &mut ledger, true);
+            let mut removed: Vec<PathBuf> = p.removed.iter().map(PathBuf::from).collect();
+            removed.sort();
+            let mut copies: Vec<PathBuf> = (0..3).map(|i| copy_in(&f, i)).collect();
+            copies.sort();
+            assert_eq!(removed, copies, "{tag}: a pass says what it took out");
+            assert!(p.not_removed.is_empty(), "{tag}: {:?}", p.not_removed);
+            assert!(copies.iter().all(|c| !c.exists()), "{tag}");
+            assert!(ledger.written.is_empty(), "{tag}: no note left");
+            assert!(backed_up(&f.dirs).is_empty(), "{tag}: nothing of the person's in them");
+            assert_eq!(std::fs::read_to_string(f.dirs.instructions_file("main")).unwrap(), "Be brief.\n", "{tag}: the library's own stays");
+            does_nothing(&f, &lib, &mut ledger);
+        }
+    }
+
+    /// The copies edited in the account since, the line kept, whatever an
+    /// editor made of it (line ends turned to CRLF, a byte order mark put
+    /// before it): each is the person's now, left byte for byte as it is,
+    /// nothing backed up, its note dropped and its being left said once. No
+    /// session on the account leaves it out, whatever its role; the chats
+    /// still get the instructions per session. Looking first changes nothing.
+    #[test]
+    fn a_chats_copy_edited_there_is_the_person_s_and_said_once() {
+        let f = Fixture::new("audience-move-changed");
+        let (lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        let edits = [
+            format!("{FOR_CHATS_LAST}\n\nBe brief. And kind.\n"),
+            format!("{FOR_CHATS_LAST}\r\n\r\nBe brief.\r\n"),
+            format!("\u{feff}{FOR_CHATS_LAST}\n\nBe brief.\n"),
+        ];
+        for (i, e) in edits.iter().enumerate() {
+            std::fs::write(copy_in(&f, i), e).unwrap();
+        }
+        let notes = ledger.written.clone();
+        f.run(&lib, &mut ledger, false);
+        assert_eq!(ledger.written, notes, "a look drops no note");
+        assert!(LEFT.with(|l| l.borrow().is_empty()));
+
+        let p = f.run(&lib, &mut ledger, true);
+        assert!(p.removed.is_empty() && p.not_removed.is_empty(), "{:?} {:?}", p.removed, p.not_removed);
+        for (i, e) in edits.iter().enumerate() {
+            assert_eq!(std::fs::read(copy_in(&f, i)).unwrap(), e.as_bytes(), "account {i}: untouched");
+        }
+        assert!(backed_up(&f.dirs).is_empty(), "nothing taken out, nothing backed up");
+        assert!(ledger.written.is_empty(), "Luna's no longer");
+        let mut left = LEFT.with(|l| l.take());
+        left.sort();
+        let mut copies: Vec<String> = (0..3).map(|i| copy_in(&f, i).to_string_lossy().into_owned()).collect();
+        copies.sort();
+        assert_eq!(left, copies, "each said once");
+        does_nothing(&f, &lib, &mut ledger);
+
+        std::fs::create_dir_all(&f.dirs.data).unwrap();
+        ledger.save(&f.dirs).unwrap();
+        let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
+        for (i, a) in f.accounts.iter().enumerate() {
+            for role in Role::ALL {
+                let s = folder_args(&f.dirs, &lib, a, &elsewhere, role);
+                assert!(s.excluded.is_empty() && s.instructions.is_none(), "account {i} {role:?}: read as the account's own");
+                assert_eq!(s.role_entries.is_empty(), role != Role::Chat, "account {i} {role:?}");
+            }
+        }
+    }
+
+    /// An edited copy where every session's instructions go now (a broader
+    /// entry the chats' one won the account's file from): the person's, left
+    /// as it is and said to be someone else's (`taken`), never written over,
+    /// not then nor at the next pass. A copy as Luna wrote it there is
+    /// Luna's, written over with the new entry's.
+    #[test]
+    fn an_edited_chats_copy_is_not_written_over_by_every_session_s_instructions() {
+        let f = Fixture::new("audience-move-wanted");
+        let (mut lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        lib.instructions.insert("main".into(), vec!["claude/work".into(), "codex/home".into(), "claude/home".into()]);
+        f.instructions("team", "Team rules.\n");
+        lib.instructions.insert("team".into(), all());
+        let edited = format!("{FOR_CHATS_LAST}\r\n\r\nBe brief. Mine.\r\n");
+        std::fs::write(copy_in(&f, 0), &edited).unwrap();
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(std::fs::read_to_string(copy_in(&f, 0)).unwrap(), edited, "left as it is");
+        assert_eq!(Fixture::status(&p, &copy_in(&f, 0)), Status::Taken);
+        assert!(!ledger.written.contains_key(&*copy_in(&f, 0).to_string_lossy()), "Luna's no longer");
+        assert_eq!(LEFT.with(|l| l.take()), [copy_in(&f, 0).to_string_lossy().into_owned()]);
+        for i in [1, 2] {
+            assert_eq!(std::fs::read_to_string(copy_in(&f, i)).unwrap(), "Team rules.\n", "account {i}: written over as Luna's");
+        }
+        assert!(backed_up(&f.dirs).is_empty());
+        does_nothing(&f, &lib, &mut ledger);
+        assert_eq!(std::fs::read_to_string(copy_in(&f, 0)).unwrap(), edited);
+
+        // A later library edit matching those bytes must leave them owned
+        // by the person, even though the old ownership note is gone.
+        f.instructions("team", &edited);
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(Fixture::status(&p, &copy_in(&f, 0)), Status::Taken);
+        assert!(!ledger.written.contains_key(&*copy_in(&f, 0).to_string_lossy()));
+    }
+
+    /// Where every session's instructions want the path, the old chats-only
+    /// copy can be recognized by the hash of the line plus the old text.
+    /// The removal step keeps any edited instructions copy.
+    #[test]
+    fn a_chats_copy_rewritten_without_the_line_is_the_person_s_while_its_note_tells() {
+        for wanted in [false, true] {
+            let f = Fixture::new(&format!("audience-move-unlined-{wanted}"));
+            let (mut lib, mut ledger) = left_before(&f, FOR_CHATS_BEFORE_ROLES);
+            if wanted {
+                f.instructions("team", "Team rules.\n");
+                lib.instructions.insert("team".into(), all());
+            }
+            std::fs::write(copy_in(&f, 0), "My own rules now.\n").unwrap();
+            f.run(&lib, &mut ledger, true);
+            assert_eq!(f.read(0, "CLAUDE.md"), "My own rules now.\n", "wanted: {wanted}");
+            assert!(backed_up(&f.dirs).is_empty(), "wanted: {wanted}");
+            assert_eq!(LEFT.with(|l| l.take()), [copy_in(&f, 0).to_string_lossy().into_owned()]);
+            does_nothing(&f, &lib, &mut ledger);
+        }
+        let f = Fixture::new("audience-move-unlined-changed");
+        let (lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        f.instructions("main", "Be briefer.\n");
+        std::fs::write(copy_in(&f, 0), "My own rules now.\n").unwrap();
         f.run(&lib, &mut ledger, true);
-        assert_eq!(f.read(1, "AGENTS.md"), format!("{FOR_CHATS}\n\nBe brief.\n"));
-        assert_eq!(f.read(0, "CLAUDE.md"), format!("{FOR_CHATS}\n\nBe brief.\n"));
+        assert_eq!(f.read(0, "CLAUDE.md"), "My own rules now.\n");
+        assert!(ledger.written.is_empty() && backed_up(&f.dirs).is_empty());
+        assert_eq!(LEFT.with(|l| l.take()), [copy_in(&f, 0).to_string_lossy().into_owned()]);
+        does_nothing(&f, &lib, &mut ledger);
     }
 
     #[test]
-    fn instructions_for_leads_and_helpers_leave_the_accounts() {
-        let f = Fixture::new("audience-leave");
-        f.instructions("main", "Be brief.\n");
-        let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
-        let mut ledger = Ledger::default();
-        f.run(&lib, &mut ledger, true);
-        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
-        lib.audience.instructions.insert("main".into(), LEADS_AND_HELPERS);
-        f.run(&lib, &mut ledger, true);
-        assert!(!f.account(1).join("AGENTS.md").exists(), "Luna's own copy goes: given per session from now on");
-        assert!(!f.account(0).join("CLAUDE.md").exists());
+    fn old_chats_copies_use_the_hash_when_the_library_listing_fails() {
+        let f = Fixture::new("audience-move-listing-fails");
+        let (lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        std::fs::remove_file(f.dirs.instructions_file("main")).unwrap();
+        std::fs::remove_dir(f.dirs.instructions()).unwrap();
+        std::fs::write(f.dirs.instructions(), "A file in the folder's place.\n").unwrap();
+        assert!(read_instructions(&f.dirs).is_err());
+        assert_unlined_copy_is_kept(&f, &lib, &mut ledger);
     }
 
-    /// `main` for everyone, laid out for the person's chats; `report`
-    /// (theirs), `cleanup` (leads' and helpers') and `review` (every
+    #[test]
+    fn old_chats_copies_use_the_hash_when_the_library_entry_is_deleted() {
+        let f = Fixture::new("audience-move-deleted");
+        let (mut lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        std::fs::remove_file(f.dirs.instructions_file("main")).unwrap();
+        lib.instructions.clear();
+        lib.audience.instructions.clear();
+        assert_unlined_copy_is_kept(&f, &lib, &mut ledger);
+    }
+
+    fn assert_unlined_copy_is_kept(f: &Fixture, lib: &LibrarySettings, ledger: &mut Ledger) {
+        let edited = "My own rules now.\n";
+        std::fs::write(copy_in(f, 0), edited).unwrap();
+        let p = f.run(lib, ledger, true);
+        assert_eq!(p.removed.len(), 2, "the unedited copies go: {:?}", p.removed);
+        assert!(p.not_removed.is_empty());
+        assert_eq!(f.read(0, "CLAUDE.md"), edited);
+        assert!(ledger.written.is_empty() && backed_up(&f.dirs).is_empty());
+        assert_eq!(LEFT.with(|l| l.take()), [copy_in(f, 0).to_string_lossy().into_owned()]);
+        does_nothing(f, lib, ledger);
+    }
+
+    /// The copies in accounts taken off Luna's list keep their notes and stay
+    /// untouched; listed again, one as Luna wrote it is taken out, and one
+    /// edited meanwhile left as the person's.
+    #[test]
+    fn a_chats_copy_in_an_account_not_listed_waits_for_it() {
+        let f = Fixture::new("audience-move-unlisted");
+        let (lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        let listed = &f.accounts[..1];
+        let units = units(&f.dirs, &lib, listed, &read_skills(&f.dirs), &read_instructions(&f.dirs));
+        pass(&f.dirs, listed, &lib.folders, &units, &mut ledger, true);
+        assert!(!copy_in(&f, 0).exists());
+        assert!(copy_in(&f, 1).is_file() && copy_in(&f, 2).is_file(), "not listed: untouched");
+        assert_eq!(ledger.written.len(), 2, "their notes kept");
+        let edited = "Mine.\n";
+        std::fs::write(copy_in(&f, 2), edited).unwrap();
+        f.instructions("main", "Library rules changed meanwhile.\n");
+        f.run(&lib, &mut ledger, true);
+        assert!(!copy_in(&f, 1).exists());
+        assert_eq!(std::fs::read_to_string(copy_in(&f, 2)).unwrap(), edited);
+        assert!(ledger.written.is_empty() && backed_up(&f.dirs).is_empty());
+        assert_eq!(LEFT.with(|l| l.take()), [copy_in(&f, 2).to_string_lossy().into_owned()]);
+        does_nothing(&f, &lib, &mut ledger);
+    }
+
+    /// A session running on the account holds nothing back: a pass writes
+    /// and takes out an account's instructions with sessions running there as
+    /// ever, and every start is preceded by one. A copy saved there just as
+    /// the pass comes to it keeps the save and its note; the next pass finds
+    /// it edited, and leaves it.
+    #[test]
+    fn a_chats_copy_goes_with_a_session_on_its_account_and_one_saved_meanwhile_is_left() {
+        let f = Fixture::new("audience-move-in-use");
+        let (lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        let _running: Vec<crate::account_use::Running> = f.accounts.iter().map(|a| crate::account_use::running_on(&a.path)).collect();
+        assert!(f.accounts.iter().all(|a| crate::account_use::running(&a.path)));
+        let codex = copy_in(&f, 1);
+        let at = codex.clone();
+        let saved = format!("{FOR_CHATS_LAST}\n\nSaved meanwhile.\n");
+        let mut once = Some(saved.clone());
+        BEFORE_EACH.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |p: &Path| {
+                if p == at {
+                    if let Some(bytes) = once.take() {
+                        std::fs::write(&at, bytes).unwrap();
+                    }
+                }
+            }))
+        });
+        let p = f.run(&lib, &mut ledger, true);
+        BEFORE_EACH.with(|h| *h.borrow_mut() = None);
+        assert!(!copy_in(&f, 0).exists() && !copy_in(&f, 2).exists(), "taken out under their sessions");
+        assert_eq!(std::fs::read_to_string(&codex).unwrap(), saved, "the save stays");
+        assert!(p.not_removed.iter().any(|e| e.contains("changed there")), "{:?}", p.not_removed);
+        assert!(ledger.written.contains_key(&*codex.to_string_lossy()), "still Luna's, for the next pass");
+
+        let p = f.run(&lib, &mut ledger, true);
+        assert!(p.removed.is_empty());
+        assert_eq!(std::fs::read_to_string(&codex).unwrap(), saved, "edited: left where it is");
+        assert!(backed_up(&f.dirs).is_empty());
+        does_nothing(&f, &lib, &mut ledger);
+    }
+
+    /// A copy held open where Windows lets no one delete it (a program
+    /// reading it without sharing deletion): not taken out, its note kept;
+    /// once it is let go, the next pass takes it out.
+    #[cfg(windows)]
+    #[test]
+    fn a_chats_copy_held_open_goes_at_the_pass_after_it_is_let_go() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let f = Fixture::new("audience-move-held");
+        let (lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        let codex = copy_in(&f, 1);
+        // FILE_SHARE_READ alone: no deleting it while held.
+        let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(&codex).unwrap();
+        let p = f.run(&lib, &mut ledger, true);
+        assert!(codex.is_file());
+        assert!(p.not_removed.iter().any(|e| e.starts_with(&*codex.to_string_lossy())), "{:?}", p.not_removed);
+        assert!(ledger.written.contains_key(&*codex.to_string_lossy()));
+        assert!(backed_up(&f.dirs).is_empty(), "still as Luna wrote it");
+        drop(held);
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(p.removed, [codex.to_string_lossy().into_owned()]);
+        assert!(!codex.exists());
+        does_nothing(&f, &lib, &mut ledger);
+    }
+
+    /// A link put in an old copy's place, to a file of someone else's that
+    /// holds just what Luna wrote: neither that file nor the link is taken
+    /// out or backed up through it, and the note stays for a later pass.
+    /// (Windows makes a file link only with Developer Mode or as an
+    /// administrator; without, there is nothing to test.)
+    #[test]
+    fn a_link_in_a_chats_copy_s_place_is_left_alone() {
+        let f = Fixture::new("audience-move-link");
+        let (lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        let codex = copy_in(&f, 1);
+        let theirs = f.base.join("theirs.md");
+        std::fs::rename(&codex, &theirs).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&theirs, &codex).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&theirs, &codex).is_err() {
+            return;
+        }
+        let was = std::fs::read(&theirs).unwrap();
+        for _ in 0..2 {
+            let p = f.run(&lib, &mut ledger, true);
+            assert!(p.not_removed.iter().any(|e| e.contains("link")), "{:?}", p.not_removed);
+        }
+        assert!(std::fs::symlink_metadata(&codex).unwrap().file_type().is_symlink(), "the link stays");
+        assert_eq!(std::fs::read(&theirs).unwrap(), was, "what it leads to stays as it was");
+        assert!(ledger.written.contains_key(&*codex.to_string_lossy()));
+        assert!(backed_up(&f.dirs).is_empty(), "nothing read through it into the backups");
+        std::fs::remove_file(&codex).unwrap();
+    }
+
+    /// Once the copies are gone, the person's chats on both CLIs get the
+    /// instructions per session, in their role layers, and leads and helpers
+    /// get none of them, with nothing in the account left to read.
+    #[test]
+    fn after_the_move_chats_get_the_chats_instructions_per_session_and_helpers_do_not() {
+        let f = Fixture::new("audience-after-move");
+        let (lib, mut ledger) = left_before(&f, FOR_CHATS_LAST);
+        f.run(&lib, &mut ledger, true);
+        let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
+        for (i, a) in f.accounts.iter().enumerate() {
+            assert!(!copy_in(&f, i).exists());
+            let chat = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Chat);
+            assert_eq!(chat.role_entries, [("main".to_string(), "Be brief.\n".to_string())], "{:?}", a.provider);
+            assert_eq!(chat.audience, ["instructions main (chats only): given to this session alone"]);
+            assert!(chat.excluded.is_empty() && chat.instructions.is_none());
+            for role in [Role::Lead, Role::Helper] {
+                let s = folder_args(&f.dirs, &lib, a, &elsewhere, role);
+                assert!(s.role_entries.is_empty() && s.excluded.is_empty() && s.instructions.is_none(), "{:?} {role:?}", a.provider);
+                assert!(s.audience.is_empty(), "{:?}", s.audience);
+            }
+        }
+    }
+
+    /// `main` for the person's chats, given per session; `report` (theirs),
+    /// `cleanup` (leads' and helpers') and `review` (every
     /// session's) into every account; and a repository giving every account's
     /// sessions there `solo`, the person's chats' alone, which no account has
     /// as a whole.
@@ -499,7 +717,6 @@ mod tests {
             ..Default::default()
         };
         lib.audience.instructions.insert("main".into(), Audience::CHATS);
-        lib.laid_out.insert("main".into());
         lib.audience.skills.extend([
             ("report".into(), Audience::CHATS),
             ("cleanup".into(), LEADS_AND_HELPERS),
@@ -517,19 +734,22 @@ mod tests {
         let f = Fixture::new("audience-claude");
         let (lib, repo, elsewhere) = audiences(&f);
         let a = &f.accounts[0];
-        let claude_md = f.account(0).join("CLAUDE.md").to_string_lossy().replace('\\', "/");
         for role in [Role::Helper, Role::Lead] {
             let helper = folder_args(&f.dirs, &lib, a, &elsewhere, role);
             assert_eq!(helper.hidden, ["report"]);
-            assert_eq!(helper.excluded, std::slice::from_ref(&claude_md), "the account's instructions are the person's chats'");
-            assert_eq!(helper.instructions, None, "and nothing in their place");
+            assert!(helper.excluded.is_empty(), "the account's own file holds nothing of the chats'");
+            assert_eq!(helper.instructions, None);
             assert!(helper.role_entries.is_empty());
-            assert_eq!(helper.audience, ["instructions main (chats only)", "skill report (chats only)"]);
+            assert_eq!(helper.audience, ["skill report (chats only)"]);
         }
         let chat = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Chat);
         assert_eq!(chat.hidden, ["cleanup"]);
-        assert!(chat.excluded.is_empty(), "the account's own file, worded for it, is read as ever");
-        assert_eq!(chat.audience, ["skill cleanup (leads and helpers only)"]);
+        assert!(chat.excluded.is_empty());
+        assert_eq!(chat.role_entries, [("main".to_string(), "Speak Russian to me.\n".to_string())]);
+        assert_eq!(
+            chat.audience,
+            ["instructions main (chats only): given to this session alone", "skill cleanup (leads and helpers only)"]
+        );
         // In the repository a folder's skill meant for chats is left out of the
         // helper's plugin, so there is nothing of it to hide, and said all the same.
         let helper = folder_args(&f.dirs, &lib, a, &repo, Role::Helper);
@@ -544,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_helper_is_kept_from_skills_for_chats_and_told_whose_its_instructions_are() {
+    fn a_codex_helper_is_kept_from_what_is_meant_for_chats_and_a_chat_from_what_is_meant_for_helpers() {
         let f = Fixture::new("audience-codex");
         let (lib, repo, elsewhere) = audiences(&f);
         let a = &f.accounts[1];
@@ -559,25 +779,16 @@ mod tests {
         assert_eq!(helper.args, off(&[own("report")]));
         assert_eq!(helper.hidden, [own("report")]);
         assert!(helper.excluded.is_empty(), "Codex reads the account's instructions");
-        assert_eq!(
-            helper.audience,
-            ["instructions main (chats only): AGENTS.md says so, as Codex reads it in every session", "skill report (chats only)"]
-        );
-        assert!(helper.unkept.is_empty());
-        // A copy changed there, without the line: not claimed, said as not kept.
-        std::fs::write(f.account(1).join("AGENTS.md"), "Speak Russian to me.\n").unwrap();
-        let changed = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper);
-        assert_eq!(changed.audience, ["skill report (chats only)"]);
-        assert!(changed.unkept.len() == 1 && changed.unkept[0].contains("does not say so"), "{:?}", changed.unkept);
-        let applied = audience_applied(&changed);
-        let unkept = applied.iter().find(|i| i.key == "library.audience-unkept").expect("said");
-        assert_eq!(unkept.class, crate::applied::Class::UserAction);
-        // In CRLF, as an editor may leave it, it still says so.
-        std::fs::write(f.account(1).join("AGENTS.md"), format!("{FOR_CHATS}\r\n\r\nSpeak Russian to me.\r\n")).unwrap();
-        assert!(folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper).unkept.is_empty());
+        assert!(helper.role_entries.is_empty());
+        assert!(!f.account(1).join("AGENTS.md").exists(), "nothing of the chats' in the account for Codex to read");
+        assert_eq!(helper.audience, ["skill report (chats only)"]);
         let chat = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Chat);
         assert_eq!(chat.args, off(&[own("cleanup")]));
-        assert_eq!(chat.audience, ["skill cleanup (leads and helpers only)"]);
+        assert_eq!(chat.role_entries, [("main".to_string(), "Speak Russian to me.\n".to_string())]);
+        assert_eq!(
+            chat.audience,
+            ["instructions main (chats only): given to this session alone", "skill cleanup (leads and helpers only)"]
+        );
         // The repository's plugin copy of `solo` is hidden by its path too, in
         // the plugin the folder's name makes.
         let helper = folder_args(&f.dirs, &lib, a, &repo, Role::Helper);

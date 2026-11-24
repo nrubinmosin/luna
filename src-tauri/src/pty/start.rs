@@ -2341,29 +2341,48 @@ mod tests {
     }
 
     // The person's own chat where every entry of the library is theirs
-    // (library/audience.rs): started as with no audience set at all. Helpers'
-    // turns on the same library: background/command.rs.
+    // (library/audience.rs): the instructions given to it alone, in its role
+    // layers, and every skill as with no audience set at all. Helpers' turns
+    // on the same library: background/command.rs.
+
+    /// The chats-only library's instructions as a chat's role layers.
+    fn chats_only_layers() -> String {
+        "# Instructions: main\n\n# Me\n\nSpeak Russian to me.\n".to_string()
+    }
 
     #[test]
-    fn golden_claude_chat_gets_what_the_library_means_for_chats_as_ever() {
+    fn golden_claude_chat_gets_what_the_library_means_for_chats_per_session() {
         const ID: &str = "golden-claude-chats-only";
         let lib = crate::library::GoldenLibrary::chats_only("pane-claude-audience");
         let r = library_redact(ID, &lib, &lib.claude());
         let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
             s.args,
-            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>",])
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--settings",
+                "<settings-file>",
+                "--append-system-prompt-file",
+                "<instructions-file>",
+                "--system-prompt-snapshot",
+                "off"
+            ])
         );
         assert_eq!(s.envs, claude_envs(ID, "<acc>"));
         assert_eq!(s.settings, Some(golden::claude_chat_settings()), "nothing hidden, nothing left out");
-        assert_eq!(s.instructions, None);
-        for key in ["library.audience", "library.hidden-skills", "library.account-instructions-off"] {
+        assert_eq!(s.instructions, Some(chats_only_layers()));
+        for key in ["library.hidden-skills", "library.account-instructions-off"] {
             assert_eq!(s.value(key), None, "{key}");
         }
     }
 
     #[test]
-    fn golden_codex_chat_gets_what_the_library_means_for_chats_as_ever() {
+    fn golden_codex_chat_gets_what_the_library_means_for_chats_per_session() {
         const ID: &str = "golden-codex-chats-only";
         let lib = crate::library::GoldenLibrary::chats_only("pane-codex-audience");
         let r = library_redact(ID, &lib, &lib.codex());
@@ -2374,10 +2393,11 @@ mod tests {
         want.extend(golden::codex_tui_settings());
         want.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
         want.extend(golden::codex_status_hooks());
+        want.extend(strings(&["-c", "developer_instructions=<role-layers>"]));
         assert_eq!(s.args, want, "no skill turned off");
-        for key in ["library.audience", "library.hidden-skills"] {
-            assert_eq!(s.value(key), None, "{key}");
-        }
+        assert_eq!(s.role, Some(chats_only_layers()));
+        assert!(!std::path::Path::new(&lib.codex()).join("AGENTS.md").exists(), "nothing in the account's own file");
+        assert_eq!(s.value("library.hidden-skills"), None);
     }
 
     /// A chat's layers are the library's instructions for chats alone, under
