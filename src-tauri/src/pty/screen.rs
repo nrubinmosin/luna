@@ -31,8 +31,7 @@ pub struct SessionMeta {
     pub model: Option<String>,
     pub context: Option<f64>,
     pub context_tokens: Option<f64>,
-    /// Window the percentage was computed against, so the UI can show what it
-    /// assumed instead of silently pinning a longer session at 100%.
+    /// The model window reported by the CLI or estimated from its model ID.
     pub context_window: Option<f64>,
     /// Usage and model for `context_to_compact`.
     #[serde(skip)]

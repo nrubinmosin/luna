@@ -575,7 +575,7 @@ turn, stopped on a prompt (once per stop) or exited.
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
   `chat-ties.json` until told.
 - **Riders.** A job's end with nothing said (`Settled::NoNews`), the idle line,
-  a context line (`budget_news`) and a refusal for want of places are no reason
+  and a refusal for want of places are no reason
   to wake a caller: they ride with the next notice (`riders_go`), and go alone
   only once they are all it is owed, nothing in Luna is busy, or after
   `RIDE_MAX_MS`. Quota news does not ride: its lines go into the notice's lines
@@ -635,8 +635,7 @@ turn, stopped on a prompt (once per stop) or exited.
   but that parent, no `wait` of its out, nothing queued, held or reserved for
   it (background `work_and_count`), and no line waiting to go in: one queued
   for it (a wake), or one the notifier types in unasked (an account's usage
-  window past a level, `quota_due`; a helper's context past its level,
-  `budget_due`, its transcript read then; a spawn a core's going cut off; a
+  window past a level, `quota_due`; a spawn a core's going cut off; a
   refused place), as each starts a turn of its own. Each is read as it
   stands when the notice is put together, not as the notifier's last look
   saw it, so a usage figure published since can only hold the sentence
@@ -698,15 +697,9 @@ turn, stopped on a prompt (once per stop) or exited.
 - **Quota news.** An account a caller's live helpers run on reaching 90%, then
   95%, of a window, once per level per window, kept in
   `<data>/quota-told.json`.
-- **Context.** Every fifth look `budget_news` reads each helper's context
-  (`Context::of`) against its level (`level_of`): its spawn's `budgetPct` (0:
-  never), else its deprecated `budgetTokens` as the share of the window they
-  are, else the person's setting (`Settings::helper_context_pct`, 50 by
-  default, 0 off). Past it, `Registry::context_seen` holds the reading and
-  every notice line about the helper ends ` (context N%)` (`context_rider`).
-  Past 85% (`ALARM_PCT`), or its level if higher, the first reading stays as
-  `budgetBreach` and a line of its own rides to the parent once, advising a
-  fresh helper. Nothing is stopped.
+- **Context.** The pane meter and `luna_session_get` share the same context
+  reading (`background::Context`). Its basis is the CLI's estimated
+  auto-compaction point where resolved, and otherwise the model window.
 - **The log.** Each notice's line names, per session told of, what became of
   it (`kind_of`, the `Settled` variant) and how long it was held for company
   (`Notice::held_for`): what a wider batching window would have saved is read

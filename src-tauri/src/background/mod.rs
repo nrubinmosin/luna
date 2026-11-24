@@ -131,9 +131,6 @@ struct Entry {
     /// reached the CLI. Kept, across cores too, until a caller has been told
     /// (agents/ `undelivered_shown`) or a turn of `resume` has taken it.
     undelivered: Vec<Queued>,
-    /// The helpers whose budget lines its CLI's stdin has taken, until the agent
-    /// layer has noted it: the one word that a line arrived (`stdin_took`).
-    budgets_landed: Vec<String>,
     /// Its turn's processes are in a job tied to the core (procs/), so a core
     /// that dies takes them along. Saved: without it the next core cannot tell
     /// that a turn it did not stop is over.

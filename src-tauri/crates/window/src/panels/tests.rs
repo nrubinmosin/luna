@@ -678,12 +678,10 @@ fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
 
     s.update(f.cx, |v, cx| {
         v.set_max_helpers(9, cx);
-        v.set_context_pct(0, cx);
         v.set_trusted(vec!["E:\\Projects".into(), "D:\\work".into()], cx);
     });
     f.cx.run_until_parked();
     assert_eq!(f.calls(cmd::SET_MAX_HELPERS), vec![json!({ "n": 9 })]);
-    assert_eq!(f.calls(cmd::SET_HELPER_CONTEXT_PCT), vec![json!({ "pct": 0 })]);
     assert_eq!(f.calls(cmd::SET_CODEX_TRUSTED_ROOTS), vec![json!({ "roots": ["E:\\Projects", "D:\\work"] })]);
     assert_eq!(s.read_with(f.cx, |v, _| v.trusted.clone()), Some(vec!["E:\\Projects".into(), "D:\\work".into()]));
 

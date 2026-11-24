@@ -578,8 +578,6 @@ has read the file, so an empty registry never overwrites it.
   fails otherwise, out of descriptors or handles, is no exit), on Windows as
   elsewhere (no record of the
   job says so there).
-- A context line (usage.rs `budget_news`) is marked in the notice itself (`Queued::budget`), so
-  `stdin_took` is the one receipt (`budgets_landed`).
 
 ### The person's chats: `chat-ties.json`
 

@@ -878,8 +878,7 @@ pub(crate) fn without_handed_off(text: &str) -> Option<String> {
 
 /// What only a helper's settings hold (`registry::CORE_SETTINGS`, `background`):
 /// a chat of the person's has none of them.
-pub(super) const HELPER_SETTINGS: [&str; 8] =
-    ["background", "resumeOnRestart", "budgetTokens", "budgetPct", "budgetBreach", "budgetTold", "connectors", "constraints"];
+pub(super) const HELPER_SETTINGS: [&str; 4] = ["background", "resumeOnRestart", "connectors", "constraints"];
 
 /// How long this core has been up.
 pub(super) fn core_up_ms() -> u64 {

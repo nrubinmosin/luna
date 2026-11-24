@@ -20,14 +20,6 @@ pub fn set_parent_for_test(id: &str, parent: Option<String>) {
     }
 }
 
-/// Text that never reached a helper, by whom, for the tests of who hears of it.
-/// A notice with `mark` in it, given to a helper as `send_marked` does, the part
-/// that starts a CLI aside. Returns whether it was queued.
-#[cfg(test)]
-pub fn place_for_test(id: &str, text: &str, mark: BudgetMark) -> bool {
-    place(lock().entries.get_mut(id).unwrap(), Queued::new(None, text.to_string(), vec![mark]), false, true) != Placed::Started
-}
-
 /// The texts queued for its next turn, in order.
 #[cfg(test)]
 pub fn queued_for_test(id: &str) -> Vec<String> {
@@ -66,12 +58,6 @@ pub fn start_queued_for_test(id: &str) {
     let mut r = lock();
     let e = r.entries.get_mut(id).unwrap();
     e.in_flight = std::mem::take(&mut e.queue);
-}
-
-/// Its CLI's stdin has taken what the turn was started on.
-#[cfg(test)]
-pub fn stdin_took_for_test(id: &str) {
-    assert!(stdin_took(lock().entries.get_mut(id).unwrap()));
 }
 
 /// Its turn ended without its stdin taking anything, as a CLI gone first leaves it.
@@ -155,7 +141,7 @@ pub fn resume_for_test(id: &str) {
 
 #[cfg(test)]
 pub fn lose_for_test(id: &str, from: &str, text: &str) {
-    lock().entries.get_mut(id).unwrap().undelivered.push(Queued::new(Some(from.to_string()), text.to_string(), Vec::new()));
+    lock().entries.get_mut(id).unwrap().undelivered.push(Queued::new(Some(from.to_string()), text.to_string()));
 }
 
 /// A helper as a core takes it up, for the tests of what its caller is told.
@@ -179,7 +165,6 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         in_flight: Vec::new(),
         fed: Vec::new(),
         undelivered: Vec::new(),
-        budgets_landed: Vec::new(),
         tied: true,
         left_seen_out: false,
         unsure: false,
@@ -378,7 +363,6 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         error: None,
         cut_short: false,
         undelivered: Vec::new(),
-        budgets_landed: Vec::new(),
         tied: false,
         resumable: false,
         unsure: false,
@@ -450,7 +434,6 @@ pub(super) fn entry(provider: Provider) -> Entry {
         error: None,
         cut_short: false,
         undelivered: Vec::new(),
-        budgets_landed: Vec::new(),
         tied: false,
         resumable: false,
         unsure: false,
@@ -494,7 +477,7 @@ pub(super) fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 }
 
 pub(super) fn pending(uuid: &str, text: &str) -> Queued {
-    let mut q = Queued::new(Some("x".into()), text.to_string(), Vec::new());
+    let mut q = Queued::new(Some("x".into()), text.to_string());
     q.id = uuid.to_string();
     q.line = Some(uuid.to_string());
     q

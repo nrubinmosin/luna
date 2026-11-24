@@ -202,7 +202,7 @@ fn tell(id: &str, taken: &TakenOver, unsent: Vec<crate::background::Queued>) {
             if !r.known.contains_key(&caller) {
                 if !dropped.is_empty() {
                     let lost: Vec<crate::background::Queued> =
-                        dropped.into_iter().map(|t| crate::background::Queued::new(Some(caller.clone()), t, Vec::new())).collect();
+                        dropped.into_iter().map(|t| crate::background::Queued::new(Some(caller.clone()), t)).collect();
                     lines.push((None, lost));
                 }
                 continue;
@@ -217,10 +217,7 @@ fn tell(id: &str, taken: &TakenOver, unsent: Vec<crate::background::Queued>) {
                     "Session {id}{name}, which you wrote to, was taken over by the person as their own chat: nothing more is owed by it."
                 )
             };
-            lines.push((
-                Some((caller, opening)),
-                dropped.into_iter().map(|t| crate::background::Queued::new(None, t, Vec::new())).collect(),
-            ));
+            lines.push((Some((caller, opening)), dropped.into_iter().map(|t| crate::background::Queued::new(None, t)).collect()));
         }
     }
     let mut news = Vec::new();
@@ -282,8 +279,7 @@ mod tests {
 
     fn helper(id: &str, parent: &str, provider: Provider) {
         let account = if provider == Provider::Codex { "C:\\acc\\openai\\two" } else { "C:\\acc\\anthropic\\one" };
-        let settings =
-            serde_json::json!({ "model": "m", "background": true, "resumeOnRestart": true, "budgetTokens": 5, "connectors": true });
+        let settings = serde_json::json!({ "model": "m", "background": true, "resumeOnRestart": true, "connectors": true });
         register(id, provider, "C:\\p", account, Some(parent), false, settings);
     }
 
@@ -341,8 +337,8 @@ mod tests {
             assert!(authorize(&parent, &id).is_ok());
 
             let queued = vec![
-                crate::background::Queued::new(Some(parent.clone()), "and then this".into(), Vec::new()),
-                crate::background::Queued::new(Some(peer.clone()), "the peer's words".into(), Vec::new()),
+                crate::background::Queued::new(Some(parent.clone()), "and then this".into()),
+                crate::background::Queued::new(Some(peer.clone()), "the peer's words".into()),
             ];
             take_over(&id, || Some(queued)).unwrap();
 

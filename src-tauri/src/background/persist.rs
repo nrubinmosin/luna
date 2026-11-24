@@ -26,19 +26,16 @@ pub(super) struct Saved {
     pub(super) queued: bool,
     /// That text, word for word, for its sender to send again (a file an
     /// older core left has only `queued`).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "read_queue")]
     pub(super) queue: Vec<Queued>,
     /// See `Entry::in_flight`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "read_queue")]
     pub(super) in_flight: Vec<Queued>,
     /// See `Entry::fed`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "read_queue", skip_serializing_if = "Vec::is_empty")]
     pub(super) fed: Vec<Queued>,
-    /// See `Entry::budgets_landed`.
-    #[serde(default)]
-    pub(super) budgets_landed: Vec<String>,
     /// See `Entry::undelivered`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "read_queue")]
     pub(super) undelivered: Vec<Queued>,
     /// See `Entry::tied`.
     #[serde(default)]
@@ -81,6 +78,39 @@ pub(super) struct Saved {
     /// handoff's to sort out (`retire_handoff`).
     #[serde(default)]
     pub(super) no_handoff: bool,
+}
+
+/// Drops marked context alarms saved with a notice by an earlier core.
+fn read_queue<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Queued>, D::Error> {
+    #[derive(Deserialize)]
+    struct OldMark {
+        line: String,
+    }
+
+    #[derive(Deserialize)]
+    struct SavedText {
+        #[serde(flatten)]
+        queued: Queued,
+        #[serde(default)]
+        budget: Vec<OldMark>,
+    }
+
+    Ok(Vec::<SavedText>::deserialize(d)?
+        .into_iter()
+        .filter_map(|SavedText { mut queued, budget }| {
+            if !budget.is_empty() {
+                for mark in budget {
+                    queued.text = queued.text.replace(&mark.line, "");
+                }
+                let text = queued.text.trim_end();
+                if text.is_empty() || text == crate::agents::NOTICE_TAG {
+                    return None;
+                }
+                queued.text.truncate(text.len());
+            }
+            Some(queued)
+        })
+        .collect())
 }
 
 /// What `retire_handoff` needs of 0.19's `LeadSwitch`: the conversation the
@@ -184,7 +214,6 @@ pub(super) fn snapshot() -> Vec<Saved> {
             queue: e.queue.clone(),
             in_flight: e.in_flight.clone(),
             fed: e.fed.clone(),
-            budgets_landed: e.budgets_landed.clone(),
             undelivered: e.undelivered.clone(),
             tied: e.tied,
             left_seen_out: e.left_seen_out,
@@ -242,7 +271,7 @@ pub fn restore() {
         });
         if s.spec.provider == Provider::Codex {
             let arrived = codex_sent(&account, session.as_deref());
-            settle_sent([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &mut s.budgets_landed, &|line| arrived.contains(line));
+            settle_sent([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &|line| arrived.contains(line));
         }
         let ties = std::mem::take(&mut s.ties);
         // The agent layer's record of whose it is (`Known::parent`) is the one.
@@ -394,7 +423,7 @@ fn settle_lines(s: &mut Saved, reached: &dyn Fn(&str) -> Option<bool>) {
         return;
     }
     let over = turn_known_over(s);
-    settle_stores([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &mut s.budgets_landed, over, reached);
+    settle_stores([&mut s.in_flight, &mut s.fed, &mut s.undelivered], over, reached);
 }
 
 /// `settle_lines` over the stores themselves, for a saved helper and for one of
@@ -402,17 +431,13 @@ fn settle_lines(s: &mut Saved, reached: &dyn Fn(&str) -> Option<bool>) {
 /// `turn/start` or a steer takes text off the books (appserver.rs), and what
 /// a core went before hearing it answered is handed back as undelivered, the
 /// model having it or not.
-fn settle_stores(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>, over: bool, reached: &dyn Fn(&str) -> Option<bool>) {
+fn settle_stores(stores: [&mut Vec<Queued>; 3], over: bool, reached: &dyn Fn(&str) -> Option<bool>) {
     let mut known: HashMap<String, Option<bool>> = HashMap::new();
-    let mut landed: Vec<String> = Vec::new();
     for store in stores {
         store.retain_mut(|q| {
             let Some(line) = q.line.take() else { return true };
             match *known.entry(line).or_insert_with_key(|line| reached(line)) {
-                Some(true) => {
-                    landed.extend(q.budget.iter().map(|m| m.id.clone()));
-                    false
-                }
+                Some(true) => false,
                 Some(false) if over => true,
                 _ => {
                     q.maybe_reached = true;
@@ -421,7 +446,6 @@ fn settle_stores(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>
             }
         });
     }
-    budgets_landed.extend(landed);
 }
 
 /// The ids of the messages a Codex helper's thread holds (codex::session
@@ -439,14 +463,13 @@ pub(super) fn codex_sent(account: &str, thread: Option<&str>) -> std::collection
 /// books; any other is handed back to its sender as one that may not have
 /// arrived (`maybe_reached`), never sent again by Luna on its own. Texts only
 /// queued are left as they are, to go as today.
-pub(super) fn settle_sent(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>, arrived: &dyn Fn(&str) -> bool) {
+pub(super) fn settle_sent(stores: [&mut Vec<Queued>; 3], arrived: &dyn Fn(&str) -> bool) {
     for store in stores {
         store.retain_mut(|q| {
             if !q.sent {
                 return true;
             }
             if q.line.as_deref().is_some_and(arrived) {
-                budgets_landed.extend(q.budget.iter().map(|m| m.id.clone()));
                 return false;
             }
             q.maybe_reached = true;
@@ -469,7 +492,7 @@ fn lone_opening(s: &mut Saved, stopped: bool) -> Option<Queued> {
     if kept {
         return None;
     }
-    let mut q = Queued::new(None, text, Vec::new());
+    let mut q = Queued::new(None, text);
     if let Some(id) = id {
         q.id = id;
     }
@@ -496,10 +519,8 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
     }
     e.resumable = !e.unsure;
     match e.spec.provider {
-        Provider::Claude => settle_stores([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &mut e.budgets_landed, !e.unsure, reached),
-        Provider::Codex => {
-            settle_sent([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &mut e.budgets_landed, &|line| reached(line) == Some(true))
-        }
+        Provider::Claude => settle_stores([&mut e.in_flight, &mut e.fed, &mut e.undelivered], !e.unsure, reached),
+        Provider::Codex => settle_sent([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &|line| reached(line) == Some(true)),
     }
     if e.session.is_some() {
         return;
@@ -511,7 +532,7 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
         None => e.undelivered.iter().any(|q| q.text == text),
     };
     if !kept {
-        let mut q = Queued::new(None, text, Vec::new());
+        let mut q = Queued::new(None, text);
         if let Some(id) = id {
             q.id = id;
         }
@@ -560,7 +581,6 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         error: None,
         cut_short: stopped,
         undelivered,
-        budgets_landed: s.budgets_landed,
         tied: false,
         resumable,
         unsure: !resumable,
@@ -828,7 +848,6 @@ mod tests {
             in_flight: Vec::new(),
             fed: Vec::new(),
             undelivered: Vec::new(),
-            budgets_landed: Vec::new(),
             tied: false,
             left_seen_out: false,
             unsure: false,
@@ -1021,7 +1040,7 @@ mod tests {
             crate::agents::NOTICE_TAG
         );
         let mut s = with_lines(false);
-        s.queue = vec![Queued::new(None, notice, Vec::new())];
+        s.queue = vec![Queued::new(None, notice)];
         let e = taken_up(s);
         let texts: Vec<String> = e.undelivered.iter().map(|q| q.text.clone()).collect();
         assert_eq!(texts, [format!("{} Your helper h1 answered.", crate::agents::NOTICE_TAG)]);
@@ -1156,7 +1175,6 @@ mod tests {
                 in_flight: Vec::new(),
                 fed: Vec::new(),
                 undelivered: Vec::new(),
-                budgets_landed: Vec::new(),
                 tied: true,
                 left_seen_out: false,
                 unsure: false,
@@ -1205,22 +1223,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn saved_context_alarms_are_removed_without_losing_other_notice_text() {
+        let tag = crate::agents::NOTICE_TAG;
+        let alarm = "Your helper kid has used 90% of its context window.";
+        let mut value = serde_json::to_value(with_lines(true)).unwrap();
+        value["queue"] = json!([
+            { "text": format!("{tag} {alarm}"), "budget": [{"id": "kid", "line": alarm}] },
+            { "text": format!("{tag} Your helper answered. {alarm}"), "budget": [{"id": "kid", "line": alarm}] },
+            { "from": "parent", "text": alarm }
+        ]);
+        let saved: Saved = serde_json::from_value(value).unwrap();
+        assert_eq!(saved.queue.len(), 2);
+        assert_eq!(saved.queue[0].text, format!("{tag} Your helper answered."));
+        assert_eq!(saved.queue[1].text, alarm);
+    }
+
     /// In the transcript it is the model's, whatever Luna had time to note: not
     /// given back, not sent again.
     #[test]
     fn a_core_gone_before_noting_the_clis_word_goes_by_the_transcript() {
         let mut s = with_lines(true);
-        let mark = BudgetMark { id: "kid".into(), line: "over budget".into() };
-        let mut flying = pending("batch", "started on");
-        flying.budget = vec![mark];
-        s.in_flight = vec![flying, Queued { line: Some("batch".into()), ..pending("second", "with it") }];
+        s.in_flight = vec![pending("batch", "started on"), Queued { line: Some("batch".into()), ..pending("second", "with it") }];
         s.fed = vec![pending("folded", "taken in"), pending("missed", "not taken in")];
         settle_lines(&mut s, &|line| Some(line != "missed"));
         assert!(s.in_flight.is_empty(), "a batch goes by its line");
         assert_eq!(s.fed, ["not taken in"]);
         assert!(!s.fed[0].maybe_reached, "the turn is over and it is not there: it never got there");
         assert!(s.fed[0].line.is_none());
-        assert_eq!(s.budgets_landed, ["kid"]);
         let e = taken_up(s);
         assert_eq!(e.undelivered, ["not taken in"]);
     }
@@ -1240,7 +1270,7 @@ mod tests {
 
         let mut e = taken_up(s);
         e.resumable = true;
-        e.undelivered.push(Queued::new(Some("x".into()), "plainly lost".into(), Vec::new()));
+        e.undelivered.push(Queued::new(Some("x".into()), "plainly lost".into()));
         e.session = Some("sid".into());
         e.spec.folder = "C:\\luna-no-such-folder".into();
         lock().entries.insert("doubt".into(), e);
@@ -1333,7 +1363,7 @@ mod tests {
             s
         };
         let settled = |mut s: Saved, arrived: &[&str]| {
-            settle_sent([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &mut s.budgets_landed, &|line| arrived.contains(&line));
+            settle_sent([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &|line| arrived.contains(&line));
             taken_up(s)
         };
         let doubtful = |e: &Entry| e.undelivered.iter().filter(|q| q.maybe_reached).map(|q| q.text.clone()).collect::<Vec<_>>();

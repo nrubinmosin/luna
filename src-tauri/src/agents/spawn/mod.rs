@@ -68,16 +68,6 @@ pub struct SpawnParams {
     /// Kept in the settings it runs with.
     #[serde(skip_serializing)]
     pub resume_on_restart: Option<bool>,
-    /// Deprecated for `budget_pct`: context tokens, read as the share of its
-    /// window they are once the window is known (`budget_news`). Kept in the
-    /// settings it runs with, as records saved before `budgetPct` have it.
-    #[serde(skip_serializing)]
-    pub budget_tokens: Option<u64>,
-    /// The share of its context window past which notices about it say where
-    /// it stands (`budget_news`), 0 for never; none: the person's setting
-    /// (`Settings::helper_context_pct`). Kept in the settings it runs with.
-    #[serde(skip_serializing)]
-    pub budget_pct: Option<u32>,
     /// The `requestKey` the spawn came with, which notices name its answer by
     /// (said.rs `Request`); the retry itself is the dispatcher's.
     #[serde(skip_serializing)]
@@ -173,10 +163,6 @@ pub(super) struct SpawnTaken {
     pub(super) auto_delete: Option<bool>,
     pub(super) resume_on_restart: bool,
     #[serde(default)]
-    pub(super) budget_tokens: Option<u64>,
-    #[serde(default)]
-    pub(super) budget_pct: Option<u32>,
-    #[serde(default)]
     pub(super) connectors: bool,
     pub(super) in_worktree: Option<String>,
     pub(super) account_path: String,
@@ -223,8 +209,6 @@ impl SpawnUnderWay {
             params: params.clone(),
             auto_delete: params.auto_delete,
             resume_on_restart: params.resume_on_restart == Some(true),
-            budget_tokens: params.budget_tokens,
-            budget_pct: params.budget_pct,
             connectors: params.connectors == Some(true),
             in_worktree: in_worktree.map(str::to_owned),
             account_path: account_path.to_string(),
@@ -424,12 +408,6 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     }
     // Kept on disk with the spawn, and read back as it was asked: never as keys.
     plain_text(&params.prompt)?;
-    if params.budget_tokens == Some(0) {
-        return Err("budgetTokens must be above 0".into());
-    }
-    if params.budget_pct.is_some_and(|pct| pct > 100) {
-        return Err("budgetPct is a share of the context window: 0 (never) to 100".into());
-    }
     // A blank folder is none named, as `luna_account_get` has it.
     params.folder = params.folder.take().filter(|f| !f.trim().is_empty());
     // Off the registry lock: this reads the CLI's registry from disk. A
@@ -578,8 +556,7 @@ pub(super) fn spawn_is(request: u64, id: &str) -> Result<(), String> {
 }
 
 /// The helpers' settings the window shows: how many places a line has
-/// (`max_descendants`), the range it may be set in, and the context share its
-/// notices speak past.
+/// (`max_descendants`) and the range it may be set in.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelperSettings {
@@ -587,14 +564,7 @@ pub struct HelperSettings {
     pub min: u32,
     pub max: u32,
     pub delegate_auto_compact_tokens: u32,
-    /// `Settings::helper_context_pct`, 0 for off.
-    pub helper_context_pct: u32,
 }
-
-/// The share of a helper's context window past which notices about it say
-/// where it stands, unless the person sets otherwise: a reviewer with a small
-/// window filled to 89% before its caller thought to rotate it.
-pub const CONTEXT_PCT_DEFAULT: u32 = 50;
 
 pub fn helper_settings() -> HelperSettings {
     let s = crate::settings::get();
@@ -603,21 +573,12 @@ pub fn helper_settings() -> HelperSettings {
         min: *HELPERS_RANGE.start(),
         max: *HELPERS_RANGE.end(),
         delegate_auto_compact_tokens: crate::settings::delegate_auto_compact_tokens(s.delegate_auto_compact_tokens).unwrap_or(0),
-        helper_context_pct: s.helper_context_pct.min(100),
     }
 }
 
 pub fn set_delegate_auto_compact_tokens(tokens: u32) -> Result<HelperSettings, String> {
     let tokens = crate::settings::delegate_auto_compact_tokens(tokens).unwrap_or(0);
     crate::settings::update(|s| s.delegate_auto_compact_tokens = tokens)?;
-    Ok(helper_settings())
-}
-
-/// Only what notices say: nothing a helper may do changes.
-pub fn set_helper_context_pct(pct: u32) -> Result<HelperSettings, String> {
-    let pct = pct.min(100);
-    crate::settings::update(|s| s.helper_context_pct = pct)?;
-    crate::log::info("agents", &format!("helpers' context told of past: {pct}%"));
     Ok(helper_settings())
 }
 
@@ -778,14 +739,6 @@ mod tests {
         // A request nothing stands for any more is refused the same.
         register("gu-none", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("gu-caller"), false, serde_json::json!({}));
         assert!(spawn_is(1, "gu-none").is_err());
-    }
-
-    #[test]
-    fn a_budget_is_lunas_and_a_spawn_of_nothing_is_refused() {
-        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "budgetTokens": 50000 })).unwrap();
-        assert_eq!(p.budget_tokens, Some(50000));
-        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "budgetTokens": 0 })).unwrap();
-        assert_eq!(spawn("nobody", p).err().unwrap(), "budgetTokens must be above 0");
     }
 
     #[test]

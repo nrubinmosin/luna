@@ -27,7 +27,6 @@ pub(super) fn took(e: &mut Entry, uuid: &str) -> bool {
         *store = rest;
         landed.extend(of_line);
     }
-    e.budgets_landed.extend(landed.iter().flat_map(|q| q.budget.iter().map(|m| m.id.clone())));
     for q in &landed {
         note(e, &format!("took in: {}", one_line(&q.text)));
     }
@@ -1146,7 +1145,7 @@ mod tests {
         let open =
             |lines: &std::sync::mpsc::Receiver<String>| !matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected));
 
-        assert_eq!(send_marked(id, "[Luna notice] your helper answered", None, Vec::new()), Ok((Placed::Joined, false)));
+        assert_eq!(send_notice(id, "[Luna notice] your helper answered"), Ok((Placed::Joined, false)));
         let uuid = lock().entries[id].fed[0].id.clone();
         assert!(lines.try_recv().is_ok());
         // The CLI's own turn on the task's end, and its `result`, before the line.
@@ -1316,13 +1315,11 @@ mod tests {
         assert!(e.fed.is_empty());
 
         // A batch goes as the line of its first, the opening one too.
-        let mark = BudgetMark { id: "kid".into(), line: "over budget".into() };
-        e.in_flight = vec![Queued::new(None, "one".into(), vec![mark]), "two".into()];
+        e.in_flight = vec![Queued::from("one"), "two".into()];
         stamp(&mut e.in_flight);
         let uuid = e.in_flight[0].id.clone();
         assert!(on_claude_event(&mut e, &json!({ "type": "command_lifecycle", "command_uuid": uuid, "state": "started" })));
         assert!(e.in_flight.is_empty());
-        assert_eq!(e.budgets_landed, ["kid"], "a budget line counts once the CLI has it");
     }
 
     #[test]

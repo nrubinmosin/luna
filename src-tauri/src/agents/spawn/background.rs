@@ -270,12 +270,6 @@ pub(in crate::agents) fn spawn_background(
     if params.resume_on_restart == Some(true) {
         settings["resumeOnRestart"] = serde_json::json!(true);
     }
-    if let Some(budget) = params.budget_tokens {
-        settings["budgetTokens"] = serde_json::json!(budget);
-    }
-    if let Some(pct) = params.budget_pct {
-        settings["budgetPct"] = serde_json::json!(pct);
-    }
     if spec.connectors {
         settings["connectors"] = serde_json::json!(true);
     }

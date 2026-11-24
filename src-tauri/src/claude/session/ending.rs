@@ -46,8 +46,8 @@ fn scan_usage(text: &str) -> Option<(f64, String, Option<f64>)> {
             continue;
         }
         if boundary.is_none() && v["type"] == "system" && v["subtype"] == "compact_boundary" {
-            // The meter and budget still use the last answer. Only the
-            // estimate needs to know what remains after compaction.
+            // After compaction the boundary can give the new count before
+            // the next answer has reported usage.
             boundary = Some(v["compactMetadata"]["postTokens"].as_f64().filter(|n| *n >= 0.0));
         }
         if !has_usage {

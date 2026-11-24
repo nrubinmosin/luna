@@ -99,6 +99,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Removed
 
+- Helper context thresholds, their notice text, and the Settings control.
+  `luna_session_spawn` still accepts and ignores `budgetPct` and `budgetTokens`.
+  The pane meter and `luna_session_get` show the share of the CLI's estimated
+  auto-compaction limit when known, or the model window otherwise.
+
 - The `role-chat` system text. A chat of yours is now shaped only by your
   library (the instructions and skills whose **For** column takes chats) and
   the **Luna tools** box; role texts are for leads and helpers. Luna's own

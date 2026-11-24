@@ -1,6 +1,6 @@
 //! The settings window's view, and what each of its rows asks of the host.
 
-use super::{AccountsRoot, CONTEXT_PCTS, COPY_ON_SELECT, CliState, CliStatus, CliVersions, HelperSettings, Page, RolledBack};
+use super::{AccountsRoot, COPY_ON_SELECT, CliState, CliStatus, CliVersions, HelperSettings, Page, RolledBack};
 use crate::desktop::{Pick, PickKind};
 use crate::dto::LinkState;
 use crate::models::Models;
@@ -229,10 +229,6 @@ impl SettingsPanel {
         self.call(Page::Agents, cmd::SET_DELEGATE_AUTO_COMPACT_TOKENS, json!({ "tokens": tokens }), cx, |v, h: HelperSettings, _| {
             v.helpers = Some(h);
         });
-    }
-
-    pub fn set_context_pct(&mut self, pct: u32, cx: &mut Context<Self>) {
-        self.call(Page::Agents, cmd::SET_HELPER_CONTEXT_PCT, json!({ "pct": pct }), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
     }
 
     pub fn set_trusted(&mut self, roots: Vec<String>, cx: &mut Context<Self>) {
@@ -592,18 +588,6 @@ impl SettingsPanel {
                 ready && tokens != 0 && tokens < DELEGATE_COMPACT_MAX,
                 self.act(cx, move |v, _, cx| v.set_delegate_auto_compact_tokens(tokens + DELEGATE_COMPACT_STEP, cx)),
             ));
-        let pct = ui::segmented(
-            "settings-helper-context",
-            p,
-            CONTEXT_PCTS
-                .iter()
-                .map(|&n| {
-                    let label = if n == 0 { "Never".to_owned() } else { format!("{n}%") };
-                    (SharedString::from(label), h.helper_context_pct == n, self.act(cx, move |v, _, cx| v.set_context_pct(n, cx)))
-                })
-                .collect(),
-            ready,
-        );
         let roots = self.trusted.clone();
         let mut list = div().flex().flex_col();
         match &roots {
@@ -645,13 +629,6 @@ impl SettingsPanel {
                 Some("Set in tokens at each delegate CLI start. Off uses the CLI's own settings.".into()),
                 compaction,
             ))
-            .child(ui::row(
-                p,
-                "Tell me when a helper's context passes",
-                Some("Notices about a helper past this share of its context window say how full it is; past 85% one comes on its own.".into()),
-                div(),
-            ))
-            .child(pct)
             .child(ui::section(p, "Trusted folders"))
             .child(ui::note(p, "A Codex session in a project under any of these folders starts trusted: its own .codex/ config, hooks and rules load, with nothing written to the account."))
             .child(list)

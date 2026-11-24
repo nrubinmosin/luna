@@ -154,6 +154,7 @@ pub struct Live {
     pub context: Option<f64>,
     /// The tokens it can take in before its CLI compacts its context, as
     /// the core estimates them.
+    /// Also identifies the denominator of the context share when present.
     pub to_compact: Option<u64>,
     /// An unsent draft in its composer.
     pub draft: bool,

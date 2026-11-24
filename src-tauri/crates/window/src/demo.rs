@@ -317,7 +317,7 @@ pub fn accounts() -> Value {
 /// held, one in the background, the rest not running.
 pub fn looks() -> Value {
     let meta = |status: &str, context: f64, draft: bool, held: u64, title: &str| json!({ "status": status, "context": context, "draft": draft, "held": held, "title": title, "titleRenamed": false });
-    let mut parser = meta("waiting", 0.62, true, 0, "Parser fix");
+    let mut parser = meta("waiting", 0.64, true, 0, "Parser fix");
     parser["contextToCompact"] = 347_400.into();
     json!([
         { "id": "c-parser", "meta": parser },

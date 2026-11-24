@@ -140,9 +140,6 @@ pub(super) struct Registry {
     /// What each lead was last seen waiting on (lines.rs `note_delegates`):
     /// what its wake names.
     pub(super) delegates: HashMap<String, Vec<String>>,
-    /// The share of its context window each helper past its level was last
-    /// read at (notifier usage.rs `budget_news`): the rider on its notices.
-    pub(super) context_seen: HashMap<String, u64>,
     /// When each turn-end notice went, by (caller, session), within
     /// BREAKER_WINDOW_MS.
     pub(super) notice_times: HashMap<(String, String), Vec<u64>>,
@@ -194,7 +191,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             notice_turns: HashMap::new(),
             woken: HashMap::new(),
             delegates: HashMap::new(),
-            context_seen: HashMap::new(),
             notice_times: HashMap::new(),
             stopped: HashMap::new(),
             exits: HashMap::new(),
@@ -507,17 +503,14 @@ pub(crate) fn codex_chat_trust_key(id: &str, account_path: &str, folder: &str) -
 }
 
 /// What a helper's settings hold that its CLI is not started with: `register` keeps
-/// them across every start, and ties across cores. `resumeOnRestart`, a budget with
-/// where it stands (`budget_news`), `connectors` (`Spec::connectors`) and
+/// them across every start, and ties across cores. `resumeOnRestart`,
+/// `connectors` (`Spec::connectors`) and
 /// `constraints` (agents/spawn `Constraint`), which a spawn of its own passes on.
-const CORE_SETTINGS: [&str; 7] =
-    ["resumeOnRestart", "budgetTokens", "budgetPct", "budgetBreach", "budgetTold", "connectors", "constraints"];
+const CORE_SETTINGS: [&str; 3] = ["resumeOnRestart", "connectors", "constraints"];
 
-/// Settings an older Luna kept that this one has no use for: 0.19's
-/// auto-handoff threshold (`handoff`), in a chat's settings from the window and
-/// in ties a 0.19 core saved. Taken out wherever a session's settings come in
-/// (`register`, persist.rs `take_up_chats`), so no row a tool gives shows them.
-const RETIRED_SETTINGS: [&str; 1] = ["handoff"];
+/// Retired handoff and context thresholds are dropped as session settings
+/// come in (`register`, persist.rs `take_up_chats`).
+const RETIRED_SETTINGS: [&str; 5] = ["handoff", "budgetPct", "budgetTokens", "budgetBreach", "budgetTold"];
 
 /// `settings` without `RETIRED_SETTINGS`.
 pub(super) fn without_retired(mut settings: serde_json::Value) -> serde_json::Value {
@@ -1108,17 +1101,16 @@ mod tests {
     }
 
     #[test]
-    fn where_a_budget_stands_outlives_every_start_of_its_cli() {
+    fn retired_budget_state_does_not_survive_a_restart() {
         let settings = serde_json::json!({ "model": "m", "budgetTokens": 7, "budgetBreach": { "at": 1 }, "budgetTold": true });
         register("bs-kid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("bs-p"), false, settings);
         // The window starts its CLI again, on flags that say nothing of it.
         register("bs-kid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("bs-p"), false, serde_json::json!({ "model": "m2" }));
         let s = settings_of("bs-kid");
-        assert_eq!(
-            (&s["model"], &s["budgetTokens"], &s["budgetTold"]),
-            (&serde_json::json!("m2"), &serde_json::json!(7), &serde_json::json!(true))
-        );
-        assert_eq!(s["budgetBreach"]["at"], 1);
+        assert_eq!(s["model"], "m2");
+        for key in ["budgetTokens", "budgetBreach", "budgetTold"] {
+            assert!(s.get(key).is_none());
+        }
         forget("bs-kid");
     }
 

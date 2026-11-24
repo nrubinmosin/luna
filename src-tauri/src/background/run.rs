@@ -25,7 +25,6 @@ pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Res
         error: None,
         cut_short: false,
         undelivered: Vec::new(),
-        budgets_landed: Vec::new(),
         tied: false,
         resumable: false,
         unsure: false,
@@ -877,11 +876,9 @@ fn args_for_log(id: &str, args: &[String]) -> String {
     args.iter().map(|a| urls.iter().fold(a.clone(), |s, (url, to)| s.replace(url.as_str(), to))).collect::<Vec<_>>().join(" ")
 }
 
-/// The turn has what `in_flight` holds: not to be handed back as undelivered, and
-/// the budget lines in it have arrived. Whether there was any.
+/// The turn has taken in its opening batch. Returns whether it held any text.
 pub(super) fn stdin_took(e: &mut Entry) -> bool {
     let batch = std::mem::take(&mut e.in_flight);
-    e.budgets_landed.extend(batch.iter().flat_map(|q| q.budget.iter().map(|m| m.id.clone())));
     !batch.is_empty()
 }
 
@@ -1114,7 +1111,7 @@ mod tests {
         }
     }
 
-    /// An ordinary send to an idle helper, no budget lines in it, that the
+    /// A send to an idle helper that the
     /// gate refuses while the sessions are stopped for an update waits in the
     /// queue: not an ended turn, nothing failed or handed back, for a
     /// call-off to start or the next core to keep for its sender.

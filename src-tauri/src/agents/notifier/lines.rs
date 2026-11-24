@@ -3,7 +3,7 @@
 
 use crate::agents::ask::{ask_of, live};
 use crate::agents::lost::{never_started_what, sentence, undelivered_for, undelivered_line, undelivered_text};
-use crate::agents::notifier::usage::{budget_due, quota_due};
+use crate::agents::notifier::usage::quota_due;
 use crate::agents::notifier::Settled;
 use crate::agents::owed::requests_of;
 use crate::agents::owed::{Owed, QUEUED_GRACE_MS};
@@ -670,7 +670,7 @@ fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option
     };
     // Off the registry's lock: these ask whether helpers are live, and read
     // their transcripts.
-    quiet && !quota_due(pty, id) && !budget_due(pty, id)
+    quiet && !quota_due(pty, id)
 }
 
 /// What a notice says of a helper whose CLI stopped what its last turn left in
@@ -2358,10 +2358,6 @@ mod tests {
         reg().lock().unwrap().usage.insert("claude/rn-acc".into(), window(40.0));
         assert!(runs_nothing(pty, id, top, idle), "a window below every level");
         reg().lock().unwrap().usage.remove("claude/rn-acc");
-        reg().lock().unwrap().known.get_mut(sub).unwrap().settings["budgetBreach"] = serde_json::json!({ "at": 1, "pct": 90 });
-        stops("its helper's context past the alarm level, not yet told");
-        reg().lock().unwrap().known.get_mut(sub).unwrap().settings["budgetTold"] = serde_json::json!(true);
-        assert!(runs_nothing(pty, id, top, idle), "told already");
         crate::background::gone_for_test(sub);
         forget(sub);
         let mut cut = crate::agents::test_support::spawn_taken(9_177_001, id, None, false);

@@ -29,10 +29,6 @@ pub struct Settings {
     /// to the CLI.
     pub delegate_auto_compact_tokens: u32,
 
-    /// The share of its context window past which notices about a helper say
-    /// where it stands (agents/notifier usage.rs `budget_news`); 0 is off. A
-    /// spawn's `budgetPct` sets its own.
-    pub helper_context_pct: u32,
     /// Per provider, the account whose settings file the others copy
     /// (account_settings/sync.rs), by name.
     pub settings_parents: SettingsParents,
@@ -451,7 +447,6 @@ impl Default for Settings {
             power_action: "shutdown".into(),
             agent_blocked_accounts: Vec::new(),
             max_helpers: crate::agents::spawn::HELPERS_DEFAULT,
-            helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
             delegate_auto_compact_tokens: luna_window::DELEGATE_COMPACT_DEFAULT,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
@@ -647,9 +642,10 @@ mod tests {
         let old: Settings =
             serde_json::from_str(r#"{"maxHelpers": 7, "leadHandoff": {"on": true, "threshold": 60}, "helperContextPct": 40}"#)
                 .expect("a 0.19 file reads");
-        assert_eq!((old.max_helpers, old.helper_context_pct), (7, 40), "the rest of it as written");
+        assert_eq!(old.max_helpers, 7, "the rest of it as written");
         assert_eq!(old.delegate_auto_compact_tokens, 400_000, "older settings get the default");
         let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("helperContextPct").is_none());
         assert!(json.get("leadHandoff").is_none(), "nothing keeps it, so a write leaves it out");
     }
 

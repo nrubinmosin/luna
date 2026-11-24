@@ -44,15 +44,6 @@ can type into it and answer its model's questions with `scope: "all"`
 - `luna_power_set`, for when you ask for it, arms the same "when done" shutdown,
   restart, hibernate or sleep as the power chip, which shows and cancels it; the
   action `cancel` disarms it too.
-- Past a share of its context window (**Tell me when a helper's context
-  passes** in Settings → Agents & trust → Helpers, 50% unless changed; a spawn's
-  `budgetPct` sets one helper's), every notice about a helper ends "(context
-  N%)". Past 85% its parent hears so once on its own. Nothing is stopped.
-  `budgetTokens` still works, read as the share of the window it is.
-  In a chat pane, hover over the context meter to see Luna's estimate of how
-  many tokens the CLI can take in before it compacts. Codex settings edits
-  apply to the next launch. Claude Code settings edits can update the tooltip
-  during a session.
 - A lead (a helper given Luna's tools) does not wake its parent with what it
   writes while its own helpers or background work are still at it; that waits
   for the notice that comes once they are done, unless a message opens on

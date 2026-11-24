@@ -1,7 +1,6 @@
-//! How many tokens a session can still take in before its CLI compacts its
-//! context on its own, for the pane's context meter: the threshold its CLI's
-//! settings make of its window (claude/compact.rs, codex/compact.rs), less
-//! what its last answer used. The settings are read with Luna's own readers,
+//! Where a session's CLI compacts its context on its own, for the pane's
+//! meter and on-demand context readings. Each CLI's settings determine the
+//! threshold (claude/compact.rs, codex/compact.rs). The settings are read with Luna's own readers,
 //! never by asking the CLI. Codex keeps its launch's inputs. Claude Code
 //! reloads settings, so its inputs are refreshed on change.
 //!
@@ -74,15 +73,13 @@ fn resolved(cache: &Mutex<Seen>, key: Key, stamp: u64, read: impl FnOnce() -> Re
     fresh
 }
 
-/// What session `id` on `model` can take in past `tokens`, its rollout or
-/// transcript stating `window`; None where auto-compaction is off or its
-/// threshold cannot be told.
-pub fn left(id: &str, launch: &Launch, model: &str, tokens: u64, window: u64) -> Option<u64> {
-    let limit = match launch.provider {
-        Provider::Claude => crate::claude::compact::threshold(claude_inputs(id, launch, model).inputs.as_ref()?, window),
-        Provider::Codex => launch.codex.as_ref()?.limit(model, window)?,
-    };
-    Some(limit.saturating_sub(tokens))
+/// The token count at which the CLI starts auto-compaction. None where it is
+/// off or the threshold cannot be told.
+pub fn threshold(id: &str, launch: &Launch, model: &str, window: u64) -> Option<u64> {
+    match launch.provider {
+        Provider::Claude => Some(crate::claude::compact::threshold(claude_inputs(id, launch, model).inputs.as_ref()?, window)),
+        Provider::Codex => launch.codex.as_ref()?.limit(model, window),
+    }
 }
 
 fn claude_inputs(id: &str, launch: &Launch, model: &str) -> Arc<Read> {
@@ -125,6 +122,10 @@ fn claude_inputs(id: &str, launch: &Launch, model: &str) -> Arc<Read> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn left(id: &str, launch: &Launch, model: &str, tokens: u64, window: u64) -> Option<u64> {
+        threshold(id, launch, model, window).map(|limit| limit.saturating_sub(tokens))
+    }
 
     fn launch(account: &Path, start: u64) -> Launch {
         let path = account.to_string_lossy().into_owned();

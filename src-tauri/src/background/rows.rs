@@ -120,10 +120,8 @@ pub fn signs(id: &str) -> Option<Signs> {
         (signs, e.spec.provider, e.compaction.clone())
     };
     // Off the transcript, with the lock let go: every helper's events wait on it.
-    if let Some((context, sample)) = transcript(id).and_then(|path| Context::read(&path, provider)) {
-        if let (Some(launch), Some(sample)) = (launch, sample) {
-            signs.context_to_compact = crate::to_compact::left(id, &launch, &sample.model, sample.tokens, context.window);
-        }
+    if let Some((context, left)) = transcript(id).and_then(|path| Context::read(&path, id, provider, launch.as_ref())) {
+        signs.context_to_compact = left;
         signs.context = Some(context);
     }
     Some(signs)
@@ -684,9 +682,9 @@ mod tests {
         let answer = r#"{"type":"assistant","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":150000},"content":[]}}"#;
         std::fs::write(&path, format!("{answer}\n")).unwrap();
         let s = signs("context-1").unwrap();
-        assert_eq!(s.context, Some(Context { pct: 75, tokens: 150_000, window: 200_000 }));
+        assert_eq!(s.context, Some(Context { pct: 75, tokens: 150_000, window: 200_000, basis: "model" }));
         assert_eq!(s.context_to_compact, None);
-        assert!(serde_json::to_string(&s).unwrap().contains(r#""context":{"pct":75,"tokens":150000,"window":200000}"#));
+        assert!(serde_json::to_string(&s).unwrap().contains(r#""context":{"pct":75,"tokens":150000,"window":200000,"basis":"model"}"#));
         lock().entries.get_mut("context-1").unwrap().compaction = Some(crate::to_compact::Launch {
             provider: Provider::Claude,
             account_path: account.clone(),
@@ -698,11 +696,56 @@ mod tests {
         let boundary = r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"postTokens":10000}}"#;
         std::fs::write(&path, format!("{answer}\n{boundary}\n")).unwrap();
         let compacted = signs("context-1").unwrap();
-        assert_eq!(compacted.context, s.context);
+        assert_eq!(compacted.context, Some(Context { pct: 15, tokens: 10_000, window: 67_000, basis: "autoCompact" }));
         assert_eq!(compacted.context_to_compact, Some(57_000));
         lock().entries.remove("context-0");
         lock().entries.remove("context-1");
         let _ = std::fs::remove_dir_all(&account);
+    }
+
+    #[test]
+    fn the_pane_and_session_get_use_the_same_context_basis() {
+        let (parent, kid, sid) = ("pane-ctx-parent", "pane-ctx-helper", "abcdef");
+        let dir = std::env::temp_dir().join(format!("luna-pane-context-{}", std::process::id()));
+        let account = dir.to_str().unwrap();
+        let path = crate::claude::session::transcript_file(account, account, sid);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            concat!(r#"{"type":"assistant","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":150000},"content":[]}}"#, "\n"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        std::fs::write(dir.join("sessions/1.json"), json!({ "cwd": account, "sessionId": sid }).to_string()).unwrap();
+        crate::background::test_helper(kid, account, Some(sid), false);
+        crate::agents::register(parent, Provider::Claude, account, account, None, true, json!({}));
+        crate::agents::register(kid, Provider::Claude, account, account, Some(parent), false, json!({}));
+        lock().entries.get_mut(kid).unwrap().compaction = Some(crate::to_compact::Launch {
+            provider: Provider::Claude,
+            account_path: account.into(),
+            folder: account.into(),
+            start: 1,
+            claude_window: None,
+            codex: None,
+        });
+
+        let settings = dir.join("settings.json");
+        std::fs::write(&settings, r#"{"autoCompactWindow": 195000}"#).unwrap();
+        let context = || serde_json::to_value(crate::agents::session_get(parent, kid, false).unwrap()).unwrap()["context"].clone();
+        let pane = || serde_json::to_value(crate::pty::probe::resumed_claude_look_for_test(kid, account, 1)).unwrap()["meta"].clone();
+        assert_eq!(context(), json!({ "pct": 93, "tokens": 150_000, "window": 162_000, "basis": "autoCompact" }));
+        assert_eq!(pane()["contextToCompact"], 12_000);
+        assert_eq!(pane()["context"], 150_000.0 / 162_000.0);
+
+        std::fs::write(&settings, r#"{"autoCompactEnabled": false}"#).unwrap();
+        assert_eq!(context(), json!({ "pct": 75, "tokens": 150_000, "window": 200_000, "basis": "model" }));
+        assert!(pane()["contextToCompact"].is_null());
+        assert_eq!(pane()["context"], 0.75);
+
+        crate::background::gone_for_test(kid);
+        crate::agents::forget(kid);
+        crate::agents::forget(parent);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A turn that could not be put in the helper's job left what it started in
