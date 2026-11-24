@@ -1047,10 +1047,12 @@ mod tests {
             } else {
                 crate::background::left_for_test(id, &[("gate", 22104)]);
                 let first = debt();
-                let Some((Some(_), how @ Settled::Pending(3, _, Some(1)))) = look(first) else {
+                let Some((Some(line), how @ Settled::Pending(3, _, Some(1)))) = look(first) else {
                     panic!("{delivery}: the first reply is pending")
                 };
                 settle_told(&mut reg().lock().unwrap(), key.clone(), how, &first);
+                let file = line.split("Report ").nth(1).and_then(|tail| tail.split(":1–").next()).unwrap();
+                let _ = std::fs::remove_file(file);
                 crate::background::left_for_test(id, &[]);
             }
             if delivery == "restart" {

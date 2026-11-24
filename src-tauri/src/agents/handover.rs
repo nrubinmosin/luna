@@ -406,7 +406,7 @@ mod tests {
             let placed = crate::background::send(&id, "one more thing", Some(&parent)).unwrap();
             assert_eq!(placed, crate::background::Placed::Queued, "held while it opens");
             // A debt it had registered by then, which the handover clears.
-            let asked = crate::agents::owed::Asked { text: "one more thing", key: None, reply: true };
+            let asked = Asked { text: "one more thing", key: None, reply: true };
             owe_from_at(&parent, &id, 1, 0, before, &asked);
             take_over(&id, || Some(Vec::new())).unwrap();
             assert!(!owe_from_at(&parent, &id, 2, 0, before, &asked), "the send learns it was taken over");
