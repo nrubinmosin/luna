@@ -497,8 +497,8 @@ mod tests {
     #[test]
     fn the_last_request_in_a_batch_owns_the_reply() {
         let request = |n, head: &str| Request { n, key: None, head: head.into() };
-        let queued = ["check the warnings", "check the tests"]
-            .map(|text| crate::background::Queued::new(Some("caller".into()), text.into(), Vec::new()));
+        let queued =
+            ["check the warnings", "check the tests"].map(|text| crate::background::Queued::new(Some("caller".into()), text.into()));
         let message = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
         let said = said_of(vec![message("user", crate::background::joined(&queued)), message("assistant", "Both checks passed.".into())])
             .asked(vec![request(2, "check the warnings"), request(3, "check the tests")]);
