@@ -750,8 +750,8 @@ turn, stopped on a prompt (once per stop) or exited.
   first failure still come. The first-failure allowance resets when the
   breaker lifts. Other failures count toward the breaker. A loss-only notice
   counts once for the IDs it acknowledges, with the same allowance for the
-  first failure after a trip. If its report file cannot be written, it
-  points to `luna_message_list` and leaves the queued text available there.
+  first failure after a trip. If its report file cannot be written, the
+  notice carries the text itself, up to 2000 characters.
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
   window (`<data>/quota-told.json`). Breaker lines, folder-skills failures and places notices

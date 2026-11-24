@@ -92,6 +92,17 @@ pub(super) fn undelivered_line(lost: &[String], after_answer: bool, file: Option
     }
 }
 
+/// The same for a notice with no file to name: the words themselves, on one
+/// line and cut to what a notice should cost.
+pub(super) fn undelivered_inline(lost: &[String]) -> String {
+    const MOST: usize = 2000;
+    let flat = lost.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat: String = flat.chars().filter(|c| !c.is_control()).collect();
+    let shown: String = flat.chars().take(MOST).collect();
+    let cut = if shown.len() < flat.len() { "… (cut)" } else { "" };
+    format!(" Not delivered: {} queued for it; send again what still matters: \"{shown}{cut}\"", count_of(lost))
+}
+
 /// The same for a tool result: where they are, or them, cut as any words are
 /// that one result carries, should no file take them. Only what `caller` itself
 /// is to hear of.

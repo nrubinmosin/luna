@@ -665,15 +665,19 @@ fn notify_once_since_start(
             };
             if !ids.is_empty() || !turns.is_empty() {
                 let file = (!texts.is_empty()).then(|| super::said::note_file(&id, &super::lost::undelivered_text(&texts))).flatten();
-                let lost = super::lost::undelivered_line(&texts, false, file.as_deref());
+                // With no file, the notice itself carries the text: one that
+                // only points elsewhere could not be acknowledged, and would
+                // come again at every look.
+                let lost = match file.as_deref() {
+                    None if !texts.is_empty() => super::lost::undelivered_inline(&texts),
+                    file => super::lost::undelivered_line(&texts, false, file),
+                };
                 let suffix = if settled.iter().any(|(other, how, _)| other == &id && counts_for_breaker(how)) {
                     ""
                 } else {
                     breaker_suffix(&caller, &id, &Settled::Failed, now_ms()).unwrap_or_default()
                 };
                 lines.push(format!("{who}:{stopped}{lost}{suffix}"));
-                // The fallback sends the caller to the queue to read the text.
-                let ids = if file.is_some() { ids } else { Vec::new() };
                 let mut requests = super::owed::requests_of(&caller, &id);
                 requests.retain(|q| q.delivery.as_ref().is_some_and(|qid| ids.contains(qid)));
                 losses.push((id, LineEvidence { lost: ids, parent, stopped: turns, requests, ..LineEvidence::default() }));
@@ -776,7 +780,11 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
             }
             end
         };
-        if crate::activity::turn_state(id).is_none_or(|now| now.turn != turn.turn || now.turns_ended != turn.turns_ended) {
+        // A late status is bounded by the next prompt, so a turn that has since
+        // ended or begun takes nothing from it.
+        if late_status.is_none()
+            && crate::activity::turn_state(id).is_none_or(|now| now.turn != turn.turn || now.turns_ended != turn.turns_ended)
+        {
             continue;
         }
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -2224,7 +2232,7 @@ mod tests {
     }
 
     #[test]
-    fn a_loss_only_notice_keeps_the_text_until_its_report_can_be_written() {
+    fn a_loss_only_notice_carries_the_text_itself_where_no_file_can() {
         let (caller, id) = ("loss-report-caller", "loss-report-helper");
         register(caller, Provider::Claude, ".", "acc", None, true, serde_json::json!({}));
         register(id, Provider::Claude, ".", "acc", Some(caller), false, serde_json::json!({"background":true}));
@@ -2237,17 +2245,12 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
 
         tick_for_test(caller);
-        std::fs::remove_dir(&path).unwrap();
-        let fallback: String = terminal.input.try_iter().collect();
-        assert!(fallback.contains("luna_message_list gives them"), "{fallback}");
-        assert_eq!(crate::background::undelivered_for(id, caller, true), ["queued text"]);
-
-        tick_for_test(caller);
         let notice: String = terminal.input.try_iter().collect();
-        assert!(notice.contains(&path.display().to_string()), "{notice}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), payload);
-        assert!(crate::background::undelivered_for(id, caller, true).is_empty());
-        std::fs::remove_file(&path).unwrap();
+        assert!(notice.contains("queued text"), "the notice carries what no file holds: {notice}");
+        assert!(crate::background::undelivered_for(id, caller, true).is_empty(), "told, so acknowledged");
+        tick_for_test(caller);
+        assert!(terminal.input.try_iter().collect::<String>().is_empty(), "an unwritable report is told once");
+        std::fs::remove_dir(&path).unwrap();
         crate::background::gone_for_test(id);
         forget(id);
         forget(caller);
