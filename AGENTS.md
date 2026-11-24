@@ -47,6 +47,11 @@ Rules for anyone (person or agent) changing Luna.
   build), not a full local gate before every commit: every Docker build on
   this PC holds one machine-wide lock, so a full gate here makes every other
   agent's build wait, and CI does the same work in parallel.
+- One exception: a change to Windows-specific code (paths and file identity,
+  junctions and links, ACLs, file locking and renames, the installer) runs
+  its touched tests on Windows (`./scripts/windows-tests.ps1 -Build -Run`,
+  narrowed to them) before the commit is pushed. Linux CI does not run that
+  code, and a Windows failure found only in CI costs a full extra round.
 - Run `docker` from pwsh, not from Git Bash (the shell of Claude Code's Bash
   tool on Windows). There MSYS rewrites a bind mount like
   `-v /e/Projects/x:/app` into `E:\Projects\x;C:\<Git's folder>\app`, and
