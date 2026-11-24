@@ -337,7 +337,6 @@ pub fn forget(id: &str) {
     let quota_now = r.quota_told.len() != told;
     r.receipts.retain(|(who, chat), _| who != id && chat != id);
     drop(r);
-    super::notifier::forget_pending_notice(id);
     if quota_now {
         save_quota_told();
     }
@@ -407,7 +406,6 @@ mod tests {
 
     #[test]
     fn unread_silent_answers_hold_auto_delete_until_read_or_expired() {
-        let _reaping = reaps_to_myself();
         for read in [true, false] {
             let id = if read { "silent-auto-read" } else { "silent-auto-expired" };
             let parent = "silent-auto-parent";

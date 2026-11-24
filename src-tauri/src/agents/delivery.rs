@@ -413,9 +413,11 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
         // And this, for the debt below: the person may take the helper over
         // once the text is in, which takes it back out (handover.rs).
         let handovers = handovers_of(id);
-        use crate::background::Placed;
+        use crate::background::{Placed, PublishingRequest, Queued};
+        let q = Queued::new(Some(caller.into()), text.clone());
+        let publishing = PublishingRequest::begin(&q);
         let (placed, interrupted, qid) = if interrupt {
-            let i = crate::background::interrupt(id, text, Some(caller))?;
+            let i = crate::background::interrupt(id, q)?;
             let placed = if i.waits {
                 Placed::Waits
             } else if i.queued {
@@ -423,10 +425,10 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
             } else {
                 Placed::Started
             };
-            (placed, i.stopped, None)
+            (placed, i.stopped, i.id)
         } else {
-            let (placed, qid) = crate::background::send_tracked(id, text, Some(caller))?;
-            (placed, false, Some(qid))
+            let (placed, qid) = crate::background::send_tracked(id, q)?;
+            (placed, false, qid)
         };
         #[cfg(test)]
         super::test_support::reached("send placed", caller);
@@ -440,16 +442,17 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
         if placed == Placed::Queued || interrupted {
             baseline += 1;
         }
-        if !owe_sent(caller, id, baseline, cursor, Some(handovers), &Asked { text, key, reply }, (queued, qid.clone(), false)) {
+        if !owe_sent(caller, id, baseline, cursor, Some(handovers), &Asked { text, key, reply }, (queued, Some(qid.clone()), false)) {
             return Err(format!(
                 "the person took {id} over as their own chat as this was sent: the text did not go in, and your next notice \
                  says where it is"
             ));
         }
+        drop(publishing);
         // Queued, it may have gone onto the stdin of the process running
         // since, ahead of the debt (background/events.rs `feed_queued`), and
         // that process be over already: the debt ends with that process then.
-        if let Some(qid) = qid.filter(|_| placed == Placed::Queued) {
+        if placed == Placed::Queued {
             if let Some(n) = crate::agents::moved_onto_stdin(id, &[qid]) {
                 baseline = baseline.min(n);
             }

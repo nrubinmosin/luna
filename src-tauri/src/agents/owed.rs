@@ -114,6 +114,10 @@ pub(super) struct WakeState {
     pub(super) skipped: Option<u32>,
     /// Latest ended turn before an open request's prompt was taken.
     pub(super) unused_turn: Option<u32>,
+    /// A turn-end look can outrun the transcript writer. Reconsider that
+    /// unused turn if more of its transcript arrives.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) unused_to: Option<(u32, u64)>,
     /// The older turn a merged send must still let the notifier consider.
     pub(super) after: Option<u32>,
     /// A settled idle answer, left readable from its original cursor.
@@ -209,6 +213,9 @@ impl Owed {
         self.transcript_rev = generation;
         self.wake.unread_to = None;
         self.wake.reported_to = None;
+        if self.wake.unused_to.take().is_some_and(|(ended, _)| self.wake.unused_turn == Some(ended)) {
+            self.wake.unused_turn = None;
+        }
         for s in self.since.iter_mut().flatten() {
             s.cursor = from;
         }
@@ -229,6 +236,17 @@ impl Owed {
             .max(self.wake.skipped.unwrap_or(0))
             .max(self.wake.silent.unwrap_or(0))
             .max(self.wake.unused_turn.unwrap_or(0))
+    }
+
+    pub(super) fn with_late_transcript(mut self, ended: u32, transcript_end: impl FnOnce() -> u64) -> Self {
+        if self.unused_observation().is_some_and(|(turn, checked_to)| turn == ended && transcript_end() > checked_to) {
+            self.wake.unused_turn = None;
+        }
+        self
+    }
+
+    fn unused_observation(self) -> Option<(u32, u64)> {
+        self.wake.unused_to.filter(|(turn, _)| self.wake.unused_turn == Some(*turn))
     }
 
     pub(super) fn notice_cursor(self) -> u64 {
@@ -831,7 +849,14 @@ pub(super) fn owe_in(
         wake.status = None;
         wake.plan_through = None;
     }
-    wake.after = before.filter(|o| o.active()).map(|o| o.notice_baseline().min(baseline.max(floor)));
+    wake.after = before.filter(|o| o.active()).map(|mut o| {
+        // Merging inputs cannot make a transcript observation a permanent
+        // floor. The next look still gets to check for the earlier prompt.
+        if o.unused_observation().is_some() {
+            o.wake.unused_turn = None;
+        }
+        o.notice_baseline().min(baseline.max(floor))
+    });
     wake.skipped = None;
     wake.silent = None;
     // The debt before may be told this very moment, by a notice that settles
@@ -943,6 +968,7 @@ pub(super) fn take_requests(
         }
         if let Some(ended) = ended.filter(|_| now.rev == told.rev) {
             left.wake.unused_turn = Some(left.wake.unused_turn.unwrap_or(0).max(ended));
+            left.wake.unused_to = None;
             left.held = None;
             left.cut_short = false;
             left.unsure = false;

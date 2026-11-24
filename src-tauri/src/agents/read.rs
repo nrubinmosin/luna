@@ -222,6 +222,13 @@ fn moved_to(id: &str, was: &std::path::Path, now: &std::path::Path) -> u64 {
     from
 }
 
+#[cfg(test)]
+pub(super) fn move_transcript_for_test(id: &str, next: std::path::PathBuf) {
+    let mut known = transcripts().lock().unwrap();
+    moved_to(id, &known[id], &next);
+    known.insert(id.into(), next);
+}
+
 fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
     if crate::background::has(id) {
         return crate::background::transcript(id);

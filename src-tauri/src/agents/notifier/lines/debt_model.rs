@@ -1,536 +1,624 @@
-//! Drive the debt transitions without a CLI, disk transcript, or wall-clock
-//! waits. The oracle tracks requests by identity and turn, independently of
-//! the aggregate debt, transcript cursor, and receipt used by Luna.
+//! Seeded histories with an oracle at the terminal boundary. The histories
+//! specify which input causes each wake and which requests it can cover. No
+//! notice verdict, rendered evidence, or settlement is used as an expectation.
 
-use super::*;
-use crate::activity::Turn;
-use crate::agents::notifier::{prune_owed, settle_delivered, settle_told, CALLER_RETURN_MS};
-use crate::agents::owed::{owe_in, restore_requests, take_requests, Asked};
-use crate::agents::persist::{restore_answers, ties_in, Ties};
-use crate::agents::read::Message;
-use crate::agents::said::{said_of, status_word};
-use crate::agents::teardown::{unread_holds, UNREAD_ANSWER_MS};
+use super::super::{deliver_notice_with, notify_once_since_start, Notice, TypingInto, NOTIFY_IDLE_LOOKS};
+use crate::agents::owed::{owe_from, owe_sent, requests_of, resumed, retry_deliveries, Asked};
+use crate::agents::persist::{restore_answers, ties_in};
+use crate::agents::read::{move_transcript_for_test, transcripts};
+use crate::agents::registry::{reg, register};
+use crate::agents::teardown::forget;
+use crate::provider::Provider;
+use crate::throttle::{at_time_for_test, now_ms};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-const CALLERS: [&str; 3] = ["model-caller-a", "model-caller-b", "model-caller-c"];
-const HELPERS: [&str; 3] = ["model-helper-a", "model-helper-b", "model-helper-c"];
+const TOP: &str = "oracle-top";
+const WORKER: &str = "oracle-worker";
+const PEER: &str = "oracle-peer";
+const DELEGATE: &str = "oracle-delegate";
+const SESSIONS: [&str; 4] = [TOP, WORKER, PEER, DELEGATE];
+const GRACE: u64 = 25_000;
 
-#[derive(Clone, Copy, Debug)]
-enum Action {
-    Send(bool, bool), // reply, queued if busy
-    Start,
-    End(Option<&'static str>),
-    Fail,
-    Exit,
-    Look,
-    Delivered,
+#[derive(Clone, Copy)]
+enum WriteResult {
+    Started,
     Refused,
+    Held,
     Ambiguous,
-    Wait(bool, bool), // partial, response may still be canceled
-    Cancel,
-    Read,
-    Reload,
-    Handover,
-    Forget,
-    Away,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Event(usize, usize, Action);
+struct Seed(u64);
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Fate {
-    Queued,
-    Running,
-    Ready,
-    Receipt,
-    Told,
-    Gone,
+impl Seed {
+    fn pick(&mut self, limit: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % limit
+    }
+
+    fn coin(&mut self) -> bool {
+        self.pick(2) == 0
+    }
 }
 
-#[derive(Debug)]
-struct Ask {
-    number: u32,
-    fate: Fate,
-}
-
-struct Draft {
-    debt: Owed,
-    how: Settled,
-    read: LineEvidence,
-    covered: Vec<u32>,
-    status_words: Vec<usize>,
-}
-
-struct Receipt {
-    before: Owed,
-    removed: Vec<Request>,
-    ids: Vec<u32>,
-    unread: Option<u64>,
-}
-
-#[derive(Default)]
-struct Lane {
-    requests: Vec<Ask>,
-    draft: Option<Draft>,
-    receipt: Option<Receipt>,
-    statuses: HashSet<usize>,
-    unread: Option<u64>,
-}
-
-#[derive(Default)]
-struct Helper {
-    turns: u32,
-    running: bool,
-    exited: bool,
-    failure: Option<u32>,
-    transcript: Vec<Message>,
-}
-
-struct Machine {
-    r: Registry,
-    lanes: [[Lane; 3]; 3],
-    helpers: [Helper; 3],
+struct Fixture {
+    dir: PathBuf,
     now: u64,
-    count: usize,
+    up: u64,
+    provider: Provider,
 }
 
-fn known() -> Known {
-    Known {
-        provider: Provider::Claude,
-        folder: String::new(),
-        account_path: String::new(),
-        account: String::new(),
-        parent: None,
-        settings: serde_json::Value::Null,
-        codex_trust: None,
-        tools: true,
-        waiting: false,
-        orphan: false,
-    }
-}
-
-fn message(role: &str, text: String, joined: bool) -> Message {
-    Message { role: role.into(), text, joined, after_cli: false, final_answer: role == "assistant" }
-}
-
-impl Machine {
-    fn new(count: usize) -> Self {
-        let mut r = Registry::default();
-        r.known.extend(CALLERS[..count].iter().chain(&HELPERS[..count]).map(|id| ((*id).into(), known())));
-        Self { r, lanes: Default::default(), helpers: Default::default(), now: now_ms(), count }
+impl Fixture {
+    fn new(dir: PathBuf, provider: Provider) -> Self {
+        Self { dir, now: now_ms(), up: 0, provider }
     }
 
-    fn send(&mut self, c: usize, h: usize, reply: bool, queue: bool) {
-        let caller = CALLERS[c];
-        let id = HELPERS[h];
-        let key = (caller.into(), id.into());
-        let s = &mut self.helpers[h];
-        let queued = queue && s.running;
-        let baseline = s.turns + u32::from(queued);
-        let from = s.transcript.len() as u64;
-        let n = self.r.requests.get(&key).map_or(1, |q| q.made + 1);
-        let text = format!("Request {c}-{h}-{n}.");
-        assert!(owe_in(&mut self.r, caller, id, baseline, from, None, Some(&Asked { text: &text, key: None, reply })));
-        let q = self.r.requests.get_mut(&key).unwrap().open.last_mut().unwrap();
-        q.queued = queued;
-        q.taken = !queued;
-        self.r.owed.get_mut(&key).unwrap().queued = queued || self.r.requests[&key].open.iter().any(|q| q.queued);
-        if reply {
-            self.lanes[c][h].requests.push(Ask { number: n, fate: if queued { Fate::Queued } else { Fate::Running } });
-        }
-        if !queued {
-            s.transcript.push(message("user", text, s.running));
-            s.running = true;
-        }
+    fn path(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{id}.jsonl"))
     }
 
-    fn start(&mut self, h: usize) {
-        let s = &mut self.helpers[h];
-        if s.running || s.exited {
-            return;
-        }
-        for (c, caller) in CALLERS[..self.count].iter().enumerate() {
-            let key = ((*caller).into(), HELPERS[h].into());
-            let lane = &mut self.lanes[c][h];
-            for ask in lane.requests.iter_mut().filter(|q| q.fate == Fate::Queued) {
-                ask.fate = Fate::Running;
-            }
-            if let Some(qs) = self.r.requests.get_mut(&key).filter(|_| self.r.owed.get(&key).is_some_and(|o| o.active())) {
-                for q in qs.open.iter_mut().filter(|q| q.queued && !q.taken) {
-                    s.transcript.push(message("user", q.head.clone(), s.running));
-                    s.running = true;
-                    q.taken = true;
+    fn session(&self, id: &str, parent: Option<&str>, lead: bool) {
+        register(id, self.provider, ".", "oracle-account", parent, lead, serde_json::json!({"background": parent.is_some()}));
+        self.idle(id, 0, false);
+        let path = self.path(id);
+        fs::write(&path, "").unwrap();
+        transcripts().lock().unwrap().insert(id.into(), path);
+    }
+
+    fn idle(&self, id: &str, ends: u32, job: bool) {
+        crate::background::idle_for_test(id, self.provider, ends, job);
+    }
+
+    fn append(&self, id: &str, role: &str, words: &str, joined: bool) {
+        let line = match (self.provider, role, joined) {
+            (Provider::Claude, "user", true) => serde_json::json!({
+                "type": "attachment", "attachment": {
+                    "type": "queued_command", "prompt": words, "source_uuid": "joined-prompt"
                 }
-            }
-        }
-        s.running = true;
-    }
-
-    fn end(&mut self, h: usize, text: Option<&str>, failure: bool) {
-        let s = &mut self.helpers[h];
-        if !s.running {
-            return;
-        }
-        s.running = false;
-        s.turns += 1;
-        s.failure = failure.then_some(s.turns);
-        if let Some(text) = text {
-            s.transcript.push(message("assistant", format!("{text} (turn {})", s.turns), false));
-        }
-        for lanes in &mut self.lanes {
-            for ask in lanes[h].requests.iter_mut().filter(|q| q.fate == Fate::Running) {
-                ask.fate = Fate::Ready;
-            }
-        }
-    }
-
-    fn look(&mut self, c: usize, h: usize) {
-        let lane = &mut self.lanes[c][h];
-        if lane.draft.is_some() {
-            return;
-        }
-        let key = (CALLERS[c].into(), HELPERS[h].into());
-        let Some(debt) = self.r.owed.get(&key).copied().filter(|o| o.active()) else { return };
-        let s = &self.helpers[h];
-        if !s.exited
-            && verdict(
-                &Owed { baseline: debt.notice_baseline(), ..debt },
-                s.turns,
-                Some(if s.running { Turn::Busy } else { Turn::Idle }),
-                false,
-                true,
-            ) != Verdict::TurnOver
-        {
-            return;
-        }
-        let from = debt.notice_cursor() as usize;
-        let messages = s.transcript.get(from..).unwrap_or(&[]);
-        let fresh = said_of(messages.to_vec());
-        let status = fresh_status(&fresh);
-        let qs = self.r.requests[&key].open.clone();
-        let said = fresh.asked_after(qs, debt.request_match);
-        let (requests, plan, _) = said.notice_requests();
-        let to = s.transcript.len() as u64;
-        let how = if s.exited {
-            Settled::Exited
-        } else if s.failure.is_some_and(|n| n > debt.notice_baseline()) {
-            failed_requests(debt, s.turns, &requests, &[], false)
-        } else if status.is_none() && !can_stall(debt, &requests, plan) {
-            let unread = !said.is_empty();
-            let how = silent_or_untaken(debt, s.turns, &requests, unread);
-            if unread && matches!(how, Settled::Silent(..)) {
-                lane.unread = Some(self.now);
-            }
-            settle_told(&mut self.r, key, how, &debt);
-            if unread {
-                let key = (CALLERS[c].into(), HELPERS[h].into());
-                if let Some(left) = self.r.owed.get_mut(&key).filter(|o| !o.active()) {
-                    left.wake.unread_to = Some(to);
-                }
-            }
-            return;
-        } else {
-            turn_settlement(debt, s.turns, to, &said, requests.clone(), status, plan, false, false, false)
+            }),
+            (Provider::Claude, "user", false) => serde_json::json!({"type": "user", "message": {"content": words}}),
+            (Provider::Claude, ..) => serde_json::json!({
+                "type": "assistant", "message": {"content": [{"type": "text", "text": words}]}
+            }),
+            (Provider::Codex, ..) => serde_json::json!({
+                "type": "response_item", "payload": {"type": "message", "role": role, "content": [{
+                    "type": if role == "user" { "input_text" } else { "output_text" }, "text": words
+                }]}
+            }),
         };
-        // These are the request outcomes the rendered notice will deliver.
-        let covered = requests
-            .iter()
-            .filter(|q| {
-                q.reply
-                    && match &how {
-                        Settled::Answered | Settled::Failed | Settled::Exited => true,
-                        Settled::FailedRequests(_, nums) => nums.contains(&q.n),
-                        Settled::Progress(p) => p.requests.iter().any(|reported| reported.n == q.n && reported.told) && q.taken,
-                        _ => false,
-                    }
-            })
-            .map(|q| q.n)
-            .collect();
-        let status_words = messages
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.role == "assistant" && status_word(&m.text).is_some())
-            .map(|(i, _)| from + i)
-            .collect();
-        let read = LineEvidence { requests, read_to: Some(to), ended: s.turns, ..LineEvidence::default() };
-        lane.draft = Some(Draft { debt, how, read, covered, status_words });
+        let path = &transcripts().lock().unwrap()[id];
+        writeln!(OpenOptions::new().append(true).open(path).unwrap(), "{line}").unwrap();
     }
 
-    fn deliver(&mut self, c: usize, h: usize) -> Result<(), String> {
-        let lane = &mut self.lanes[c][h];
-        let Some(draft) = lane.draft.take() else { return Ok(()) };
-        for n in &draft.covered {
-            let ask = lane.requests.iter_mut().find(|q| q.number == *n).unwrap();
-            if !(ask.fate == Fate::Ready || matches!(draft.how, Settled::Exited) && ask.fate == Fate::Queued) {
-                return Err(format!("delivery of request {n} in state {:?}", ask.fate));
-            }
-            ask.fate = Fate::Told;
-        }
-        for i in draft.status_words {
-            if !lane.statuses.insert(i) {
-                return Err(format!("status word at {i} delivered twice"));
-            }
-        }
-        settle_delivered(&mut self.r, CALLERS[c], HELPERS[h].into(), draft.how, &draft.debt, draft.read, Some(self.helpers[h].turns));
-        lane.unread = None;
-        Ok(())
+    fn send(&self, caller: &str, id: &str, baseline: u32, words: &str, reply: bool, queued: bool) -> crate::background::Queued {
+        let q = crate::background::Queued::new(Some(caller.into()), words.into());
+        let cursor = crate::agents::read::send_cursor(id);
+        assert!(owe_sent(
+            caller,
+            id,
+            baseline,
+            cursor,
+            None,
+            &Asked { text: words, key: None, reply },
+            (queued, Some(q.id.clone()), false)
+        ));
+        q
     }
 
-    fn collect(&mut self, c: usize, h: usize, partial: bool, cancelable: bool, read: bool) {
-        let key = (CALLERS[c].into(), HELPERS[h].into());
-        let s = &self.helpers[h];
-        let lane = &mut self.lanes[c][h];
-        if s.running || lane.draft.is_some() || lane.receipt.is_some() {
-            return;
-        }
-        let Some(debt) = self.r.owed.get(&key).copied() else { return };
-        if read && !s.transcript.get(debt.cursor as usize..).is_some_and(|part| part.iter().any(|m| m.role == "assistant")) {
-            return;
-        }
-        if !debt.active() {
-            if read {
-                self.r.owed.get_mut(&key).unwrap().wake.unread_since = None;
-                lane.unread = None;
-            }
-            return;
-        }
-        let taken: Vec<_> = self.r.requests[&key]
-            .open
-            .iter()
-            .filter(|q| q.taken && q.baseline < s.turns && !q.told)
-            .take(if partial { 1 } else { usize::MAX })
-            .map(|q| q.n)
-            .collect();
-        if taken.is_empty() {
-            return;
-        }
-        let mut ids = Vec::new();
-        for ask in lane.requests.iter_mut().filter(|q| q.fate == Fate::Ready && taken.contains(&q.number)) {
-            ask.fate = if cancelable { Fate::Receipt } else { Fate::Told };
-            ids.push(ask.number);
-        }
-        let removed = take_requests(&mut self.r, &key, debt, debt, &taken, Some(s.turns));
-        // The tool response includes the report from the debt's cursor.
-        let unread = lane.unread.take();
-        if cancelable {
-            lane.receipt = Some(Receipt { before: debt, removed, ids, unread });
-        }
+    fn advance(&mut self, ms: u64) {
+        self.now += ms;
+        self.up += ms;
     }
 
-    fn cancel(&mut self, c: usize, h: usize) {
-        let lane = &mut self.lanes[c][h];
-        let Some(Receipt { before, removed, ids, unread }) = lane.receipt.take() else { return };
-        let key = (CALLERS[c].into(), HELPERS[h].into());
-        let current = self.r.owed.get(&key).copied();
-        let debt = self.r.owed.entry(key.clone()).or_insert(before);
-        let qs = self.r.requests.get_mut(&key).unwrap();
-        if current.is_none() {
-            qs.open.clear();
-        }
-        restore_requests(debt, before, qs, removed);
-        lane.unread = lane.unread.or(unread);
-        for ask in lane.requests.iter_mut().filter(|q| ids.contains(&q.number)) {
-            ask.fate = Fate::Ready;
-        }
+    fn look(&self) -> Vec<(TypingInto, String, Notice)> {
+        let mut drafts = Vec::new();
+        at_time_for_test(self.now, || {
+            notify_once_since_start(
+                crate::pty::manager(),
+                &mut SESSIONS.into_iter().map(|id| (id.into(), NOTIFY_IDLE_LOOKS - 1)).collect(),
+                &mut Default::default(),
+                self.up,
+                |id| SESSIONS.contains(&id),
+                |typing, caller, notice| drafts.push((typing, caller, notice)),
+            );
+        });
+        drafts
     }
 
-    fn abandon(&mut self, c: usize, h: usize, keep_report: bool) {
-        let lane = &mut self.lanes[c][h];
-        lane.draft = None;
-        lane.receipt = None;
-        for ask in lane.requests.iter_mut().filter(|q| q.fate != Fate::Told) {
-            ask.fate = Fate::Gone;
-        }
-        if !keep_report {
-            let key = (CALLERS[c].into(), HELPERS[h].into());
-            self.r.owed.remove(&key);
-            self.r.requests.remove(&key);
-            lane.unread = None;
-            // Numbering starts afresh after ownership changes. Status words
-            // still have distinct offsets in the helper's transcript.
-            lane.requests.clear();
-        }
+    fn deliver(&self, drafts: Vec<(TypingInto, String, Notice)>, result: WriteResult) -> Vec<(String, String)> {
+        self.deliver_while(drafts, result, || {})
     }
 
-    fn step(&mut self, Event(c, h, action): Event) -> Result<(), String> {
-        self.now += 1;
-        match action {
-            Action::Send(reply, queue) if self.r.known.get(CALLERS[c]).is_some_and(|k| !k.waiting) && !self.helpers[h].exited => {
-                self.send(c, h, reply, queue);
+    fn deliver_while(
+        &self,
+        drafts: Vec<(TypingInto, String, Notice)>,
+        result: WriteResult,
+        mut while_typing: impl FnMut(),
+    ) -> Vec<(String, String)> {
+        let mut writes = Vec::new();
+        at_time_for_test(self.now, || {
+            for (_typing, caller, notice) in drafts {
+                deliver_notice_with(crate::pty::manager(), &caller, notice, |text, _, baseline| {
+                    writes.push((caller.clone(), text.into()));
+                    while_typing();
+                    let typed = match result {
+                        WriteResult::Started => Ok(Some(true)),
+                        WriteResult::Refused => Err("start gate refused the write".into()),
+                        WriteResult::Held => Ok(None),
+                        WriteResult::Ambiguous => Ok(Some(false)),
+                    };
+                    (typed, baseline + 1, false)
+                });
             }
-            Action::Start => self.start(h),
-            Action::End(text) => self.end(h, text, false),
-            Action::Fail => self.end(h, None, true),
-            Action::Exit => {
-                self.end(h, None, false);
-                self.helpers[h].exited = true;
-            }
-            Action::Look => self.look(c, h),
-            Action::Delivered => self.deliver(c, h)?,
-            Action::Refused => self.lanes[c][h].draft = None,
-            Action::Ambiguous => {}
-            Action::Wait(partial, cancelable) => self.collect(c, h, partial, cancelable, false),
-            Action::Cancel => self.cancel(c, h),
-            Action::Read => self.collect(c, h, false, false, true),
-            Action::Reload => {
-                let id = HELPERS[h];
-                let ties = serde_json::to_vec(&ties_in(&self.r, id).unwrap()).unwrap();
-                self.r.owed.retain(|(_, to), _| to != id);
-                self.r.requests.retain(|(_, to), _| to != id);
-                restore_answers(&mut self.r, id, &mut serde_json::from_slice::<Ties>(&ties).unwrap());
-                for lanes in &mut self.lanes {
-                    let lane = &mut lanes[h];
-                    lane.draft = None;
-                    lane.receipt = None;
-                    for ask in lane.requests.iter_mut().filter(|q| q.fate == Fate::Receipt) {
-                        ask.fate = Fate::Told;
-                    }
-                }
-            }
-            Action::Handover => {
-                for c in 0..self.count {
-                    // The handover response ends the old ownership's requests.
-                    self.abandon(c, h, false);
-                }
-                *self.r.handovers.entry(HELPERS[h].into()).or_default() += 1;
-            }
-            Action::Forget => {
-                self.r.known.remove(CALLERS[c]);
-                for h in 0..self.count {
-                    self.abandon(c, h, false);
-                }
-            }
-            Action::Away => {
-                if let Some(k) = self.r.known.get_mut(CALLERS[c]) {
-                    k.waiting = true;
-                }
-                prune_owed(&mut self.r.owed, &self.r.known, CALLER_RETURN_MS, self.now, |id| id == CALLERS[c]);
-                for h in 0..self.count {
-                    self.abandon(c, h, true);
-                }
-            }
-            _ => {}
-        }
-        self.check()
+        });
+        writes
     }
 
-    fn check(&self) -> Result<(), String> {
-        for (c, caller) in CALLERS[..self.count].iter().enumerate() {
-            for (h, helper) in HELPERS[..self.count].iter().enumerate() {
-                let key = ((*caller).into(), (*helper).into());
-                let lane = &self.lanes[c][h];
-                let actual = self.r.owed.get(&key);
-                let open: Vec<_> = self
-                    .r
-                    .requests
-                    .get(&key)
-                    .into_iter()
-                    .flat_map(|qs| &qs.open)
-                    .filter(|q| q.reply && !q.told && actual.is_some_and(|o| o.active()))
-                    .map(|q| q.n)
-                    .collect();
-                let pending: Vec<_> = lane
-                    .requests
-                    .iter()
-                    .filter(|q| matches!(q.fate, Fate::Queued | Fate::Running | Fate::Ready))
-                    .map(|q| q.number)
-                    .collect();
-                if open != pending {
-                    return Err(format!("{caller}/{helper}: open {open:?}, expected {pending:?}"));
-                }
-                if !pending.is_empty() && actual.is_some_and(|o| o.no_reply) {
-                    return Err(format!("{caller}/{helper}: FYI suppressed a reply"));
-                }
-                if lane.unread.is_some_and(|at| self.now < at + UNREAD_ANSWER_MS) && actual.is_none_or(|o| !unread_holds(o, self.now)) {
-                    return Err(format!("{caller}/{helper}: unread report lost"));
-                }
-            }
-        }
-        Ok(())
+    fn tick(&self, result: WriteResult) -> Vec<(String, String)> {
+        self.deliver(self.look(), result)
+    }
+
+    #[track_caller]
+    fn checkpoint(&mut self, expected: &[(&str, &[&str])]) {
+        let mut writes = self.tick(WriteResult::Started);
+        self.advance(GRACE);
+        writes.extend(self.tick(WriteResult::Started));
+        expect(&writes, expected);
+    }
+
+    fn requests(&self, caller: &str, id: &str, expected: &[u32]) {
+        let open: Vec<_> = requests_of(caller, id).iter().filter(|q| !q.told).map(|q| q.n).collect();
+        assert_eq!(open, expected, "{caller} -> {id}");
     }
 }
 
-fn replay(count: usize, events: &[Event]) -> Result<(), String> {
-    let mut machine = Machine::new(count);
-    for &event in events {
-        machine.step(event)?;
-    }
-    // Give every accepted input its turn and drain notices. If everyone is
-    // idle, no reply-wanted request may need another unrelated turn to wake.
-    for (h, helper) in HELPERS[..count].iter().enumerate() {
-        machine.end(h, Some("Result"), false);
-        machine.start(h);
-        machine.end(h, Some("Result"), false);
-        for (c, caller) in CALLERS[..count].iter().enumerate() {
-            machine.deliver(c, h)?;
-            machine.look(c, h);
-            machine.deliver(c, h)?;
-            if machine.lanes[c][h].requests.iter().any(|q| matches!(q.fate, Fate::Queued | Fate::Running | Fate::Ready)) {
-                return Err(format!("all idle but {caller}/{helper} still awaits a reply"));
-            }
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        for id in SESSIONS.into_iter().rev() {
+            crate::background::gone_for_test(id);
+            forget(id);
+            crate::activity::forget(id);
         }
     }
-    machine.check()
+}
+
+#[track_caller]
+fn expect(writes: &[(String, String)], expected: &[(&str, &[&str])]) {
+    assert_eq!(writes.len(), expected.len(), "expected {expected:?}, wrote {writes:?}");
+    for ((caller, text), (target, causes)) in writes.iter().zip(expected) {
+        assert_eq!(caller, target, "{writes:?}");
+        assert!(text.starts_with("[Luna notice, not typed by the user]"), "{text}");
+        assert!(causes.iter().all(|cause| text.contains(cause)), "expected {causes:?} in {text}");
+    }
+}
+
+fn ordinary(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    let wants_reply = rng.coin();
+    let status = rng.coin();
+    let words = if status { "DONE: completed" } else { "Ordinary result." };
+    f.send(TOP, WORKER, 0, "First task", wants_reply, false);
+    f.append(WORKER, "user", "First task", false);
+    at_time_for_test(f.now, || crate::background::in_turn_for_test(WORKER));
+    f.checkpoint(&[]);
+    if rng.coin() {
+        f.send(TOP, WORKER, 0, "Heads up", false, false);
+        f.append(WORKER, "user", "Heads up", true);
+    }
+    f.append(WORKER, "assistant", words, false);
+    f.idle(WORKER, 1, false);
+    let causes: &[&str] = if wants_reply || status { &["finished its turn"] } else { &[] };
+    if causes.is_empty() {
+        f.checkpoint(&[]);
+    } else {
+        for _ in 0..rng.pick(4) {
+            let result = if rng.coin() { WriteResult::Refused } else { WriteResult::Held };
+            expect(&f.tick(result), &[(TOP, causes)]);
+        }
+        let result = if rng.coin() { WriteResult::Started } else { WriteResult::Ambiguous };
+        expect(&f.tick(result), &[(TOP, causes)]);
+        f.requests(TOP, WORKER, &[]);
+    }
+    // Liveness above is checked while still on the first completed turn.
+    // Another turn with no new task never buys another idle stall.
+    f.checkpoint(&[]);
+    f.idle(WORKER, 2, false);
+    f.append(WORKER, "assistant", "Unrelated commentary.", false);
+    f.checkpoint(&[]);
+}
+
+fn queued_or_joined(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    let queued = rng.coin();
+    f.send(TOP, WORKER, 0, "First task", true, false);
+    f.append(WORKER, "user", "First task", false);
+    f.send(TOP, WORKER, u32::from(queued), "Next task", true, queued);
+    f.append(WORKER, "assistant", "DONE: first result", false);
+    if !queued {
+        f.append(WORKER, "user", "Next task", true);
+        f.append(WORKER, "assistant", "Second result.", false);
+    }
+    f.idle(WORKER, 1, false);
+    let visible = if queued { "DONE: first result" } else { "Second result." };
+    f.checkpoint(&[(TOP, &[visible])]);
+    if queued {
+        f.requests(TOP, WORKER, &[2]);
+        f.checkpoint(&[]); // An unopened queued prompt is no new reason to wake.
+        f.append(WORKER, "user", "Next task", false);
+        f.append(WORKER, "assistant", "Second result.", false);
+        f.idle(WORKER, 2, false);
+        f.checkpoint(&[(TOP, &["Second result."])]);
+    }
+    f.requests(TOP, WORKER, &[]);
+    f.checkpoint(&[]);
+}
+
+fn plan(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), true);
+    f.send(TOP, WORKER, 0, "Propose a plan", true, false);
+    f.append(WORKER, "user", "Propose a plan", false);
+    f.append(WORKER, "assistant", "PLAN: inspect then build", false);
+    f.idle(WORKER, 1, false);
+    f.checkpoint(&[(TOP, &["PLAN: inspect then build"])]);
+    f.send(TOP, WORKER, 1, "Heads up", false, false);
+    f.append(WORKER, "user", "Heads up", false);
+    f.append(WORKER, "assistant", "Acknowledged.", false);
+    f.idle(WORKER, 2, false);
+    f.checkpoint(&[]);
+    if rng.coin() {
+        f.send(TOP, WORKER, 2, "Approved. Continue.", true, false);
+        f.append(WORKER, "user", "Approved. Continue.", false);
+        f.append(WORKER, "assistant", "Result after approval.", false);
+        f.idle(WORKER, 3, false);
+        f.checkpoint(&[(TOP, &["finished its turn"])]);
+    } else {
+        f.append(WORKER, "assistant", "DONE: plan no longer needed", false);
+        f.idle(WORKER, 3, false);
+        f.checkpoint(&[(TOP, &["finished its turn"])]);
+    }
+    f.checkpoint(&[]);
+}
+
+fn lead_and_job(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), true);
+    f.session(DELEGATE, Some(WORKER), false);
+    let plan = rng.coin();
+    let pending = !plan && rng.coin();
+    if pending {
+        owe_from(TOP, WORKER, 0, 0);
+    } else {
+        f.send(TOP, WORKER, 0, "Run the job", true, false);
+    }
+    f.append(WORKER, "user", "Run the job", false);
+    let delegate = rng.coin();
+    if delegate {
+        owe_from(WORKER, DELEGATE, 0, 0);
+        at_time_for_test(f.now, || crate::background::in_turn_for_test(DELEGATE));
+    }
+    let words = if plan {
+        "PLAN: run the build"
+    } else if pending {
+        "BLOCKED: waiting for the build"
+    } else {
+        "The job is running."
+    };
+    f.append(WORKER, "assistant", words, false);
+    f.idle(WORKER, 1, true);
+    if plan || pending {
+        f.checkpoint(&[(TOP, &[words, "job running"])]);
+    } else {
+        f.checkpoint(&[]);
+    }
+    f.checkpoint(&[]);
+    if delegate {
+        f.append(DELEGATE, "assistant", "DONE: delegate result", false);
+        f.idle(DELEGATE, 1, false);
+        f.checkpoint(&[(WORKER, &["delegate result"])]);
+        // This was a turn on its delegate's notice, with no word on the end.
+        f.idle(WORKER, 2, true);
+        f.checkpoint(&[]);
+    }
+    crate::background::left_for_test(WORKER, &[]);
+    if plan {
+        f.checkpoint(&[]);
+        f.checkpoint(&[]);
+    } else {
+        f.checkpoint(&[]); // The first look at job end holds, then queues the wake.
+        f.checkpoint(&[(WORKER, &["Your delegates have finished"])]);
+        f.checkpoint(&[]);
+        let ended = if delegate { 3 } else { 2 };
+        f.idle(WORKER, ended, false);
+        if rng.coin() {
+            f.append(WORKER, "assistant", "DONE: job result", false);
+            f.checkpoint(&[(TOP, &["finished its turn"])]);
+        } else if pending {
+            // The prior BLOCKED already used the task's idle-stall allowance.
+            f.checkpoint(&[]);
+        } else {
+            f.checkpoint(&[(TOP, &["seems stuck"])]);
+        }
+        f.checkpoint(&[]);
+    }
+}
+
+fn peer_cycle(f: &mut Fixture, rng: &mut Seed) {
+    let peers = if rng.coin() { &SESSIONS[..2] } else { &SESSIONS[..3] };
+    for &id in peers {
+        f.session(id, None, true);
+        f.append(id, "assistant", "A plain peer result.", false);
+        f.idle(id, 1, false);
+    }
+    for (i, &id) in peers.iter().enumerate() {
+        owe_from(id, peers[(i + 1) % peers.len()], 0, 0);
+    }
+    let mut expected: Vec<(&str, &[&str])> = peers.iter().map(|&id| (id, &["A plain peer result."][..])).collect();
+    expected.sort_unstable_by_key(|&(id, _)| id);
+    f.checkpoint(&expected);
+    // The notices themselves ended a turn, but bring no new task to answer.
+    for &id in peers {
+        f.idle(id, 2, false);
+    }
+    f.checkpoint(&[]);
+}
+
+fn quiet_and_refusal(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), true);
+    f.send(TOP, WORKER, 0, "Run the job", true, false);
+    f.append(WORKER, "user", "Run the job", false);
+    at_time_for_test(f.now, || crate::background::quiet_for_test(WORKER, 29 * 60_000));
+    f.checkpoint(&[]);
+    f.advance(60_000);
+    f.checkpoint(&[(TOP, &["mid-turn and has written nothing"])]);
+    f.checkpoint(&[]);
+    // A new turn on the same task gets no separate quiet wake. It can ride
+    // the refusal once that has a reason to go by itself.
+    f.idle(WORKER, 1, true);
+    f.checkpoint(&[]);
+    at_time_for_test(f.now, || crate::background::quiet_for_test(WORKER, 31 * 60_000));
+    f.checkpoint(&[]);
+
+    crate::agents::spawn::refused_a_place(&mut reg().lock().unwrap(), WORKER);
+    let top = crate::activity::SessionLife::of(TOP, crate::activity::life(TOP).unwrap());
+    let pending = || super::super::places_pending(std::slice::from_ref(&top));
+    assert!(pending());
+    f.checkpoint(&[]); // A fresh refusal rides while the caller has active work.
+    let aged = rng.coin();
+    if aged {
+        reg().lock().unwrap().places_refused.get_mut(TOP).unwrap().since = Instant::now() - Duration::from_secs(601);
+        assert!(!pending());
+        f.checkpoint(&[(TOP, &["No place was left", "mid-turn and has written nothing"])]);
+    }
+    f.append(WORKER, "assistant", "DONE: job result", false);
+    f.idle(WORKER, 2, false);
+    let causes: &[&str] = if aged { &["DONE: job result"] } else { &["DONE: job result", "No place was left"] };
+    f.checkpoint(&[(TOP, causes)]);
+    assert!(!pending());
+    f.checkpoint(&[]);
+}
+
+fn changed_delivery(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    let q = f.send(TOP, WORKER, 0, "Do the work", true, false);
+    f.append(WORKER, "user", "Do the work", false);
+    f.append(WORKER, "assistant", "DONE: original attempt", false);
+    f.idle(WORKER, 1, false);
+    let draft = f.look();
+    assert_eq!(draft.len(), 1);
+    if rng.coin() {
+        retry_deliveries(WORKER, &[q], 1);
+        expect(&f.deliver(draft, WriteResult::Started), &[]);
+        f.checkpoint(&[]);
+        f.append(WORKER, "user", "Do the work", false);
+        f.append(WORKER, "assistant", "DONE: retry succeeded", false);
+        f.idle(WORKER, 2, false);
+        f.checkpoint(&[(TOP, &["retry succeeded"])]);
+    } else {
+        let new = f.dir.join("destination.jsonl");
+        fs::write(&new, "").unwrap();
+        move_transcript_for_test(WORKER, new);
+        expect(&f.deliver(draft, WriteResult::Started), &[]);
+        f.checkpoint(&[]);
+        f.append(WORKER, "user", "Do the work", false);
+        f.append(WORKER, "assistant", "DONE: destination result", false);
+        f.checkpoint(&[(TOP, &["destination result"])]);
+    }
+    f.requests(TOP, WORKER, &[]);
+    f.checkpoint(&[]);
+}
+
+fn restart_and_caller_return(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    f.send(TOP, WORKER, 0, "Finish the work", true, false);
+    f.append(WORKER, "user", "Finish the work", false);
+    let resume = rng.coin();
+    let lost_job = rng.coin();
+    let key = (TOP.into(), WORKER.into());
+    if resume {
+        resumed(WORKER, 0);
+    } else if !lost_job {
+        f.idle(WORKER, 1, false);
+        crate::background::cut_for_test(WORKER);
+    }
+    if lost_job {
+        reg().lock().unwrap().owed.get_mut(&key).unwrap().job_went = true;
+    }
+    if rng.coin() {
+        let mut r = reg().lock().unwrap();
+        let saved = serde_json::to_vec(&ties_in(&r, WORKER).unwrap()).unwrap();
+        r.owed.remove(&key);
+        r.requests.remove(&key);
+        restore_answers(&mut r, WORKER, &mut serde_json::from_slice(&saved).unwrap());
+    }
+    let returns = rng.coin();
+    reg().lock().unwrap().known.get_mut(TOP).unwrap().waiting = true;
+    f.advance(if returns { 8 * 60_000 } else { 10 * 60_000 });
+    f.checkpoint(&[]);
+    reg().lock().unwrap().known.get_mut(TOP).unwrap().waiting = false;
+    if returns {
+        f.checkpoint(&[(TOP, &["core restarted"])]);
+    } else {
+        f.checkpoint(&[]);
+    }
+    if resume || lost_job {
+        f.append(WORKER, "assistant", "DONE: work after restart", false);
+        f.idle(WORKER, 1, false);
+        if returns {
+            f.checkpoint(&[(TOP, &["work after restart"])]);
+        } else {
+            f.checkpoint(&[]);
+            assert!(reg().lock().unwrap().owed[&key].wake.unread_since.is_some(), "report remains readable after expiry");
+        }
+    }
+    f.checkpoint(&[]);
+}
+
+fn held_and_collected(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    crate::agents::held::hold(TOP, WORKER, "A held request", None, true).unwrap();
+    f.checkpoint(&[]);
+    crate::background::gone_for_test(WORKER);
+    crate::agents::held::deliver_held(crate::pty::manager());
+    f.checkpoint(&[(TOP, &["exited before your held send went in"])]);
+    f.idle(WORKER, 0, false);
+    f.send(TOP, WORKER, 0, "A collected request", true, false);
+    f.append(WORKER, "user", "A collected request", false);
+    f.append(WORKER, "assistant", "DONE: collected result", false);
+    f.idle(WORKER, 1, false);
+    let call = crate::mcp::Call::new();
+    if rng.coin() {
+        let result = crate::agents::read::report_get(TOP, WORKER, None, true, &call).unwrap();
+        assert!(result.acked);
+    } else {
+        let result = crate::agents::wait::wait(TOP, WORKER, "turn_done", 1, Some(0), None, &call).unwrap();
+        assert_eq!(result.reply.as_deref(), Some("DONE: collected result"));
+    }
+    f.checkpoint(&[]);
+    if rng.coin() {
+        call.cancel();
+        f.checkpoint(&[(TOP, &["collected result"])]);
+    }
+    f.checkpoint(&[]);
+}
+
+fn overlapping_requests(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    f.send(TOP, WORKER, 0, "Task one", true, false);
+    f.append(WORKER, "user", "Task one", false);
+    let mut expected_reply = true;
+    let count = 3 + rng.pick(5) as u32;
+    for turn in 1..=count {
+        let explicit_status = rng.coin();
+        f.append(WORKER, "assistant", if explicit_status { "DONE: completed" } else { "Ordinary result." }, false);
+        f.idle(WORKER, turn, false);
+        if expected_reply || explicit_status {
+            let draft = f.look();
+            assert_eq!(draft.len(), 1, "the current turn must wake before another turn begins");
+            let next_reply = rng.coin();
+            let next = format!("Task after turn {turn}");
+            let result = if rng.coin() { WriteResult::Started } else { WriteResult::Ambiguous };
+            let mut sent = false;
+            let writes = f.deliver_while(draft, result, || {
+                if turn < count {
+                    f.send(TOP, WORKER, turn, &next, next_reply, false);
+                    sent = true;
+                }
+            });
+            expect(&writes, &[(TOP, &["finished its turn"])]);
+            if turn < count {
+                assert!(sent);
+                f.requests(TOP, WORKER, &[turn + 1]);
+                f.checkpoint(&[]);
+                f.append(WORKER, "user", &next, false);
+            }
+            expected_reply = next_reply;
+        } else {
+            f.checkpoint(&[]);
+            if turn < count {
+                let next = format!("Task after turn {turn}");
+                expected_reply = rng.coin();
+                f.send(TOP, WORKER, turn, &next, expected_reply, false);
+                f.append(WORKER, "user", &next, false);
+            }
+        }
+        f.checkpoint(&[]);
+    }
+}
+
+fn failed_batch(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    f.send(TOP, WORKER, 0, "First task", true, false);
+    f.append(WORKER, "user", "First task", false);
+    let later = f.send(TOP, WORKER, 1, "Next task", rng.coin(), true);
+    f.append(WORKER, "assistant", "First result.", false);
+    crate::background::fail_next_launch_for_test(WORKER, later);
+    let draft = f.look();
+    assert_eq!(draft.len(), 1);
+    let result = if rng.coin() { WriteResult::Started } else { WriteResult::Ambiguous };
+    let move_while_typing = rng.coin();
+    let writes = f.deliver_while(draft, result, || {
+        if move_while_typing {
+            let new = f.dir.join("destination.jsonl");
+            fs::write(&new, "").unwrap();
+            move_transcript_for_test(WORKER, new);
+            f.append(WORKER, "user", "First task", false);
+            f.append(WORKER, "assistant", "First result.", false);
+        }
+    });
+    expect(&writes, &[(TOP, &["before opening its prompt", "Not delivered: 1 message"])]);
+    f.requests(TOP, WORKER, &[1]);
+    f.checkpoint(&[(TOP, &["First result."])]);
+    f.requests(TOP, WORKER, &[]);
+    f.checkpoint(&[]);
 }
 
 #[test]
 fn seeded_debt_interleavings() {
-    let actions = [
-        Action::Send(true, false),
-        Action::Send(true, false),
-        Action::Send(true, true),
-        Action::Send(false, false),
-        Action::Send(false, true),
-        Action::Start,
-        Action::End(None),
-        Action::End(Some("Plain result")),
-        Action::End(Some("DONE: result")),
-        Action::End(Some("BLOCKED: no result")),
-        Action::Fail,
-        Action::Exit,
-        Action::Look,
-        Action::Look,
-        Action::Delivered,
-        Action::Refused,
-        Action::Ambiguous,
-        Action::Wait(true, true),
-        Action::Wait(false, true),
-        Action::Wait(false, false),
-        Action::Cancel,
-        Action::Read,
-        Action::Reload,
-        Action::Handover,
-        Action::Forget,
-        Action::Away,
-    ];
+    let _sweep = crate::agents::test_support::sweep_only(&SESSIONS);
     let sequences = std::env::var("LUNA_DEBT_SEQUENCES").ok().map(|n| n.parse().expect("sequence count")).unwrap_or(512);
-    let regressions = [0x7073_7bee_0ba8_55a5, 0x92e0_3411_6c3a_9abf, 0xf931_dab7_0283_2a9d, 0x3b84_61af_1687_bb28];
-    let seeds = (0..sequences).map(|index| 0x5337_c243_d089_61e1_u64 ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
-    for seed in regressions.into_iter().chain(seeds) {
-        let mut state = seed;
-        let mut next = |limit: usize| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state as usize % limit
-        };
-        let count = 2 + next(2);
-        let mut events: Vec<_> = (0..40).map(|_| Event(next(count), next(count), actions[next(actions.len())])).collect();
-        if let Err(mut why) = replay(count, &events) {
-            // Greedily delete until no one event can be removed while
-            // retaining a failure. A shorter witness is easier to debug.
-            let mut i = 0;
-            while i < events.len() {
-                let removed = events.remove(i);
-                if let Err(found) = replay(count, &events) {
-                    why = found;
-                    i = 0;
-                } else {
-                    events.insert(i, removed);
-                    i += 1;
-                }
-            }
-            panic!("seed {seed:#018x}: {why}; events {events:?}");
+    let dir = std::env::temp_dir().join(format!("luna-notice-oracle-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let cases = [
+        ordinary,
+        queued_or_joined,
+        plan,
+        lead_and_job,
+        peer_cycle,
+        quiet_and_refusal,
+        changed_delivery,
+        restart_and_caller_return,
+        held_and_collected,
+        overlapping_requests,
+        failed_batch,
+    ];
+    let mut failed = vec![false; cases.len()];
+    for index in 0..sequences {
+        let case = (index % cases.len() as u64) as usize;
+        if failed[case] {
+            continue;
+        }
+        let seed = 0x5337_c243_d089_61e1 ^ index.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let mut rng = Seed(seed);
+        let provider = if rng.coin() { Provider::Claude } else { Provider::Codex };
+        let mut fixture = Fixture::new(dir.clone(), provider);
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cases[case](&mut fixture, &mut rng))).is_err() {
+            eprintln!("notifier oracle case {case}, sequence {index}, seed {seed:#018x}, provider {provider:?}");
+            failed[case] = true;
         }
     }
+    fs::remove_dir_all(dir).unwrap();
+    assert!(!failed.into_iter().any(|failed| failed));
 }

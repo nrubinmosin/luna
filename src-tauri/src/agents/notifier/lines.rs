@@ -432,11 +432,12 @@ fn notice_line_inner(
     // will be to hear of.
     let background = ts.is_some_and(|t| t.children_busy) && alive;
     let left = if background { left_named(id) } else { None };
-    let notice_baseline = o.notice_baseline();
     let between_turns = turn != Some(crate::activity::Turn::Busy);
     if o.wake.delivery_expired.is_some() {
         return None;
     }
+    let o = if between_turns { o.with_late_transcript(ended, || transcript_end(id)) } else { o };
+    let notice_baseline = o.notice_baseline();
     let cut = crate::background::cut_short(id) || o.cut_short;
     let unopened = between_turns && crate::background::unopened_turn(id, ended);
     let failed = (between_turns && (ended > notice_baseline || o.told_pending || o.wake.skipped.is_some()))
@@ -562,7 +563,7 @@ fn notice_line_inner(
                 let plain = failed.is_none() && halted.is_none() && stopped.is_empty() && lost.is_empty() && !o.unsure && found;
                 let status = fresh_status(&said);
                 let (requests, plan, fyi) = said.notice_requests();
-                let keeps_plan = fyi && o.wake.plan_through.is_some();
+                let keeps_plan = keeps_plan(id, o, ended, &requests, fyi);
                 let plan_covers = keeps_plan || plan_covers(o, ended);
                 if plain && keeps_plan && status.is_none() && requests.iter().all(|q| q.taken) {
                     evidence.read_to = Some(read_to);
@@ -582,7 +583,7 @@ fn notice_line_inner(
                 let said_since_hold = !quiet_since_held(pty, id, k, &o, &said);
                 if plain && status.is_none() && (!said_since_hold || !can_stall(o, &requests, plan_covers)) {
                     evidence.read_to = Some(read_to);
-                    return Some((None, silent_or_untaken(o, ended, &requests, !said.is_empty())));
+                    return Some((None, silent_or_untaken(o, ended, &requests, !said.is_empty(), read_to)));
                 }
                 let how = if plain {
                     turn_settlement(o, ended, read_to, &said, requests.clone(), status, plan || keeps_plan, false, false, false)
@@ -636,7 +637,7 @@ fn notice_line_inner(
         }
         let status = fresh_status(&replies);
         let (requests, plan, fyi) = replies.notice_requests();
-        let keeps_plan = fyi && o.wake.plan_through.is_some();
+        let keeps_plan = keeps_plan(id, o, ended, &requests, fyi);
         let plan_covers = keeps_plan || plan_covers(o, ended);
         // The last lead turn may have made no reply even when the answer
         // includes interim text from earlier turns.
@@ -694,7 +695,7 @@ fn notice_line_inner(
                     return standing_line(pty, who, id, k, o);
                 }
                 evidence.read_to = Some(read_to);
-                return Some((None, silent_or_untaken(o, ended, &requests, !replies.is_empty())));
+                return Some((None, silent_or_untaken(o, ended, &requests, !replies.is_empty(), read_to)));
             }
         }
         let text = match (replies.is_empty(), lost.is_empty()) {
@@ -903,6 +904,12 @@ fn plan_covers(o: Owed, ended: u32) -> bool {
     o.wake.plan_through.is_some_and(|through| ended <= through)
 }
 
+fn keeps_plan(id: &str, o: Owed, ended: u32, requests: &[Request], fyi: bool) -> bool {
+    o.wake
+        .plan_through
+        .is_some_and(|plan| fyi || turns_on_helpers(id, plan, ended) && !requests.iter().any(|q| q.reply && q.taken && q.baseline >= plan))
+}
+
 fn can_stall(o: Owed, requests: &[Request], plan_covers: bool) -> bool {
     if o.no_reply || plan_covers {
         return false;
@@ -913,9 +920,9 @@ fn can_stall(o: Owed, requests: &[Request], plan_covers: bool) -> bool {
     requests.iter().any(|q| q.reply && q.taken && !q.told)
 }
 
-fn silent_or_untaken(o: Owed, ended: u32, requests: &[Request], unread: bool) -> Settled {
+fn silent_or_untaken(o: Owed, ended: u32, requests: &[Request], unread: bool, read_to: u64) -> Settled {
     if requests.iter().any(|q| !q.taken) {
-        return if o.notice_baseline() < ended { Settled::UnusedTurn(ended) } else { Settled::Unhold };
+        return if o.notice_baseline() < ended { Settled::UnusedTurn(ended, read_to) } else { Settled::Unhold };
     }
     Settled::Silent(ended, unread)
 }

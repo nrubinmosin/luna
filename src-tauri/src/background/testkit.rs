@@ -55,6 +55,11 @@ pub fn queue_for_test(id: &str, text: &str) {
 #[cfg(test)]
 pub fn fail_next_launch_for_test(id: &str, queued: Queued) {
     lock().entries.get_mut(id).unwrap().queue.push(queued);
+    fail_queued_launch_for_test(id);
+}
+
+#[cfg(test)]
+pub(crate) fn fail_queued_launch_for_test(id: &str) {
     turn_over_with(id, Some(0), |id, _| run_turn_with(id, None, || Err("Launch failed before the prompt opened".into())));
 }
 

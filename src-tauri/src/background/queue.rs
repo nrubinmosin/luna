@@ -267,16 +267,38 @@ pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool, room: bool) -> Pla
 /// `send_tracked` without the id, for the tests.
 #[cfg(test)]
 pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<Placed, String> {
-    send_tracked(id, text, from).map(|(placed, _)| placed)
+    send_tracked(id, Queued::new(from.map(str::to_owned), text.to_string())).map(|(placed, _)| placed)
 }
 
 /// Text for the helper: the next turn now, into the one running, or after it.
 /// With the text's own id (`Queued::id`): what tells whether text queued went
 /// onto the running process's stdin after all (events.rs `moved_onto_stdin_at`).
-pub fn send_tracked(id: &str, text: &str, from: Option<&str>) -> Result<(Placed, String), String> {
-    let q = Queued::new(from.map(str::to_owned), text.to_string());
+pub fn send_tracked(id: &str, q: Queued) -> Result<(Placed, String), String> {
     let qid = q.id.clone();
     send_as(id, q, true).map(|(placed, _)| (placed, qid))
+}
+
+/// A send's placement can start or feed a turn before the agent registry
+/// knows the request's baseline. A failed turn can already keep the message,
+/// but its sender cannot collect the loss until the debt is published.
+pub struct PublishingRequest(String);
+
+fn publishing_requests() -> &'static Mutex<std::collections::HashSet<String>> {
+    static IDS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    IDS.get_or_init(Default::default)
+}
+
+impl PublishingRequest {
+    pub fn begin(q: &Queued) -> Self {
+        publishing_requests().lock().unwrap_or_else(|e| e.into_inner()).insert(q.id.clone());
+        Self(q.id.clone())
+    }
+}
+
+impl Drop for PublishingRequest {
+    fn drop(&mut self) {
+        publishing_requests().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+    }
 }
 
 /// A notice aimed at a helper found
@@ -365,16 +387,22 @@ pub fn undelivered_snapshot(id: &str, caller: &str, parent: bool) -> Vec<(String
             q.text.clone()
         }
     };
-    lock().entries.get(id).map(|e| e.undelivered.iter().filter(|q| mine(q)).map(|q| (q.id.clone(), told(q))).collect()).unwrap_or_default()
+    let r = lock();
+    let publishing = publishing_requests().lock().unwrap_or_else(|e| e.into_inner());
+    r.entries
+        .get(id)
+        .map(|e| e.undelivered.iter().filter(|q| mine(q) && !publishing.contains(&q.id)).map(|q| (q.id.clone(), told(q))).collect())
+        .unwrap_or_default()
 }
 
 /// Takes it off, `caller` having been told: `put_back` undoes that.
 pub fn take_undelivered_for(id: &str, caller: &str, parent: bool, ids: Option<&[String]>) -> Vec<Queued> {
     let mut r = lock();
     let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
-    let (taken, left) = std::mem::take(&mut e.undelivered)
-        .into_iter()
-        .partition(|q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller) && ids.is_none_or(|ids| ids.contains(&q.id)));
+    let publishing = publishing_requests().lock().unwrap_or_else(|e| e.into_inner());
+    let (taken, left) = std::mem::take(&mut e.undelivered).into_iter().partition(|q: &Queued| {
+        q.from.as_deref().map_or(parent, |f| f == caller) && ids.is_none_or(|ids| ids.contains(&q.id)) && !publishing.contains(&q.id)
+    });
     e.undelivered = left;
     taken
 }

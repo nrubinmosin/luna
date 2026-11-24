@@ -587,11 +587,13 @@ turn, stopped on a prompt (once per stop) or exited.
   none, its lines going to the log. Typing one takes seconds and the turn it
   starts may ask again meanwhile. A notice, wait or complete read settles the
   request numbers it covered, scoped to the transcript and each request's
-  delivery state. A notice acknowledges restart interruptions and losses
-  carried in its rendered text after delivery succeeds. A queued request
-  keeps its own turn baseline and cursor. A terminal write without evidence
-  of a new turn waits for its prompt in the transcript. Caller notice expiry
-  leaves a report cursor available for a transcript line still being written.
+  delivery state. A notice acknowledges the restart interruptions and loss
+  IDs carried in its rendered text. If Enter produces no observed turn and
+  the composer still holds the text, Luna keeps the debt and marks the draft.
+  With an empty or unreadable composer, Luna acknowledges the write and
+  leaves the turn unmarked, so later notices can proceed. Caller notice
+  expiry leaves a report cursor available for a transcript line still being
+  written.
 - Lines no debt brings (a helper taken over, an auto-delete, a queued text
   refused, or a system notice) wait for a caller a restart has yet to bring back for as
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
@@ -608,8 +610,10 @@ turn, stopped on a prompt (once per stop) or exited.
   reuses transcript, failure, and activity checks across notices. A draft holds only its
   own notice. Interim and suppressed text
   stays readable. After a PLAN, the idle stall stays covered through that
-  turn and later turns started by FYIs. A joined FYI stays part of the
-  original turn. Permission prompts, failures, exits and restart
+  turn and later turns started by FYIs or a lead's delegate notices. A
+  joined FYI stays part of the original turn. A turn seen before its prompt
+  is written is reconsidered if its transcript grows. Permission prompts,
+  failures, exits and restart
   interruptions still go to the caller. A failure or restart cut after a
   silent settlement wakes that caller for a later PLAN turn or a turn
   started by one of its requests. A separate allowance per task covers
@@ -694,7 +698,9 @@ turn, stopped on a prompt (once per stop) or exited.
   and a reply acknowledges the losses it included. An outstanding loss can
   wake the caller after the answer has settled. A launch that fails before
   opening the prompt records the undelivered batch before it publishes the
-  turn end. That failure settles the requests in that batch.
+  turn end. Loss collection waits for the request number and delivery ID
+  before exposing a send's lost text. Interrupting sends keep their
+  replacement's ID, so that failure settles exactly the requests in the batch.
   Claude Code's own stop with none named, and a Codex stop an older
   core saved uncounted, keep their own lines (`BACKGROUND_STOPPED`,
   `SUBAGENTS_INTERRUPTED`).
@@ -732,7 +738,8 @@ turn, stopped on a prompt (once per stop) or exited.
   warns, the desktop is told once, and a person
   typing into either chat lifts it. Prompts, questions, exits and a pair's
   first failure still come. Other failures count toward the breaker and
-  are held when it trips.
+  are held when it trips. A loss-only notice counts once for the IDs it
+  acknowledges, with the same allowance for the first failure after a trip.
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
   window (`<data>/quota-told.json`). Breaker lines, folder-skills failures and places notices
