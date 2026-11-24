@@ -66,15 +66,21 @@ pub struct HelperSettings {
     pub max_helpers: u32,
     pub min: u32,
     pub max: u32,
+    pub delegate_auto_compact_tokens: u32,
     /// 0: never.
     pub helper_context_pct: u32,
 }
 
 impl Default for HelperSettings {
     fn default() -> Self {
-        HelperSettings { max_helpers: 16, min: 1, max: 64, helper_context_pct: 50 }
+        HelperSettings { max_helpers: 16, min: 1, max: 64, helper_context_pct: 50, delegate_auto_compact_tokens: DELEGATE_COMPACT_DEFAULT }
     }
 }
+
+pub const DELEGATE_COMPACT_DEFAULT: u32 = 400_000;
+pub const DELEGATE_COMPACT_MIN: u32 = 100_000;
+pub const DELEGATE_COMPACT_MAX: u32 = 1_000_000;
+pub const DELEGATE_COMPACT_STEP: u32 = 50_000;
 
 /// Copy on select, both CLIs' (`CopyOnSelect` in the host's settings.rs):
 /// the value the host keeps, and its words on the Chats page.

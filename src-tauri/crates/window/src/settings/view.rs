@@ -225,6 +225,12 @@ impl SettingsPanel {
         self.call(Page::Agents, cmd::SET_MAX_HELPERS, json!({ "n": n }), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
     }
 
+    fn set_delegate_auto_compact_tokens(&mut self, tokens: u32, cx: &mut Context<Self>) {
+        self.call(Page::Agents, cmd::SET_DELEGATE_AUTO_COMPACT_TOKENS, json!({ "tokens": tokens }), cx, |v, h: HelperSettings, _| {
+            v.helpers = Some(h);
+        });
+    }
+
     pub fn set_context_pct(&mut self, pct: u32, cx: &mut Context<Self>) {
         self.call(Page::Agents, cmd::SET_HELPER_CONTEXT_PCT, json!({ "pct": pct }), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
     }
@@ -527,6 +533,8 @@ impl SettingsPanel {
     }
 
     fn agents(&self, p: &Palette, cx: &Context<Self>) -> Div {
+        use super::{DELEGATE_COMPACT_DEFAULT, DELEGATE_COMPACT_MAX, DELEGATE_COMPACT_MIN, DELEGATE_COMPACT_STEP};
+
         let h = self.helpers.clone();
         let ready = h.is_some();
         let h = h.unwrap_or_default();
@@ -550,6 +558,39 @@ impl SettingsPanel {
                 "+",
                 ready && n < max,
                 self.act(cx, move |v, _, cx| v.set_max_helpers(n + 1, cx)),
+            ));
+        let tokens = h.delegate_auto_compact_tokens;
+        let compaction = div()
+            .flex()
+            .items_center()
+            .gap(u(4.))
+            .child(ui::button(
+                "settings-delegate-compact-toggle",
+                p,
+                if tokens == 0 { "Enable" } else { "Turn off" },
+                ready,
+                self.act(cx, move |v, _, cx| {
+                    v.set_delegate_auto_compact_tokens(if tokens == 0 { DELEGATE_COMPACT_DEFAULT } else { 0 }, cx)
+                }),
+            ))
+            .child(ui::button(
+                "settings-delegate-compact-less",
+                p,
+                "-",
+                ready && tokens > DELEGATE_COMPACT_MIN,
+                self.act(cx, move |v, _, cx| v.set_delegate_auto_compact_tokens(tokens.saturating_sub(DELEGATE_COMPACT_STEP), cx)),
+            ))
+            .child(div().w(u(45.)).flex().justify_center().font_weight(FontWeight::BOLD).child(if tokens == 0 {
+                "Off".to_owned()
+            } else {
+                format!("{}k", tokens / 1_000)
+            }))
+            .child(ui::button(
+                "settings-delegate-compact-more",
+                p,
+                "+",
+                ready && tokens != 0 && tokens < DELEGATE_COMPACT_MAX,
+                self.act(cx, move |v, _, cx| v.set_delegate_auto_compact_tokens(tokens + DELEGATE_COMPACT_STEP, cx)),
             ));
         let pct = ui::segmented(
             "settings-helper-context",
@@ -597,6 +638,12 @@ impl SettingsPanel {
                         .into(),
                 ),
                 stepper,
+            ))
+            .child(ui::row(
+                p,
+                "Delegates' auto-compaction",
+                Some("Set in tokens for each helper and lead turn. Off uses the CLI's own settings.".into()),
+                compaction,
             ))
             .child(ui::row(
                 p,

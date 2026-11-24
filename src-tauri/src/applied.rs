@@ -105,6 +105,8 @@ items! {
         "What the agents that started this session asked it, and every session under it, to keep to, word for word: the last of its role layers. Text it is told, not a permission it lacks.";
     HelperHeadless = "helper.headless", Runtime,
         "A helper runs without a terminal: its CLI's headless mode, its output read as a stream.";
+    DelegateAutoCompaction = "delegate.auto-compaction", UserAction,
+        "The auto-compaction window for Claude Code or token limit for Codex, from the Delegates' auto-compaction setting.";
     HelperPermissionPrompt = "helper.permission-prompt", Runtime,
         "A helper's permission prompts and questions go to the session that started it: Claude Code's over its own stdin and stdout, Codex's as its app-server's requests.";
     HelperMcpAlone = "helper.luna-mcp-alone", Boundary,

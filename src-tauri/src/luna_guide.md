@@ -83,6 +83,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - A model the organization does not allow is swapped by the CLI: `resolvedModel` says what ran.
 
 ## Spawning
+- Helpers and leads use Luna's delegate auto-compaction setting.
 - A safe spawn: a prompt that stands alone (the helper sees nothing of your conversation), the
   least mode that does the job (`readOnly`, `plan`, a read-only sandbox), a worktree you made
   for edits beside other work (see `folder`); then end your turn and let the notice come.

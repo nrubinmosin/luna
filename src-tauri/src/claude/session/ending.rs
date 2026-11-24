@@ -6,10 +6,10 @@ use super::*;
 use crate::to_compact::Sample;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct ContextRead {
-    pub(super) tokens: f64,
-    pub(super) window: f64,
-    pub(super) compaction: Option<Sample>,
+pub(crate) struct ContextRead {
+    pub(crate) tokens: f64,
+    pub(crate) window: f64,
+    pub(crate) compaction: Option<Sample>,
 }
 
 // Free context reading: the last assistant message in the session transcript
@@ -75,9 +75,9 @@ pub fn last_model(path: &Path) -> Option<String> {
     ending(path).model
 }
 
-/// The last answer's context (tokens and window).
-pub fn last_context(path: &Path) -> Option<(f64, f64)> {
-    ending(path).context.map(|c| (c.tokens, c.window))
+/// The last answer's context (tokens and window) and the compaction sample.
+pub(crate) fn last_context(path: &Path) -> Option<ContextRead> {
+    ending(path).context
 }
 
 /// See `last_model`: the CLI's own stand-in for a message no model wrote

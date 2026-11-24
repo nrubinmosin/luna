@@ -54,7 +54,12 @@ pub(crate) struct Startup {
 }
 
 pub(crate) fn at_launch(id: &str, account: &str, folder: &str) -> Option<Arc<Startup>> {
-    let config = config::compaction(account, folder, crate::agents::codex_chat_trust_key(id, account, folder).as_deref()).ok()?;
+    let trust = crate::agents::codex_chat_trust_key(id, account, folder);
+    at_launch_with(id, account, folder, trust.as_deref(), None)
+}
+
+pub(crate) fn at_launch_with(id: &str, account: &str, folder: &str, trust: Option<&str>, limit: Option<u32>) -> Option<Arc<Startup>> {
+    let config = config::compaction(account, folder, trust, limit).ok()?;
     let version = crate::cli::session_version(id);
     Startup::read(config, &account_catalog(account), version.as_deref()).map(Arc::new)
 }
@@ -222,7 +227,7 @@ mod tests {
         .unwrap();
         let (a, f) = (account.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
         let estimate = || {
-            let cfg = config::compaction(&a, &f, None).unwrap();
+            let cfg = config::compaction(&a, &f, None, None).unwrap();
             Startup::read(cfg, &account_catalog(&a), Some("0.171.0"))?.limit("gpt-6.1-sol", 475_000)
         };
         assert_eq!(estimate(), Some(300_000));
@@ -270,7 +275,7 @@ mod tests {
         std::fs::create_dir_all(project.join(".codex")).unwrap();
         std::fs::write(project.join(".codex/config.toml"), "model_catalog_json = 'project.json'\n").unwrap();
         let (account, project) = (account.to_str().unwrap(), project.to_str().unwrap());
-        let config = || config::compaction(account, project, None).unwrap().model_catalog;
+        let config = || config::compaction(account, project, None, None).unwrap().model_catalog;
         assert_eq!(config(), None, "undecided");
         let key = toml_edit::Value::from(project);
         let file = Path::new(account).join("config.toml");

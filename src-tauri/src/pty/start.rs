@@ -1069,6 +1069,8 @@ mod tests {
         assert!(attached.backlog.is_empty());
         let (l, mut envs) = (launch.expect("the start was caught"), envs.unwrap());
         no_way_into_the_core(&l.args, &l.envs);
+        assert!(!l.envs.iter().any(|(name, _)| *name == crate::claude::compact::AUTO_COMPACT_WINDOW_ENV));
+        assert!(!l.args.iter().any(|arg| arg.starts_with(crate::codex::config::AUTO_COMPACT_LIMIT_KEY)));
         Redact::assert_shown(&l.args, &l.envs, &l.cwd, &l.applied);
         Redact::assert_probed(l.provider, &l.args);
         // Every pane's CLI ends its environment on the terminal it draws into

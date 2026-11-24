@@ -166,18 +166,28 @@ pub struct Compaction {
     pub post_turn_pct: Option<f64>,
 }
 
-/// `Compaction` for a chat in `folder`: the
-/// layers Codex is known to load below the command line, then the
-/// managed one above it; Luna's `-c` names none of these keys. A layer Codex
+pub(crate) const AUTO_COMPACT_LIMIT_KEY: &str = "model_auto_compact_token_limit";
+
+/// `Compaction` for a session in `folder`: the layers Codex is known to load
+/// below the command line, Luna's limit if given, then the managed layer. A layer Codex
 /// surely loads that will not read is an error: what it says is not known.
-pub fn compaction(account_path: &str, folder: &str, trust_key: Option<&str>) -> Result<Compaction, String> {
+pub fn compaction(account_path: &str, folder: &str, trust_key: Option<&str>, limit: Option<u32>) -> Result<Compaction, String> {
     let below = loaded_layers(account_path, folder, trust_key)?.into_iter().filter_map(|(file, sure)| sure.then_some(file));
-    let mut out = Compaction::default();
-    for file in below.chain(managed_layers()) {
+    compaction_from_layers(below, managed_layers(), limit)
+}
+
+fn compaction_from_layers(
+    below: impl IntoIterator<Item = PathBuf>,
+    managed: impl IntoIterator<Item = PathBuf>,
+    limit: Option<u32>,
+) -> Result<Compaction, String> {
+    let mut out = Compaction { token_limit: limit.map(i64::from), ..Default::default() };
+    let layers = below.into_iter().map(|file| (file, false)).chain(managed.into_iter().map(|file| (file, true)));
+    for (file, managed) in layers {
         let doc = read(&file)?;
         let int = |key: &str| doc.get(key).and_then(|v| v.as_integer());
         out.context_window = int("model_context_window").or(out.context_window);
-        out.token_limit = int("model_auto_compact_token_limit").or(out.token_limit);
+        out.token_limit = int(AUTO_COMPACT_LIMIT_KEY).filter(|_| managed || limit.is_none()).or(out.token_limit);
         // Keep the spelling from the highest layer so the reader can refuse
         // a relative, share or device path before touching it.
         if let Some(path) = doc.get("model_catalog_json") {
@@ -599,6 +609,22 @@ pub fn string_at(doc: &DocumentMut, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_delegate_auto_compaction_limit_sits_between_project_and_managed_config() {
+        let project = crate::golden::project();
+        let folder = Path::new(&project);
+        let lower = folder.join("config.toml");
+        let managed = folder.join("managed.toml");
+        std::fs::write(&lower, "model_auto_compact_token_limit = 500000\nmodel_auto_compact_token_limit_scope = \"body_after_prefix\"\n")
+            .unwrap();
+        let config = |limit| compaction_from_layers([lower.clone()], [managed.clone()], limit).unwrap();
+        assert_eq!(config(None).token_limit, Some(500_000));
+        assert_eq!(config(Some(400_000)).token_limit, Some(400_000));
+        assert_eq!(config(Some(400_000)).scope.as_deref(), Some("body_after_prefix"));
+        std::fs::write(managed.clone(), "model_auto_compact_token_limit = 200000\n").unwrap();
+        assert_eq!(config(Some(400_000)).token_limit, Some(200_000));
+    }
 
     #[test]
     fn managed_approval_or_unreadable_requirements_keep_spawn_prompted() {

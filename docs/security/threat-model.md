@@ -219,6 +219,11 @@ B1 is not reused.
 | D | Thread or memory exhaustion | fixed (H2): 64 connections still sending their head (16 KiB, 5 s), then separate lanes of 32 for hooks and 128 for MCP; bodies 64 KiB (hooks) or 4 MiB within 30 s; 503 past a cap, 413 past a body cap (`hub.rs:42-75`, `admit.rs`). Helper turns capped per line at the places the person sets (1 to 64, `agents/spawn/mod.rs:30`), checked where each is claimed (`background/places.rs`): a spawn past them is refused, any other turn waits queued for a place; Luna's own notices to a lead pass, so its helpers' answers cannot deadlock it; helpers between turns are not capped, each a registry entry with no CLI process |
 | R | Who did what through MCP | every tool call is logged with caller, target and selected steering arguments, never the `prompt` or `text` argument; a search's `q` and up to 300 characters of an error can appear (`mcp/dispatch.rs` `call`); spawns and exits go to `agents.jsonl` |
 
+The window-owned `set_delegate_auto_compact_tokens` command is listed in
+`native/panels.rs`. It accepts a `u32` and writes the bounded setting to
+Luna's settings file through the existing settings writer. It accepts no path
+and has no core endpoint or MCP route.
+
 ### B4. Core to CLI child processes (`pty/`, `background/`)
 
 | STRIDE | Threat | Status |

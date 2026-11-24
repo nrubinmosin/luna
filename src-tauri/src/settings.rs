@@ -25,6 +25,9 @@ pub struct Settings {
     /// The most sessions one chat may have under it, every generation counted
     /// (agents/spawn `max_descendants`, held to its range there).
     pub max_helpers: u32,
+    /// The auto-compaction window or limit passed to delegates. 0 leaves it
+    /// to the CLI.
+    pub delegate_auto_compact_tokens: u32,
 
     /// The share of its context window past which notices about a helper say
     /// where it stands (agents/notifier usage.rs `budget_news`); 0 is off. A
@@ -449,6 +452,7 @@ impl Default for Settings {
             agent_blocked_accounts: Vec::new(),
             max_helpers: crate::agents::spawn::HELPERS_DEFAULT,
             helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
+            delegate_auto_compact_tokens: luna_window::DELEGATE_COMPACT_DEFAULT,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             codex_trusted_roots: Vec::new(),
@@ -494,6 +498,11 @@ fn read(path: &std::path::Path) -> Result<Settings, String> {
 fn cache() -> &'static Mutex<(Settings, Stamp)> {
     static S: OnceLock<Mutex<(Settings, Stamp)>> = OnceLock::new();
     S.get_or_init(|| Mutex::new((Settings::default(), None)))
+}
+
+pub(crate) fn delegate_auto_compact_tokens(tokens: u32) -> Option<u32> {
+    use luna_window::{DELEGATE_COMPACT_MAX, DELEGATE_COMPACT_MIN, DELEGATE_COMPACT_STEP};
+    (tokens != 0).then(|| tokens.clamp(DELEGATE_COMPACT_MIN, DELEGATE_COMPACT_MAX) / DELEGATE_COMPACT_STEP * DELEGATE_COMPACT_STEP)
 }
 
 /// The settings as the file has them. Another process may write the file
@@ -639,8 +648,18 @@ mod tests {
             serde_json::from_str(r#"{"maxHelpers": 7, "leadHandoff": {"on": true, "threshold": 60}, "helperContextPct": 40}"#)
                 .expect("a 0.19 file reads");
         assert_eq!((old.max_helpers, old.helper_context_pct), (7, 40), "the rest of it as written");
+        assert_eq!(old.delegate_auto_compact_tokens, 400_000, "older settings get the default");
         let json = serde_json::to_value(&old).unwrap();
         assert!(json.get("leadHandoff").is_none(), "nothing keeps it, so a write leaves it out");
+    }
+
+    #[test]
+    fn delegate_auto_compaction_keeps_off_and_bounds_token_values() {
+        let off: Settings = serde_json::from_value(serde_json::json!({ "delegateAutoCompactTokens": 0 })).unwrap();
+        assert_eq!(delegate_auto_compact_tokens(off.delegate_auto_compact_tokens), None);
+        assert_eq!(delegate_auto_compact_tokens(1), Some(100_000));
+        assert_eq!(delegate_auto_compact_tokens(449_999), Some(400_000));
+        assert_eq!(delegate_auto_compact_tokens(u32::MAX), Some(1_000_000));
     }
 
     #[test]

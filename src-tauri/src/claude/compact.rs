@@ -133,7 +133,7 @@ fn resolve(
     if !enabled {
         return None;
     }
-    let window = var("CLAUDE_CODE_AUTO_COMPACT_WINDOW").and_then(|v| env_window(&v)).or_else(|| settings_window(layers, key, model));
+    let window = var(AUTO_COMPACT_WINDOW_ENV).and_then(|v| env_window(&v)).or_else(|| settings_window(layers, key, model));
     // The small fixed limits from kw and the built-in model table in 2.1.330.
     let model_reserve = match model {
         "claude-3-haiku" | "claude-3-opus" => 4096,
@@ -195,6 +195,8 @@ fn window_setting(v: &Value) -> Option<u64> {
     let n = v.as_f64().filter(|n| n.fract() == 0.0 && *n >= MIN_WINDOW as f64)?;
     Some(n as u64)
 }
+
+pub(crate) const AUTO_COMPACT_WINDOW_ENV: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 
 /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as the CLI reads it (`sBe`, `gGn`):
 /// tokens (including grouped integers), or a number with `k` or `M`; one below the least is the least,

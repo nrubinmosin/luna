@@ -21,6 +21,9 @@ How to read the numbers:
   compaction.
 - **Per event**: once each time the event happens.
 
+The [delegates' auto-compaction setting](agents.md) controls when a helper
+or lead compacts its context. Luna applies it at launch without adding prompt text.
+
 ## Totals by role
 
 A session has one of three roles ([library](library.md#whose-sessions-chats-leads-helpers)):

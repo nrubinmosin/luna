@@ -29,8 +29,9 @@ pub struct Launch {
     pub account_path: String,
     /// Where it works, whose project settings it reads.
     pub folder: String,
-    /// Which start of the chat.
+    /// Which start of the chat or delegate turn.
     pub start: u64,
+    pub claude_window: Option<u32>,
     pub(crate) codex: Option<Arc<crate::codex::compact::Startup>>,
 }
 
@@ -96,7 +97,7 @@ fn claude_inputs(id: &str, launch: &Launch, model: &str) -> Arc<Read> {
     let policy: Vec<_> = policy.iter().map(|p| read(p)).collect();
     let legacy = read(&Path::new(account_path).join(".claude.json"));
     let mut hash = DefaultHasher::new();
-    (&files, &policy, &legacy).hash(&mut hash);
+    (&files, &policy, &legacy, launch.claude_window).hash(&mut hash);
     let stamp = hash.finish();
     let key = (id.to_string(), *start, account_path.clone(), folder.clone(), model.to_string());
     resolved(seen(), key, stamp, || {
@@ -109,7 +110,12 @@ fn claude_inputs(id: &str, launch: &Launch, model: &str) -> Arc<Read> {
             files.into_iter().filter_map(parse).collect(),
             policy.into_iter().filter_map(parse),
             model,
-            &|name| std::env::var(name).ok(),
+            &|name| {
+                if let Some(window) = launch.claude_window.filter(|_| name == compact::AUTO_COMPACT_WINDOW_ENV) {
+                    return Some(window.to_string());
+                }
+                std::env::var(name).ok()
+            },
             parse(legacy),
         );
         Read { stamp, inputs, at: Instant::now() }
@@ -122,7 +128,7 @@ mod tests {
 
     fn launch(account: &Path, start: u64) -> Launch {
         let path = account.to_string_lossy().into_owned();
-        Launch { provider: Provider::Claude, account_path: path.clone(), folder: path, start, codex: None }
+        Launch { provider: Provider::Claude, account_path: path.clone(), folder: path, start, claude_window: None, codex: None }
     }
 
     #[test]
@@ -149,7 +155,23 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_delegate_estimates_with_its_launch_window_below_file_env() {
+        let project = crate::golden::project();
+        let account = Path::new(&project);
+        let settings = account.join("settings.json");
+        std::fs::write(&settings, r#"{"autoCompactWindow": 500000}"#).unwrap();
+        let mut delegate = launch(account, 1);
+        delegate.claude_window = Some(400_000);
+        let at = |start| left("tc-claude-delegate", start, "claude-opus-5-5", 50_000, 1_000_000);
+        assert_eq!(at(&delegate), Some(317_000));
+        assert_eq!(at(&launch(account, 2)), Some(417_000), "the chat has no window from Luna");
+        std::fs::write(&settings, r#"{"env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "250k"}}"#).unwrap();
+        assert_eq!(at(&delegate), Some(167_000), "the settings-file env wins");
+    }
+
+    #[test]
     fn codex_keeps_config_and_catalog_edits_for_the_next_launch() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         let account = std::env::temp_dir().join(format!("luna-to-compact-codex-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
         let id = "tc-codex";
@@ -173,6 +195,9 @@ mod tests {
         std::fs::write(&config, format!("model_catalog_json = {path}\nmodel_auto_compact_token_limit = 40000\n")).unwrap();
         assert_eq!(tokens_left(&first, "test-model"), Some(50_000), "even before the first sample");
         assert_eq!(tokens_left(&start(2), "test-model"), Some(40_000));
+        let mut delegate = start(3);
+        delegate.codex = crate::codex::compact::at_launch_with(id, &delegate.account_path, &delegate.folder, None, Some(100_000));
+        assert_eq!(tokens_left(&delegate, "test-model"), Some(100_000), "the launch limit wins over the account");
         std::fs::write(&catalog, "{").unwrap();
         assert_eq!(tokens_left(&first, "other-model"), Some(60_000), "the launch covers subsequent models");
         assert_eq!(tokens_left(&start(3), "test-model"), None);

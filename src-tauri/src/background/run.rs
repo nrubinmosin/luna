@@ -13,6 +13,7 @@ pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Res
         session: None,
         cwd: None,
         run: None,
+        compaction: None,
         turns_ended: 0,
         queue: Vec::new(),
         in_flight: Vec::new(),
@@ -578,11 +579,13 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // lock (library/folders.rs `session_args`).
     // The helper's account counted as in use from here, as a chat's start
     // counts its own (`library::lay_out_for`).
-    let (account_path, role) = lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec))).ok_or("no such helper")?;
+    let (account_path, project, role) =
+        lock().entries.get(id).map(|e| (e.spec.account_path.clone(), e.spec.folder.clone(), role_of(&e.spec))).ok_or("no such helper")?;
     let reserved = crate::library::lay_out_for("before a helper's turn", &account_path)?;
     // Its role's texts, also off the lock: an override is a file of the
     // person's, read from disk.
     let texts = crate::library::role_texts(role);
+    let compact_tokens = crate::settings::delegate_auto_compact_tokens(crate::settings::get().delegate_auto_compact_tokens);
     let (args, dir, envs, provider, on_stdin, line, account, open, effort, applied) = {
         let r = lock();
         if r.closed {
@@ -592,7 +595,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         if e.run.as_ref().is_some_and(|run| run.stopped) {
             return Err(STOPPED.into());
         }
-        let ((args, dir, envs, applied), open) = command_and_open(e, id, &texts)?;
+        let ((args, dir, envs, applied), open) = command_and_open(e, id, &texts, compact_tokens)?;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
         (
@@ -619,6 +622,12 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     }
     // Its version directory held until the process has exited (cli.rs `launch`).
     let (exe, on_version) = crate::cli::launch(provider, Some(id))?;
+    let codex_compaction = if provider == Provider::Codex {
+        let trust = crate::codex::trust::override_key(&project);
+        crate::codex::compact::at_launch_with(id, &account, &dir, Some(&trust), compact_tokens)
+    } else {
+        None
+    };
     let mut cmd = std::process::Command::new(exe);
     cmd.args(&args).current_dir(&dir);
     crate::pty::clean_env(&mut cmd);
@@ -820,6 +829,14 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                     Rpc::new(open, on_stdin.clone(), effort, opening_line.clone(), luna_supplied)
                 });
                 e.run = Some(Run { feed: Some(feed), rpc, line: claude.then_some(line), ..Run::claimed(pid, started_ms) });
+                e.compaction = Some(crate::to_compact::Launch {
+                    provider,
+                    account_path: account.clone(),
+                    folder: dir.clone(),
+                    start: started_ms,
+                    claude_window: compact_tokens.filter(|_| claude),
+                    codex: codex_compaction,
+                });
                 e.observed.begin_turn();
                 e.error = None;
                 e.cut_short = false;
