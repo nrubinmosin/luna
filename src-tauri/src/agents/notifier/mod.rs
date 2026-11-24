@@ -771,7 +771,8 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
         if turn.turn == crate::activity::Turn::Busy || turn.turns_ended <= o.notice_baseline() {
             continue;
         }
-        let (words, end) = crate::agents::said::written_range(pty, id, provider, o.wake.unread_to.unwrap_or(o.cursor).max(o.cursor));
+        let from = o.wake.unread_to.unwrap_or_else(|| o.notice_cursor()).max(o.cursor);
+        let (words, end) = crate::agents::said::written_range(pty, id, provider, from);
         if words.is_empty()
             || crate::activity::turn_state(id)
                 .is_some_and(|now| now.turn == crate::activity::Turn::Busy || now.turns_ended != turn.turns_ended)
@@ -1467,7 +1468,9 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
                     o.wake.plan_through = Some(progress.ended);
                 }
                 if cursor > o.cursor {
-                    o.cursor = cursor;
+                    if o.wake.unread_since.is_none() {
+                        o.cursor = cursor;
+                    }
                     o.request_match = progress.matched;
                 }
             }
@@ -1506,6 +1509,7 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
             wake.unread_since = current_wake.unread_since;
             wake.unread_to = current_wake.unread_to;
             wake.reported_to = current_wake.reported_to;
+            let cursor = if wake.unread_since.is_some() { current.cursor.min(cursor) } else { cursor };
             r.owed.insert(
                 key,
                 Owed { request_match, wake, no_reply: told.no_reply, transcript_rev: told.transcript_rev, ..Owed::pending(ended, cursor) },
@@ -1513,7 +1517,9 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
         }
         Settled::Progress(progress) => {
             let o = r.owed.get_mut(&key).unwrap();
-            o.cursor = progress.cursor;
+            if o.wake.unread_since.is_none() {
+                o.cursor = progress.cursor;
+            }
             o.request_match = progress.matched;
             o.baseline = progress.ended;
             o.held = None;
@@ -2348,6 +2354,34 @@ mod tests {
         assert!(!rides(&Settled::QuietFor(2, Some(2), false), current));
         forget(id);
         forget(caller);
+    }
+
+    #[test]
+    fn a_new_notice_preserves_an_earlier_unread_report_restored_by_cancel() {
+        let (caller, id) = ("unread-progress-caller", "unread-progress-helper");
+        let key = (caller.into(), id.into());
+        let mut r = Registry::default();
+        let mut debt = Owed::from(0, 10);
+        debt.wake.unread_since = Some(now_ms());
+        debt.wake.unread_to = Some(20);
+        debt.wake.reported_to = Some(30);
+        r.owed.insert(key.clone(), debt);
+        let how = Settled::Progress(Progress {
+            ended: 1,
+            cursor: 50,
+            matched: None,
+            requests: vec![],
+            plan: true,
+            work_left: true,
+            job: false,
+            pending: false,
+        });
+        let read = LineEvidence { read_to: Some(50), ended: 1, ..LineEvidence::default() };
+        settle_delivered(&mut r, caller, id.into(), how, &debt, read, Some(1));
+        let left = r.owed[&key];
+        assert_eq!(left.cursor, 10, "a report read still starts at the unread answer");
+        assert_eq!(left.notice_cursor(), 50, "the new notice's words already reached the caller");
+        assert!(crate::agents::teardown::unread_holds(&left, now_ms()));
     }
 
     #[test]
