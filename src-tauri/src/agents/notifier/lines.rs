@@ -2141,7 +2141,7 @@ mod tests {
             crate::agents::notifier::settle_told(&mut reg().lock().unwrap(), helper_key, Settled::Answered, &owed_low);
             notice_turn(&mut reg().lock().unwrap(), id, 2, &[low.to_string()], false);
             crate::background::idle_for_test(id, provider, 2, false);
-            let notice = format!("{NOTICE_TAG} Your helper \"{low}\" finished its turn with 1 message since you asked: \"HELPER-OK\"");
+            let notice = format!("{NOTICE_TAG} Your helper \"{low}\" finished its turn with 1 message since you asked, #1: \"HELPER-OK\"");
             let silent = format!("{interim}{}", line("user", &notice));
             std::fs::write(&path, &silent).unwrap();
             assert!(!reg().lock().unwrap().owed[&(top.to_string(), id.to_string())].told_pending, "{tag}: never held back");
@@ -2158,7 +2158,7 @@ mod tests {
             std::fs::write(&path, format!("{silent}{woken}")).unwrap();
             let Some((Some(done), Settled::Answered)) = look(top, id, &known) else { panic!("{tag}: its turn on the wake") };
             assert!(
-                done.contains("with 2 messages since you asked: \"Helper is running") && done.contains("FINAL: the helper answered"),
+                done.contains("with 2 messages since you asked, #1: \"Helper is running") && done.contains("FINAL: the helper answered"),
                 "{tag}: {done}"
             );
             // The breaker stopping the wake, its parent hears of its end with the interim line, never "without a reply".
@@ -2169,7 +2169,7 @@ mod tests {
             reg().lock().unwrap().owed.insert((top.into(), id.into()), Owed::from(0, 0));
             assert!(matches!(look(top, id, &known), Some((None, Settled::Hold(2)))));
             let Some((Some(plain), Settled::Answered)) = look(top, id, &known) else { panic!("{tag}: its parent hears") };
-            assert!(plain.contains("finished its turn with 1 message since you asked: \"Helper is running"), "{tag}: {plain}");
+            assert!(plain.contains("finished its turn with 1 message since you asked, #1: \"Helper is running"), "{tag}: {plain}");
             assert!(!plain.contains("without a reply"), "{tag}: {plain}");
             assert_eq!(wakes(), 0, "{tag}");
             reg().lock().unwrap().stopped.remove(&(id.to_string(), id.to_string()));

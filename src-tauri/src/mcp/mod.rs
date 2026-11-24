@@ -536,9 +536,9 @@ mod tests {
         assert!(list.contains("luna_session_spawn") && !list.contains("luna_power_set") && !list.contains("scope"), "{list}");
         // Its own: itself and what is under it.
         let (failed, text) = call("lr-lead", "luna_session_list", json!({ "ids": ["lr-lead", "lr-mine"] }));
-        assert!(!failed && text.contains("lr-mine") && text.contains("\"places\""), "{text}");
-        let (failed, text) = call("lr-lead", "luna_session_get", json!({ "id": "lr-mine" }));
-        assert!(!failed, "{text}");
+        assert!(!failed && text.contains("lr-mine") && !text.contains("\"places\""), "{text}");
+        let (failed, text) = call("lr-lead", "luna_session_get", json!({ "id": "lr-mine", "include": ["places"] }));
+        assert!(!failed && text.contains("\"places\""), "{text}");
         let (_, text) = call("lr-lead", "luna_message_list", json!({ "id": "lr-mine" }));
         assert!(!text.contains("not under you"), "{text}");
         // The person's chat at the top keeps its reach.

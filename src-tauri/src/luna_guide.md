@@ -87,7 +87,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   `sameFolder` counts peers in reach.
 - Use exact modes and see `luna_account_get` for defaults. Codex commits need
   `danger-full-access`. Windows proxies allow some traffic. `readOnly` still allows Claude
-  Bash writes and conflicts with write modes and auto-review. `agent` is Claude-only.
+  Bash writes and conflicts with write modes and auto-review. `agent` must name an existing Claude agent.
 - Codex loads project config and runs trusted hooks only. `connectors: true` retains account
   integrations. Otherwise unreadable Codex config or managed integrations block the spawn.
   Provider memories are off.
@@ -106,7 +106,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   continues; expect news at completion or a fresh turn. Pending leads can signal sooner
   with `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` first (then colon or space).
   A silent lead gets one wake after its delegates finish.
-- After 12 turn/job notices per pair in 15 min, use waits or reads until a person types.
+- Quiet and background-wait notices come once per turn. After 12 turn/job notices per pair
+  in 15 min, use waits or reads until a person types.
   Asks still arrive. Recover interrupted native work before relying on it.
 - Wait takes up to 16 ids. Use `turnsEnded` for `afterTurn`. For a helper, exit means deletion.
   Cancellation leaves the answer owed. Read HTML-escaped Claude wait code via `luna_message_list`.
