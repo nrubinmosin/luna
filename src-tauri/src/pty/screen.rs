@@ -670,6 +670,10 @@ pub(super) struct Modes {
 }
 
 impl Modes {
+    pub(super) fn thread(&self) -> Option<&str> {
+        self.title.as_deref().and_then(thread_in_title)
+    }
+
     pub(super) fn feed(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.state = match (self.state, b) {
@@ -847,7 +851,7 @@ impl PtyManager {
             Arc::clone(&s.modes)
         };
         let m = modes.lock().unwrap_or_else(|e| e.into_inner());
-        thread_in_title(m.title.as_deref()?).map(str::to_owned)
+        m.thread().map(str::to_owned)
     }
 
     /// Whether its CLI stands at an empty prompt (see `at_empty_prompt`).

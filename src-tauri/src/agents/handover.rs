@@ -129,7 +129,8 @@ fn change_hands(id: &str) -> Option<TakenOver> {
         };
     }
     // Its answers owed: nobody's to wait for any more, whoever asked.
-    let mut owed: Vec<String> = r.owed.keys().filter(|(_, s)| s == id).map(|(c, _)| c.clone()).collect();
+    let mut owed: Vec<String> =
+        r.owed.iter().filter(|((_, s), o)| s == id && (o.active() || o.watches_later_turns())).map(|((c, _), _)| c.clone()).collect();
     owed.sort();
     r.owed.retain(|(_, s), _| s != id);
     r.requests.retain(|(_, s), _| s != id);
@@ -139,6 +140,7 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     r.answered.retain(|(_, s), _| s != id);
     r.notice_times.retain(|(_, s), _| s != id);
     r.stopped.retain(|(_, s), _| s != id);
+    r.failures_told.retain(|(_, s), _| s != id);
     r.system_news.retain(|n| !n.about(id));
     // What only a helper has: nothing deletes it now but the person.
     r.auto.remove(id);
@@ -481,13 +483,23 @@ mod tests {
             register(&parent, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
             register(&peer, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none);
             helper(&id, &parent, provider);
+            let key = (peer.clone(), id.clone());
+            {
+                let mut r = reg().lock().unwrap();
+                r.stopped.insert(key.clone(), 0);
+                r.failures_told.insert(key.clone(), 0);
+            }
             crate::background::idle_for_test(&id, provider, 1, false);
             crate::background::background_promote(id.clone()).unwrap();
             assert_eq!(crate::background::background_promoted(id.clone(), None), Ok(true));
             // The person's chat goes on: another session asks it something.
             owe_from(&peer, &id, 2, 0);
             assert_eq!(crate::background::background_promoted(id.clone(), None), Ok(true), "the retry is answered as the first");
-            assert!(reg().lock().unwrap().owed.contains_key(&(peer.clone(), id.clone())), "what it is owed since stands");
+            {
+                let r = reg().lock().unwrap();
+                assert!(r.owed.contains_key(&key), "what it is owed since stands");
+                assert!(!r.stopped.contains_key(&key) && !r.failures_told.contains_key(&key));
+            }
             assert_eq!(handovers_of(&id), 1);
             assert_eq!(news_for(&parent).len(), 1, "told once");
             reg().lock().unwrap().news.retain(|(c, _)| *c != parent);
@@ -528,6 +540,42 @@ mod tests {
         reg().lock().unwrap().news.retain(|(c, _)| c != "tk-parent");
         for id in ["tk-low", "tk-mid", "tk-parent"] {
             forget(id);
+        }
+    }
+
+    #[test]
+    fn takeover_tells_the_parent_active_and_watched_callers_and_senders_with_losses() {
+        let [parent, active, watched, settled, expired, sender, id] =
+            ["take-parent", "take-active", "take-watched", "take-settled", "take-expired", "take-sender", "take-helper"];
+        for chat in [parent, active, watched, settled, expired, sender] {
+            register(chat, Provider::Claude, "C:/p", "C:/acc/one", None, true, serde_json::json!({}));
+        }
+        helper(id, parent, Provider::Claude);
+        for caller in [active, watched, settled, expired] {
+            owe_from(caller, id, 0, 0);
+        }
+        {
+            let mut r = reg().lock().unwrap();
+            for caller in [watched, settled, expired] {
+                r.owed.get_mut(&(caller.into(), id.into())).unwrap().wake.silent = Some(1);
+            }
+            r.owed.get_mut(&(watched.into(), id.into())).unwrap().wake.plan_through = Some(1);
+            r.owed.get_mut(&(expired.into(), id.into())).unwrap().wake.delivery_expired = Some(100);
+        }
+        let lost = crate::background::Queued::new(Some(sender.into()), "the sender's undelivered text".into());
+        take_over(id, || Some(vec![lost])).unwrap();
+        for caller in [parent, active, watched, sender] {
+            assert_eq!(news_for(caller).len(), 1, "{caller}");
+        }
+        for caller in [settled, expired] {
+            assert!(news_for(caller).is_empty(), "{caller}");
+        }
+        let lines = news_for(sender);
+        if let Some((_, file)) = lines[0].split_once("word for word in ") {
+            let _ = std::fs::remove_file(file);
+        }
+        for chat in [parent, active, watched, settled, expired, sender, id] {
+            forget(chat);
         }
     }
 }

@@ -31,25 +31,37 @@ pub(super) fn said_since(pty: &crate::pty::PtyManager, id: &str, provider: Provi
     own_words(messages_at(&path, provider, moved.unwrap_or(cursor)), false)
 }
 
-/// `said_since` with its words kept when its last turn wrote none (the
-/// transcript ends on a prompt): what it wrote before that turn is still what
-/// the caller has not had.
-pub(super) fn written_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Said {
-    let (Some(path), moved) = transcript_seen(pty, id) else { return Said::default() };
-    own_words(messages_at(&path, provider, moved.unwrap_or(cursor)), true)
+/// Read all newly written words, including earlier turns, with the cursor
+/// after the last complete line the reader saw.
+pub(super) fn written_range(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> (Said, u64) {
+    let (Some(path), moved) = transcript_seen(pty, id) else { return (Said::default(), cursor) };
+    let cursor = moved.unwrap_or(cursor);
+    // The general readers rewind if an offset is past EOF. A notice must
+    // never take that rewind for fresh text.
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() < cursor) {
+        return (Said::default(), cursor);
+    }
+    let (messages, end) = read_at(&path, provider, cursor);
+    if end < cursor {
+        return (Said::default(), cursor);
+    }
+    (own_words(messages, true), end)
 }
 
 pub(super) fn messages_at(path: &std::path::Path, provider: Provider, from: u64) -> Vec<Message> {
+    read_at(path, provider, from).0
+}
+
+fn read_at(path: &std::path::Path, provider: Provider, from: u64) -> (Vec<Message>, u64) {
     match provider {
-        Provider::Claude => crate::claude::session::messages_from(path, from, false).0,
-        Provider::Codex => crate::codex::session::messages_from(path, from).0,
+        Provider::Claude => crate::claude::session::messages_from(path, from, false),
+        Provider::Codex => crate::codex::session::messages_from(path, from),
     }
 }
 
 /// What a session said since a point: its own messages in order, and where
-/// the last of its turns that said anything begins among them. Text that
-/// reached it mid-turn starts a turn of its own after that one, and the
-/// newest turn is where it stands now: its report is the one to lead with.
+/// the last of its turns that said anything begins among them. A joined
+/// prompt can change which request the words answer within a turn.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Said {
     pub(super) texts: Vec<String>,
@@ -68,10 +80,15 @@ pub(super) struct Said {
     /// message after it: which of the caller's requests a turn answers is read
     /// off these (`asked`).
     prompts: Vec<(usize, String)>,
+    /// The prompt index of each turn's first input, or None when the read
+    /// starts mid-turn or the CLI started a turn on its own.
+    turn_prompts: Vec<Option<usize>>,
     /// The caller's requests these answer, in the order they went in, and beside
     /// `texts` the one each message answers, by index into them (`asked`).
     requests: Vec<Request>,
     re: Vec<usize>,
+    matches: Vec<Option<usize>>,
+    prior: Option<u32>,
 }
 
 /// A request of a caller's that a debt covers: its number among the caller's
@@ -82,6 +99,22 @@ pub(super) struct Request {
     pub(super) n: u32,
     pub(super) key: Option<String>,
     pub(super) head: String,
+    #[serde(default = "reply_by_default")]
+    pub(super) reply: bool,
+    #[serde(default)]
+    pub(super) taken: bool,
+    #[serde(default)]
+    pub(super) told: bool,
+    #[serde(default)]
+    pub(super) baseline: u32,
+    #[serde(default)]
+    pub(super) cursor: u64,
+    #[serde(default)]
+    pub(super) queued: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) delivery: Option<String>,
+    #[serde(skip)]
+    pub(super) delivery_rev: u64,
 }
 
 /// How much of a request's text is kept to find it again among the prompts:
@@ -98,7 +131,15 @@ fn flat(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+pub(super) fn reply_by_default() -> bool {
+    true
+}
+
 impl Request {
+    pub(super) fn new(n: u32, key: Option<String>, head: String, reply: bool) -> Self {
+        Self { n, key, head, reply, taken: false, told: false, baseline: 0, cursor: 0, queued: false, delivery: None, delivery_rev: 0 }
+    }
+
     /// The heading used in answer files and tool replies.
     pub(super) fn name(&self) -> String {
         match &self.key {
@@ -109,6 +150,14 @@ impl Request {
 }
 
 impl Said {
+    /// The words before the first new turn in a read that starts mid-turn.
+    pub(super) fn before_next_turn(&self) -> &[String] {
+        let prompt = self.turn_prompts.iter().flatten().next().map(|&p| self.prompts[p].0);
+        let next_answer = self.starts.get(1).copied();
+        let end = prompt.into_iter().chain(next_answer).min().unwrap_or(self.len());
+        &self[..end]
+    }
+
     /// Messages of one turn, or of turns that cannot be told apart.
     pub(super) fn one_turn(texts: Vec<String>) -> Said {
         Said { texts, last_turn: 0, starts: vec![0], ..Said::default() }
@@ -125,29 +174,85 @@ impl Said {
     /// previous notice or wait, if that request is still open.
     pub(super) fn asked_after(mut self, requests: Vec<Request>, previous: Option<u32>) -> Said {
         self.re.clear();
+        self.prior = previous;
         if !requests.is_empty() {
             let mut from = 0;
+            let mut last_head = "";
+
             let found: Vec<Option<usize>> = requests
                 .iter()
                 .map(|q| {
-                    let at = self.prompts.iter().skip(from).position(|(_, text)| !q.head.is_empty() && flat(text).contains(&q.head));
-                    let at = at.map(|i| i + from);
+                    if previous == Some(q.n) {
+                        return None;
+                    }
+                    // One prompt can batch distinct sends. Repeating the
+                    // same request text needs a second occurrence.
+                    let start = from + usize::from(last_head == q.head && !last_head.is_empty());
+                    let at = self.prompts.iter().skip(start).position(|(_, text)| {
+                        !q.head.is_empty() && !text.trim_start().starts_with(super::notifier::NOTICE_TAG) && flat(text).contains(&q.head)
+                    });
+                    let at = at.map(|i| i + start);
                     if let Some(i) = at {
                         from = i;
+                        last_head = &q.head;
                     }
-                    at.map(|i| self.prompts[i].0)
+                    at
                 })
                 .collect();
             let prior = previous.and_then(|n| requests.iter().position(|q| q.n == n)).or_else(|| (requests.len() == 1).then_some(0));
             let before_first = prior.or_else(|| found.iter().position(Option::is_some).map(|i| i.saturating_sub(1)));
             if let Some(before_first) = before_first {
                 self.re = (0..self.texts.len())
-                    .map(|i| (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| at <= i)).unwrap_or(before_first))
+                    .map(|i| {
+                        (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| self.prompts[at].0 <= i)).unwrap_or(before_first)
+                    })
                     .collect();
             }
+            self.matches = found;
         }
         self.requests = requests;
         self
+    }
+
+    /// The prompt match used for notices excludes the display fallback for
+    /// words before an unmatched request. In particular, queueing a request
+    /// gives the preceding turn no authority to report status for it.
+    pub(super) fn notice_requests(&self) -> (Vec<Request>, bool, bool) {
+        let mut requests = self.requests.clone();
+        let mut current = self.prior.and_then(|n| requests.iter().position(|q| q.n == n));
+        if let Some(k) = current {
+            requests[k].taken = true;
+        } else {
+            current = requests.iter().rposition(|q| q.taken);
+        }
+        let mut plan = false;
+        let mut lasting_in_last_turn = false;
+        let mut matches = self.matches.iter().enumerate().filter_map(|(k, at)| Some((k, self.prompts[(*at)?].0))).peekable();
+        for i in 0..=self.texts.len() {
+            while let Some((k, _)) = matches.next_if(|(_, at)| *at == i) {
+                requests[k].taken = true;
+                current = Some(k);
+            }
+            let Some(status) = self.texts.get(i).and_then(|text| status_word(text)) else { continue };
+            if let Some(k) = current {
+                requests[k].told |= status.lasting();
+            }
+            if i >= self.last_turn {
+                lasting_in_last_turn |= status.lasting();
+                plan |= status == Status::Plan && (requests.is_empty() || current.is_some_and(|k| requests[k].reply));
+            }
+        }
+        // An FYI can follow an independent turn before the next look. It
+        // leaves a plan asleep only if every observed turn was an FYI.
+        let fyi = !self.turn_prompts.is_empty()
+            && self.turn_prompts.iter().all(|prompt| {
+                prompt.is_some() && self.matches.iter().rposition(|matched| matched == prompt).is_some_and(|k| !requests[k].reply)
+            });
+        (requests, plan && !lasting_in_last_turn, fyi)
+    }
+
+    pub(super) fn last_turn_started_by_request(&self) -> bool {
+        self.turn_prompts.last().copied().flatten().is_some_and(|prompt| self.matches.contains(&Some(prompt)))
     }
 
     /// The requests these answer, in the order they were asked.
@@ -214,25 +319,28 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
         return Said::default();
     }
     let mut said = Said::default();
-    let mut prompted = false;
-    let mut prompts = Vec::new();
+    let mut starter = None;
     for m in messages {
         if m.role != "assistant" {
-            prompted = true;
-            prompts.push(m.text);
+            if !m.joined {
+                starter.get_or_insert(said.prompts.len());
+            }
+            said.prompts.push((said.texts.len(), m.text));
             continue;
         }
-        said.prompts.extend(prompts.drain(..).map(|text| (said.texts.len(), text)));
-        if prompted || m.after_cli || said.texts.is_empty() {
+        if starter.is_some() || m.after_cli || said.texts.is_empty() {
             if !said.texts.is_empty() {
                 said.last_turn = said.texts.len();
-                said.by_cli = !prompted;
+                said.by_cli = starter.is_none();
             }
             said.starts.push(said.texts.len());
-            prompted = false;
+            said.turn_prompts.push(starter.take());
         }
         said.finals.push(m.final_answer);
         said.texts.push(m.text);
+    }
+    if starter.is_some() {
+        said.turn_prompts.push(starter);
     }
     said
 }
@@ -287,24 +395,56 @@ pub(super) fn report_re(replies: &Said) -> Option<&Request> {
     replies.re_of(report_of(replies))
 }
 
-/// The words a message may open with to say where its writer stands. One
-/// brings a session's notice where it would otherwise wait (notifier
-/// lines.rs): a lead's turn while its delegates work, an answer to a send
-/// that asked for none. They only ever bring a notice sooner.
-pub(super) const STATUS_WORDS: [&str; 5] = ["DONE", "BLOCKED", "QUESTION", "FAILED", "PLAN"];
+/// The opening words that can wake a caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(super) enum Status {
+    Done,
+    Blocked,
+    Question,
+    Failed,
+    Plan,
+}
+
+impl Status {
+    /// A plan covers its own turn. Other statuses cover the rest of the task.
+    pub(super) fn lasting(self) -> bool {
+        self != Self::Plan
+    }
+}
+
+const STATUS_WORDS: [(&str, Status); 5] = [
+    ("DONE", Status::Done),
+    ("BLOCKED", Status::Blocked),
+    ("QUESTION", Status::Question),
+    ("FAILED", Status::Failed),
+    ("PLAN", Status::Plan),
+];
 
 /// Whether `text`'s first line opens with a status word (STATUS_WORDS) as
 /// written, case and all, alone or followed by a colon or a space; markdown's
 /// emphasis or heading marks around it do not count against it.
 pub(super) fn says_status(text: &str) -> bool {
+    status_word(text).is_some()
+}
+
+pub(super) fn status_word(text: &str) -> Option<Status> {
     let first = text.trim_start().lines().next().unwrap_or("");
-    let bare = first.trim_start_matches(|c: char| matches!(c, '#' | '*' | '_' | '>') || c.is_whitespace());
-    STATUS_WORDS.iter().any(|word| {
-        bare.strip_prefix(word).is_some_and(|rest| {
-            let rest = rest.trim_start_matches(['*', '_']);
-            rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ')
-        })
+    let bare = first.trim_start_matches(|c: char| matches!(c, '#' | '*' | '_') || c.is_whitespace());
+    STATUS_WORDS.iter().find_map(|(word, status)| {
+        let rest = bare.strip_prefix(word)?.trim_start_matches(['*', '_']);
+        (rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ')).then_some(*status)
     })
+}
+
+/// Prefer the latest lasting status over a plan in the same batch of messages.
+pub(super) fn fresh_status(said: &Said) -> Option<Status> {
+    let mut found = said.iter().rev().filter_map(|text| status_word(text));
+    let latest = found.next()?;
+    if latest.lasting() {
+        Some(latest)
+    } else {
+        found.find(|status| status.lasting()).or(Some(latest))
+    }
 }
 
 /// `text` in a file for a notice to name, under `notes_dir`. Named by what it
@@ -496,10 +636,10 @@ mod tests {
 
     #[test]
     fn the_last_request_in_a_batch_owns_the_reply() {
-        let request = |n, head: &str| Request { n, key: None, head: head.into() };
+        let request = |n, head: &str| Request::new(n, None, head.into(), true);
         let queued =
             ["check the warnings", "check the tests"].map(|text| crate::background::Queued::new(Some("caller".into()), text.into()));
-        let message = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
+        let message = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, joined: false, final_answer: false };
         let said = said_of(vec![message("user", crate::background::joined(&queued)), message("assistant", "Both checks passed.".into())])
             .asked(vec![request(2, "check the warnings"), request(3, "check the tests")]);
         assert_eq!(said.last_request(), Some(3));
@@ -527,9 +667,72 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_in_a_later_turn_is_independent_of_a_status_in_an_earlier_turn() {
+        let m =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
+        let read = |last| {
+            said_of(vec![
+                m("user", "First task"),
+                m("assistant", "DONE: first task"),
+                m("user", &format!("{} says Next task is queued", super::super::notifier::NOTICE_TAG)),
+                m("assistant", "BLOCKED: another session is blocked"),
+                m("user", "Next task"),
+                m("assistant", last),
+            ])
+            .asked(vec![Request::new(1, None, "First task".into(), true), Request::new(2, None, "Next task".into(), true)])
+        };
+        let (requests, plan, _) = read("PLAN: check the logs").notice_requests();
+        assert!(plan && requests[0].told && !requests[1].told);
+        let (requests, plan, _) = read("> DONE: status from another session").notice_requests();
+        assert!(!plan && !requests[1].told);
+    }
+
+    #[test]
+    fn an_fyi_after_an_independent_turn_is_not_the_only_work() {
+        let m =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
+        let fyi = [m("user", "Heads up"), m("assistant", "Noted.")];
+        let match_fyi = |messages| said_of(messages).asked(vec![Request::new(1, None, "Heads up".into(), false)]).notice_requests().2;
+        assert!(match_fyi(fyi.to_vec()));
+        let independent = [m("user", "Go ahead"), m("assistant", "I reviewed the change.")];
+        assert!(!match_fyi([independent, fyi].concat()));
+    }
+
+    #[test]
+    fn a_plan_covers_the_turn_when_an_fyi_joins_after_it() {
+        use serde_json::json;
+        for provider in [Provider::Claude, Provider::Codex] {
+            let m = |role, text| match provider {
+                Provider::Claude => json!({"type": role, "message": {"content": text}}),
+                Provider::Codex => json!({"type": "response_item", "payload": {"type": "message", "role": role,
+                    "content": [{"type": if role == "user" { "input_text" } else { "output_text" }, "text": text}]}}),
+            };
+            let start = json!({"type": "event_msg", "payload": {"type": "task_started"}});
+            let joined = match provider {
+                Provider::Claude => json!({"type": "attachment", "attachment": {"type": "queued_command", "prompt": "/tmp contains logs"}}),
+                Provider::Codex => m("user", "/tmp contains logs"),
+            };
+            let path = std::env::temp_dir().join(format!("luna-joined-plan-{}-{}.jsonl", provider.as_str(), std::process::id()));
+            let lines = [start, m("user", "Check the changes"), m("assistant", "PLAN: inspect logs"), joined, m("assistant", "Noted.")];
+            let lines: Vec<_> = lines.into_iter().map(|line| line.to_string()).collect();
+            std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+            let said = said_of(messages_at(&path, provider, 0)).asked(vec![
+                Request::new(1, None, "Check the changes".into(), true),
+                Request::new(2, None, "/tmp contains logs".into(), false),
+            ]);
+            let (requests, plan, fyi_only) = said.notice_requests();
+            assert!(requests.iter().all(|q| q.taken), "{provider:?}: both prompts are taken");
+            assert!(plan && !fyi_only, "{provider:?}: the FYI joined the PLAN's turn");
+            assert_eq!(said.last_request(), Some(2), "the joined FYI has its own reply");
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
     fn answers_to_several_requests_are_put_down_to_the_turn_each_started() {
-        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
-        let q = |n: u32, head: &str| Request { n, key: None, head: request_head(head) };
+        let m =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
+        let q = |n: u32, head: &str| Request::new(n, None, request_head(head), true);
         let said = || {
             said_of(vec![
                 m("assistant", "Looking at it."),
@@ -560,8 +763,9 @@ mod tests {
     /// those's, under its number, up to a request sent since.
     #[test]
     fn answers_in_a_fresh_conversation_keep_the_numbers_of_requests_before_it() {
-        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
-        let q = |n: u32, head: &str| Request { n, key: None, head: request_head(head) };
+        let m =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
+        let q = |n: u32, head: &str| Request::new(n, None, request_head(head), true);
         let said = said_of(vec![
             m("user", "This is a new conversation of session x, a lead."),
             m("assistant", "Picked up where it stood."),
@@ -648,7 +852,13 @@ mod tests {
     /// queued mid-turn, then a shorter report at the commit it moved on to.
     #[test]
     fn a_final_answer_its_cli_marked_is_the_report_whatever_its_length() {
-        let m = |role: &str, text: String, final_answer: bool| Message { role: role.into(), text, after_cli: false, final_answer };
+        let m = |role: &str, text: String, final_answer: bool| Message {
+            role: role.into(),
+            text,
+            after_cli: false,
+            joined: false,
+            final_answer,
+        };
         let progress = format!("Working through the files. {}", "Notes. ".repeat(150));
         let said = own_words(
             vec![
@@ -683,7 +893,7 @@ mod tests {
 
     #[test]
     fn the_last_turn_reports() {
-        let m = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
+        let m = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, joined: false, final_answer: false };
         let first = format!("The new tip is 5ce3b92d2. {}", "Details. ".repeat(120));
         let second = format!("The new tip is cfeb7186f. {}", "Lanes green. ".repeat(40));
         let said = own_words(
@@ -716,7 +926,7 @@ mod tests {
         // started by itself on a background job's end, short. The report
         // stands; the short line comes next as its last word.
         // The CLI marks its own wakeup's line final as it does any: it answers nobody all the same.
-        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true, final_answer: true };
+        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true, joined: false, final_answer: true };
         let said = own_words(
             vec![
                 m("user", "Fix the shutdown.".into()),

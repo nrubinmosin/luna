@@ -248,13 +248,7 @@ fn end_left_after_turns(of: &dyn Fn(&str) -> bool, stopped: &[(String, u64)], wa
 /// missing) is often what stopped the turn before.
 fn run_waited(id: &str, text: &str) {
     save();
-    if run_turn(id, text).is_err() {
-        if let Some(e) = lock().entries.get_mut(id) {
-            let batch = std::mem::take(&mut e.in_flight);
-            e.undelivered.extend(batch);
-        }
-        save();
-    }
+    let _ = run_turn(id, text);
 }
 
 /// Between turns, what its turns left running, for `luna_session_get`.
@@ -295,8 +289,10 @@ pub fn stop_of(id: &str) -> Option<String> {
 }
 
 /// How an `interrupt` went.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq)]
 pub struct Interrupted {
+    /// The replacement request, whether it starts now or waits.
+    pub id: String,
     /// The turn it was on was stopped, and the text starts the next.
     pub stopped: bool,
     /// The text waits behind a turn that goes on: one that would not stop in
@@ -426,16 +422,18 @@ const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// doing does not. All of it waits in the queue, which the turn's end takes up
 /// whole, so nobody's text hangs on how the stop goes: what would not stop
 /// still has it all behind it.
-pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted, String> {
+pub fn interrupt(id: &str, q: Queued) -> Result<Interrupted, String> {
+    let qid = q.id.clone();
+    let text = q.text.clone();
     let (free, waits) = {
         let mut r = lock();
-        let room = room_for_turn(&r, id, from.is_none());
+        let room = room_for_turn(&r, id, q.from.is_none());
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
         // As `send_as`: no turn beside one a core went from that may run on.
         if e.settle_unsure() {
             return Err(format!("helper {id}: {UNSURE_TURN}"));
         }
-        room_for(id, e, text)?;
+        room_for(id, e, &text)?;
         e.held.clear();
         let free = e.run.is_none() && !e.ending_left && !e.held_back();
         // Between turns it has no turn to stop: the text is its next turn's,
@@ -444,9 +442,11 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
         let waits = free && (!room || !e.queue.is_empty());
         if free && !waits {
             claim(e);
+            e.in_flight.push(q);
+            stamp(&mut e.in_flight);
         } else {
             note(e, "interrupted");
-            e.queue.push(Queued::new(from.map(str::to_owned), text.to_string()));
+            e.queue.push(q);
             if waits {
                 wait_for_place(e);
             }
@@ -458,14 +458,14 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     save();
     if waits {
         changed();
-        return Ok(Interrupted { stopped: false, queued: false, waits: true });
+        return Ok(Interrupted { id: qid, stopped: false, queued: false, waits: true });
     }
     if free {
-        run_turn(id, text)?;
+        run_turn_for(id, &text, Some(&qid))?;
         changed();
-        return Ok(Interrupted { stopped: false, queued: false, waits: false });
+        return Ok(Interrupted { id: qid, stopped: false, queued: false, waits: false });
     }
-    let queued = Interrupted { stopped: false, queued: true, waits: false };
+    let queued = Interrupted { id: qid, stopped: false, queued: true, waits: false };
     let deadline = std::time::Instant::now() + CLAIM_WAIT;
     let (pid, asked, _pin) = loop {
         {
@@ -518,7 +518,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     }
     drop(r);
     changed();
-    Ok(Interrupted { stopped: true, queued: false, waits: false })
+    Ok(Interrupted { stopped: true, queued: false, ..queued })
 }
 
 /// Ends the turn of process `pid` that a stop took off: its tree killed, or,
@@ -639,6 +639,10 @@ pub fn claim_delete(id: &str) -> Result<DeleteClaim, String> {
 /// Whether the helper has a turn, queued text, or a pending question or permission.
 pub fn has_work(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty())
+}
+
+pub fn unopened_turn(id: &str, ended: u32) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.observed.unopened == Some(ended))
 }
 
 /// What waited while helper `id` was held (`Entry::held_back`) goes on once it is
@@ -814,9 +818,14 @@ mod tests {
         lock().entries.get_mut("int-claimed").unwrap().queue.push("from another caller".into());
         // No process turns up to stop: the text waits behind the turn, which
         // it ends a turn after, and nothing is lost.
-        let i = interrupt("int-claimed", "from this one", None).unwrap();
-        assert_eq!(i, Interrupted { stopped: false, queued: true, waits: false });
-        assert_eq!(lock().entries.get("int-claimed").unwrap().queue, ["from another caller", "from this one"]);
+        let i = interrupt("int-claimed", "from this one".into()).unwrap();
+        assert!(!i.stopped && i.queued && !i.waits);
+        {
+            let r = lock();
+            let queue = &r.entries["int-claimed"].queue;
+            assert_eq!(queue, &["from another caller", "from this one"]);
+            assert_eq!(i.id, queue[1].id);
+        }
         // When that turn is over, they go together, in the order they came,
         // and an empty queue in the meantime says the text has been taken up.
         let text = joined(&std::mem::take(&mut lock().entries.get_mut("int-claimed").unwrap().queue));
@@ -1185,7 +1194,7 @@ mod tests {
         lock().entries.insert("stopping".into(), e);
         assert_eq!(send("stopping", "go on", None), Ok(Placed::Queued));
         assert!(lock().entries.get("stopping").unwrap().run.is_none(), "no turn started");
-        assert_eq!(interrupt("stopping", "now", None).map(|i| i.queued), Ok(true));
+        assert_eq!(interrupt("stopping", "now".into()).map(|i| i.queued), Ok(true));
         assert_eq!(lock().entries.get("stopping").unwrap().queue.len(), 2);
         // A second stop meanwhile has nothing to end and leaves the first's mark.
         assert!(kill("stopping").is_empty());

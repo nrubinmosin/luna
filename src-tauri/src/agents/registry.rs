@@ -66,6 +66,7 @@ pub(super) fn top_chat(r: &Registry, id: &str) -> Option<String> {
     (!is_dev(&top) && r.known.get(&top).is_none_or(Known::is_persons_chat)).then_some(top)
 }
 
+#[derive(Default)]
 pub(super) struct Registry {
     /// Sessions by the SHA-256 of their bearer token (`token_key`).
     pub(super) tokens: HashMap<[u8; 32], String>,
@@ -93,7 +94,7 @@ pub(super) struct Registry {
     /// again keeps its keys and a hand-over drops them.
     pub(super) hands_changed: HashMap<String, u64>,
     /// Past which turn count a helper's answer to a caller's text lies, the text
-    /// having missed the turn it joined (`retried`): above any count the caller holds.
+    /// having missed the turn it joined (`retry_deliveries`): above any count the caller holds.
     pub(super) delivery_floors: HashMap<(String, String), u32>,
     /// The `turnsEnded` each caller was last shown for each session, by
     /// (caller, session). `wait(turn_done)` without `afterTurn` waits for a
@@ -168,6 +169,10 @@ pub(super) struct Registry {
     /// Lines for a caller's next notice that no debt brings: by caller.
     pub(super) news: Vec<(String, String)>,
     pub(super) system_news: Vec<SystemNews>,
+    /// Transcript generation and offset at the switch, even with no debt.
+    pub(super) transcript_generations: HashMap<String, (u64, u64)>,
+    /// When the most recent failure bypassed a tripped breaker.
+    pub(super) failures_told: HashMap<(String, String), u64>,
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,
@@ -175,47 +180,8 @@ pub(super) struct Registry {
 
 pub(super) fn reg() -> &'static Mutex<Registry> {
     static R: OnceLock<Mutex<Registry>> = OnceLock::new();
-    let r = R.get_or_init(|| {
-        Mutex::new(Registry {
-            tokens: HashMap::new(),
-            known: HashMap::new(),
-            // Above any request a core gone since may have left on disk.
-            next_request: now_ms(),
-            spawns: HashMap::new(),
-            tasks: HashMap::new(),
-            taken_over: HashMap::new(),
-            parent_changes: 0,
-            handovers: HashMap::new(),
-            hands_changed: HashMap::new(),
-            delivery_floors: HashMap::new(),
-            seen: HashMap::new(),
-            names: HashMap::new(),
-            groups: HashMap::new(),
-            answered: HashMap::new(),
-            owed: HashMap::new(),
-            requests: HashMap::new(),
-            waits: HashMap::new(),
-            reserved: HashMap::new(),
-            receipts: HashMap::new(),
-            auto: HashMap::new(),
-            usage: HashMap::new(),
-            usage_seqs: HashMap::new(),
-            notified: HashMap::new(),
-            hook_asks: HashMap::new(),
-            held: Vec::new(),
-            notices_held: HashMap::new(),
-            notice_turns: HashMap::new(),
-            woken: HashMap::new(),
-            delegates: HashMap::new(),
-            notice_times: HashMap::new(),
-            stopped: HashMap::new(),
-            exits: HashMap::new(),
-            quota_told: HashMap::new(),
-            news: Vec::new(),
-            system_news: Vec::new(),
-            places_refused: HashMap::new(),
-        })
-    });
+    // Above any request a core gone since may have left on disk.
+    let r = R.get_or_init(|| Mutex::new(Registry { next_request: now_ms(), ..Registry::default() }));
     // Tests assert with this held and all of them share it: one that fails is
     // that test's failure, not that of every test after it.
     #[cfg(test)]
@@ -552,8 +518,8 @@ pub fn resumes_on_restart(id: &str) -> bool {
 pub fn helpers_owing() -> HashMap<String, u32> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let mut out: HashMap<String, u32> = HashMap::new();
-    for (caller, helper) in r.owed.keys() {
-        if is_descendant(&r, caller, helper) {
+    for ((caller, helper), o) in &r.owed {
+        if o.active() && is_descendant(&r, caller, helper) {
             *out.entry(caller.clone()).or_default() += 1;
         }
     }
@@ -565,7 +531,7 @@ pub(super) fn waits_on_helpers(id: &str, except: &str) -> bool {
 }
 
 pub(super) fn waits_on_helpers_in(r: &Registry, id: &str, except: &str) -> bool {
-    r.owed.keys().any(|(caller, helper)| caller == id && helper != except && is_descendant(r, id, helper))
+    r.owed.iter().any(|((caller, helper), o)| caller == id && helper != except && o.active() && is_descendant(r, id, helper))
 }
 
 pub(super) fn depth_of(r: &Registry, id: &str) -> usize {

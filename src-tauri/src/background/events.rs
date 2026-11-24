@@ -28,9 +28,23 @@ pub(super) fn took(e: &mut Entry, uuid: &str) -> bool {
         landed.extend(of_line);
     }
     for q in &landed {
+        received(e, q);
         note(e, &format!("took in: {}", one_line(&q.text)));
     }
     !landed.is_empty()
+}
+
+/// Delivery confirmation can precede registration of the send's request.
+pub(super) fn received(e: &mut Entry, q: &Queued) {
+    const RECENT_DELIVERIES: usize = 256;
+    if e.received.len() == RECENT_DELIVERIES {
+        e.received.pop_front();
+    }
+    e.received.push_back((q.id.clone(), e.turns_ended));
+}
+
+pub fn delivery_turn(id: &str, qid: &str) -> Option<u32> {
+    lock().entries.get(id)?.received.iter().rev().find(|(q, _)| q == qid).map(|(_, turn)| *turn)
 }
 
 /// A permission prompt or `AskUserQuestion` its CLI asks on its stdout
@@ -173,13 +187,9 @@ pub fn takes_notices(id: &str) -> bool {
 /// turns of its CLI, owed nothing now. `owed`: the callers
 /// some session owes an answer, read under the registry's lock the caller
 /// still holds: a debt that comes after this look finds stdin as it left it.
-pub fn listen_only_while_owed(owed: &std::collections::HashSet<String>) {
+pub fn listen_only_while_owed(owed: &std::collections::HashSet<String>, in_scope: impl Fn(&str) -> bool) {
     let now = crate::throttle::now_ms();
-    for (id, e) in lock().entries.iter_mut() {
-        #[cfg(test)]
-        if !crate::agents::sweep_includes(id) {
-            continue;
-        }
+    for (id, e) in lock().entries.iter_mut().filter(|(id, _)| in_scope(id)) {
         listen_while_owed(e, owed.contains(id), now);
     }
 }
@@ -548,6 +558,7 @@ pub(super) fn unfinished_subagents(run: &Run) -> Vec<String> {
 /// before taking even that would most likely do the same again.
 pub(super) fn sort_out_untaken(e: &mut Entry) -> Vec<Queued> {
     if !e.in_flight.is_empty() {
+        e.observed.unopened = e.error.as_deref().is_none_or(|why| !is_stop(why)).then_some(e.turns_ended);
         let batch = std::mem::take(&mut e.in_flight);
         e.undelivered.extend(batch);
         let fed = std::mem::take(&mut e.fed);
@@ -582,6 +593,10 @@ pub(super) fn stopped(e: &Entry) -> bool {
 /// The turn's process has exited: count the turn, let any held question go,
 /// and start the turn the queue has waiting.
 pub(super) fn turn_over(id: &str, code: Option<i32>) {
+    turn_over_with(id, code, run_turn);
+}
+
+pub(super) fn turn_over_with(id: &str, code: Option<i32>, start: impl FnOnce(&str, &str) -> Result<(), String>) {
     let (job, strays, codex, unfinished, luna_stopped) = match lock().entries.get(id) {
         Some(e) => (
             e.job.clone(),
@@ -695,9 +710,8 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     // power-off's quiet window starts over.
     crate::activity::touch();
     // Ahead of anything that could be read as the answer: the helper reads as
-    // busy from the claim above until this has moved what its senders wait on.
-    let senders: Vec<String> = retried.iter().filter_map(|q| q.from.clone()).collect();
-    crate::agents::retried(id, &senders, count);
+    // busy from the claim above until this has moved the retried requests.
+    crate::agents::retry_deliveries(id, &retried, count);
     reg().1.notify_all();
     crate::log::info("background", &format!("{} turn over, code {code:?}", crate::agents::label(id)));
     // A Codex server names no model but a reroute's, which stands for its turn;
@@ -716,14 +730,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     if let Some(Batch { text, .. }) = next.and_then(|res| settle_batch(id, res)) {
         // On disk before the CLI has it (`Entry::in_flight`).
         save();
-        if run_turn(id, &text).is_err() {
-            if let Some(e) = lock().entries.get_mut(id) {
-                let batch = std::mem::take(&mut e.in_flight);
-                if e.cut_short || !retried.is_empty() {
-                    e.undelivered.extend(batch);
-                }
-            }
-        }
+        let _ = start(id, &text);
     }
     changed();
 }
@@ -1594,7 +1601,7 @@ mod tests {
         };
         let untold = |c: &str| untold_losses(id, c).into_iter().map(|l| (l.turn, l.cause, l.names)).collect::<Vec<_>>();
         record(1, StopCause::Ceiling, Some(LostBy::Exited), &["A"], &["c1", "c2"]);
-        assert_eq!(losses_told(id, "c1", &[1], &names(&["c1", "c2"])), [1]);
+        assert_eq!(losses_told(id, "c1", &[1]), [1]);
         record(2, StopCause::TurnEnd, None, &["B"], &["c1"]);
         assert_eq!(untold("c1"), [(2, StopCause::TurnEnd, names(&["B"]))], "the new one alone");
         assert_eq!(
@@ -1602,8 +1609,8 @@ mod tests {
             [(1, StopCause::Ceiling, names(&["A"]))],
             "the earlier, still to be said to the one not told, by its own cause"
         );
-        losses_told(id, "c1", &[2], &names(&["c1", "c2"]));
-        losses_told(id, "c2", &[1], &names(&["c1", "c2"]));
+        losses_told(id, "c1", &[2]);
+        losses_told(id, "c2", &[1]);
         assert!(!background_stopped(id), "everyone has had each");
         record(3, StopCause::Ceiling, Some(LostBy::Stopped), &["C"], &["c3"]);
         assert_eq!(lock().entries[id].observed.losses.iter().map(|l| l.turn).collect::<Vec<_>>(), [3], "the told ones gone");

@@ -4,7 +4,7 @@
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::delivery::screen_of;
 use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
-use crate::agents::owed::{background_stopped_note, hand_over_rev, hand_over_said, looked, queue_settled, seen};
+use crate::agents::owed::{background_stopped_note, hand_over_scope, looked, queue_settled, seen, AnswerScope};
 use crate::agents::registry::{authorize_view, label, reg};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,9 @@ pub struct Message {
     /// all the same, for which report leads (`own_words`).
     #[serde(skip)]
     pub after_cli: bool,
+    /// An input taken into a turn already under way.
+    #[serde(skip)]
+    pub joined: bool,
     /// Its CLI marked it the turn's final answer (Claude Code's `end_turn`, Codex's
     /// `final_answer` phase): the report, said so rather than guessed (`report_of`).
     #[serde(skip)]
@@ -33,6 +36,19 @@ pub struct Message {
 /// How far the session's transcript goes now, 0 before it has one.
 pub(super) fn transcript_end(id: &str) -> u64 {
     transcript_path(crate::pty::manager(), id).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len())
+}
+
+pub(super) struct SendCursor {
+    pub(super) generation: u64,
+    pub(super) offset: u64,
+}
+
+pub(super) fn send_cursor(id: &str) -> SendCursor {
+    transcript_path(crate::pty::manager(), id);
+    let known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
+    let offset = known.get(id).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
+    let generation = reg().lock().unwrap_or_else(|e| e.into_inner()).transcript_generations.get(id).map_or(0, |(rev, _)| *rev);
+    SendCursor { generation, offset }
 }
 
 #[derive(Serialize)]
@@ -85,6 +101,49 @@ pub(super) fn transcripts() -> &'static Mutex<HashMap<String, std::path::PathBuf
     T.get_or_init(Default::default)
 }
 
+/// Read the destination offset as soon as the CLI announces its switch.
+pub(crate) fn observe_transcript(id: &str) {
+    transcript_seen(crate::pty::manager(), id);
+}
+
+/// Claude can announce its resume before the live registry names the new
+/// transcript. Remember the offset, and use it only if the registry later
+/// confirms that same file. The hook supplies an ID, never a path to read.
+pub(crate) fn observe_claude_switch(id: &str, session: &str) {
+    if session.len() != 36 {
+        return;
+    }
+    let pty = crate::pty::manager();
+    let Some(chat) = pty.probe(id).filter(|chat| chat.provider == Provider::Claude) else { return };
+    if let Some(path) = crate::claude::session::find_transcript(&chat.account_path, session) {
+        remember_destination(id, path);
+    }
+    observe_transcript(id);
+}
+
+type Destinations = HashMap<String, (std::path::PathBuf, u64)>;
+
+fn destinations() -> &'static Mutex<Destinations> {
+    static OFFSETS: OnceLock<Mutex<Destinations>> = OnceLock::new();
+    OFFSETS.get_or_init(Default::default)
+}
+
+fn remember_destination(id: &str, path: std::path::PathBuf) {
+    let known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
+    if known.get(id).is_some_and(|was| *was != path) {
+        let mut pending = destinations().lock().unwrap_or_else(|e| e.into_inner());
+        if pending.get(id).is_none_or(|(p, _)| *p != path) {
+            let offset = std::fs::metadata(&path).map_or(0, |m| m.len());
+            pending.insert(id.to_string(), (path, offset));
+        }
+    }
+}
+
+pub(super) fn forget_transcript(id: &str) {
+    transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    destinations().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+}
+
 pub(super) fn transcript_path(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
     transcript_seen(pty, id).0
 }
@@ -93,17 +152,30 @@ pub(super) fn transcript_path(pty: &crate::pty::PtyManager, id: &str) -> Option<
 /// look found the session gone on in another (`moved_to`): a cursor its caller
 /// took before is into the last one.
 pub(super) fn transcript_seen(pty: &crate::pty::PtyManager, id: &str) -> (Option<std::path::PathBuf>, Option<u64>) {
-    let found = find_transcript(pty, id);
     let mut known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
+    let found = find_transcript(pty, id);
     match found {
         Some(path) => {
-            let was = known.insert(id.to_string(), path.clone()).filter(|was| *was != path);
-            drop(known);
-            let moved = was.map(|was| moved_to(id, &was, &path));
+            // Publish the path only once every debt was rebased. Another
+            // reader must not see the new path with the old offsets.
+            let moved = known.get(id).filter(|was| **was != path).map(|was| moved_to(id, was, &path));
+            known.insert(id.to_string(), path.clone());
             (Some(path), moved)
         }
         None => (known.get(id).cloned(), None),
     }
+}
+
+/// Capture the path and the offsets in it under the same lock used to switch them.
+fn answer_context(
+    pty: &crate::pty::PtyManager,
+    id: &str,
+    key: &(String, String),
+) -> (Option<std::path::PathBuf>, Option<super::owed::Owed>) {
+    transcript_path(pty, id);
+    let known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
+    let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(key).copied();
+    (known.get(id).cloned(), owed)
 }
 
 /// A session went on in another transcript: Claude Code's `/clear` or
@@ -115,8 +187,22 @@ pub(super) fn transcript_seen(pty: &crate::pty::PtyManager, id: &str) -> (Option
 fn moved_to(id: &str, was: &std::path::Path, now: &std::path::Path) -> u64 {
     let born = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.created()).ok();
     let fresh = matches!((born(now), born(was)), (Some(now), Some(was)) if now > was);
-    let from = if fresh { 0 } else { std::fs::metadata(now).map_or(0, |m| m.len()) };
+    let saved = destinations().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    let from = if fresh {
+        0
+    } else {
+        saved.filter(|(p, _)| p == now).map_or_else(|| std::fs::metadata(now).map_or(0, |m| m.len()), |(_, from)| from)
+    };
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let generation = super::owed::next_rev();
+    r.transcript_generations.insert(id.to_string(), (generation, from));
+    for ((_, of), requests) in &mut r.requests {
+        if of == id {
+            for request in &mut requests.open {
+                request.cursor = from;
+            }
+        }
+    }
     let mut moved = 0;
     for ((_, of), o) in r.owed.iter_mut() {
         if of == id {
@@ -124,7 +210,7 @@ fn moved_to(id: &str, was: &std::path::Path, now: &std::path::Path) -> u64 {
             // after a notice's alike (owed.rs `Owed::held_to`, `Owed::since`).
             o.cursor = from;
             o.held_to = o.held_to.map(|_| from);
-            o.rebase_since(from);
+            o.rebase_since(from, generation);
             moved += 1;
         }
     }
@@ -134,6 +220,13 @@ fn moved_to(id: &str, was: &std::path::Path, now: &std::path::Path) -> u64 {
         &format!("{} goes on in {} (was {}): {moved} owed answer(s) read from {from}", label(id), now.display(), was.display()),
     );
     from
+}
+
+#[cfg(test)]
+pub(super) fn move_transcript_for_test(id: &str, next: std::path::PathBuf) {
+    let mut known = transcripts().lock().unwrap();
+    moved_to(id, &known[id], &next);
+    known.insert(id.into(), next);
 }
 
 fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
@@ -209,7 +302,8 @@ pub fn read(
 ) -> Result<Reading, String> {
     let known = authorize_view(caller, id)?;
     let pty = crate::pty::manager();
-    let path = transcript_path(pty, id);
+    let key = (caller.to_string(), id.to_string());
+    let (path, owed) = answer_context(pty, id, &key);
     // Taken before the transcript is read: a turn over by now has its words
     // in what is read.
     let ts = crate::activity::turn_state(id);
@@ -280,8 +374,6 @@ pub fn read(
     }
     let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let (state, ask) = state_of(id);
-    let key = (caller.to_string(), id.to_string());
-    let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
     // All of the answer: every message past where the question found the
     // transcript is in this result, whole, the session's own word last. A
     // read begun past that point, a `last` that left some of them out, a
@@ -296,18 +388,23 @@ pub fn read(
     // And the session was done with it before the read: a read while it
     // works on has seen a turn on the way, and the answer is still to come.
     let done = ts.is_none_or(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
-    let settles = whole && done && owed.is_some_and(|o| turns_ended > o.baseline && (!o.queued || queue_settled(&key, o, turns_ended)));
+    let settles = whole
+        && done
+        && owed.is_some_and(|o| {
+            (turns_ended > o.baseline || o.wake.silent == Some(turns_ended)) && (!o.queued || queue_settled(&key, o, turns_ended))
+        });
     // Ahead of the hand-over, which takes it off. With an answer still to come
     // it stays for the notice; with none owed this read is all that tells it.
-    let undelivered = undelivered_note(caller, id);
+    let (undelivered, lost_ids) = undelivered_note(caller, id);
     let (background_stopped, said) = background_stopped_note(caller, id);
-    if undelivered.is_some() && lost_whole(caller, id) {
-        // No answer is to come: this was all of it, and no notice is to say it again.
-        // Canceled first, it and the debt are put back together.
-        call.commit(hand_over_said(caller, id, lost_count(caller, id), None, said));
-    } else if settles || (undelivered.is_some() && owed.is_none()) {
-        // Canceled first, it is put back; the response goes nowhere anyway.
-        call.commit(hand_over_said(caller, id, turns_ended, None, said));
+    let lost = undelivered.is_some() && lost_whole(caller, id);
+    if lost || settles || (undelivered.is_some() && owed.is_none()) {
+        let count = if lost { lost_count(caller, id) } else { turns_ended };
+        let scope = owed.map(|o| AnswerScope::read(caller, id, o, known.provider, count, Some(cursor)));
+        transcript_path(pty, id);
+        if let Some(undo) = hand_over_scope(caller, id, count, None, scope, lost_ids, said) {
+            call.commit(undo);
+        }
     } else {
         seen(caller, id, turns_ended);
     }
@@ -343,13 +440,12 @@ pub fn read(
 /// the last word of a conversation that went on in a transcript of its own.
 fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -> Reading {
     let pty = crate::pty::manager();
-    let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).copied();
-    let (path, moved) = transcript_seen(pty, id);
+    let (path, owed) = answer_context(pty, id, &(caller.to_string(), id.to_string()));
     let past_end = |at: u64| path.as_ref().is_some_and(|p| std::fs::metadata(p).is_ok_and(|m| at > m.len()));
     let from = match since {
         Some(at) if past_end(at) => 0,
-        Some(at) => moved.unwrap_or(at),
-        None => moved.or_else(|| owed.map(|o| o.cursor)).unwrap_or(0),
+        Some(at) => at,
+        None => owed.map_or(0, |o| o.cursor),
     };
     let read_at = |at: u64| -> Messages {
         match &path {
@@ -382,7 +478,7 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -
                 }
                 None => text,
             };
-            Message { role: "assistant".into(), text, after_cli: false, final_answer: false }
+            Message { role: "assistant".into(), text, after_cli: false, joined: false, final_answer: false }
         })
         .into_iter()
         .collect();
@@ -422,34 +518,44 @@ pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &
     let key = (caller.to_string(), id.to_string());
     let debt = || reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
     // Taken together, before the read: what an ack would collect.
-    let before = (debt(), crate::activity::turn_state(id), transcript_end(id));
+    let (path, owed) = answer_context(crate::pty::manager(), id, &key);
+    let end = path.and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
+    let before = (owed, crate::activity::turn_state(id), end);
     let mut reading = report_read(caller, id, known.provider, since);
     let (background_stopped, said) = background_stopped_note(caller, id);
     reading.background_stopped = background_stopped;
     looked(id);
-    if !ack {
-        return Ok(reading);
-    }
     let (Some(owed), ts, end) = before else { return Ok(reading) };
     let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
-    let unmoved = debt().is_some_and(|now| now.rev == owed.rev)
+    let after_end = transcript_end(id);
+    let unmoved = debt().is_some_and(|now| now.rev == owed.rev && now.transcript_rev == owed.transcript_rev)
         && crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0) == turns_ended
-        && transcript_end(id) == end;
+        && after_end == end;
     let done = ts.is_none_or(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
     let all_of_it = since.is_none_or(|at| at <= owed.cursor)
-        && turns_ended > owed.baseline
+        && (turns_ended > owed.baseline || owed.wake.silent == Some(turns_ended))
         && (!owed.queued || queue_settled(&key, owed, turns_ended))
         && !reading.messages.is_empty()
         && !reading.cut
         && reading.cursor == end;
+    if !ack {
+        if unmoved && done && all_of_it && (reading.rest == 0 || reading.file.is_some()) {
+            if let Some(undo) = super::owed::read_silent(caller, id, owed.rev, owed.transcript_rev) {
+                call.commit(undo);
+            }
+        }
+        return Ok(reading);
+    }
+    let scope = (unmoved && done && all_of_it).then(|| AnswerScope::read(caller, id, owed, known.provider, turns_ended, Some(end)));
     #[cfg(test)]
     if let Some(between) = *BEFORE_ACK.lock().unwrap_or_else(|e| e.into_inner()) {
         between();
     }
     // That debt alone, checked and taken in one hold of the lock: one put in
     // its place since the look above stays owed.
-    if unmoved && done && all_of_it {
-        if let Some(undo) = hand_over_rev(caller, id, turns_ended, owed.rev, said) {
+    if let Some(scope) = scope {
+        transcript_path(crate::pty::manager(), id);
+        if let Some(undo) = hand_over_scope(caller, id, turns_ended, None, Some(scope), Vec::new(), said) {
             reading.acked = call.commit(undo);
         }
     }
@@ -509,6 +615,20 @@ mod tests {
     /// in after a notice's debt as much as the cursor. Left as they were, a
     /// lead that answered in the fresh one reads as quiet since its hold.
     #[test]
+    fn a_notice_cannot_settle_offsets_from_a_transcript_the_session_left() {
+        use crate::agents::notifier::{settle_told, Settled};
+        use crate::agents::owed::Owed;
+        let key = ("moved-notice-caller".to_string(), "moved-notice-chat".to_string());
+        let told = Owed::from(1, 50);
+        reg().lock().unwrap().owed.insert(key.clone(), told);
+        moved_to(&key.1, std::path::Path::new("old.jsonl"), std::path::Path::new("new.jsonl"));
+        let mut r = reg().lock().unwrap();
+        settle_told(&mut r, key.clone(), Settled::Pending(2, 90, None, None, true), &told);
+        assert_eq!((r.owed[&key].cursor, r.owed[&key].baseline), (0, 1), "the old transcript's offset is stale");
+        r.owed.remove(&key);
+    }
+
+    #[test]
     fn a_move_to_another_transcript_rebases_every_offset_a_debt_keeps() {
         use crate::agents::owed::{owe_asked, told_before, Asked};
         let (caller, id) = ("mv-caller", "mv-helper");
@@ -522,11 +642,35 @@ mod tests {
         let first = reg().lock().unwrap().owed[&key].rev;
         owe_asked(caller, id, 1, 40_000, &Asked { text: "And this", key: None, reply: true });
         reg().lock().unwrap().owed.get_mut(&key).unwrap().held_to = Some(45_000);
+        // The hook arrived while the live registry still pointed at the
+        // current transcript. Its destination was already an older file.
+        let (was, now) = (now, was);
+        transcripts().lock().unwrap().insert(id.into(), was.clone());
+        let outgoing = send_cursor(id);
+        remember_destination(id, now.clone());
+        let before_reply = std::fs::metadata(&now).unwrap().len();
+        use std::io::Write as _;
+        std::fs::OpenOptions::new().append(true).open(&now).unwrap().write_all(b"new reply").unwrap();
         let from = moved_to(id, &was, &now);
+        assert_eq!(from, before_reply);
         let o = reg().lock().unwrap().owed[&key];
         assert!(o.cursor == from && o.held_to == Some(from), "{} {:?} {from}", o.cursor, o.held_to);
         told_before(&mut reg().lock().unwrap(), &key, first);
         assert_eq!(reg().lock().unwrap().owed[&key].cursor, from, "what came after the first, read in the new one");
+        crate::agents::owed::owe_sent(
+            caller,
+            id,
+            2,
+            outgoing,
+            None,
+            &Asked { text: "A send already going in", key: None, reply: true },
+            (true, None, false),
+        );
+        assert_eq!(
+            reg().lock().unwrap().requests[&key].open.last().unwrap().cursor,
+            from,
+            "a send placed across the switch belongs to the destination offset"
+        );
         reg().lock().unwrap().owed.remove(&key);
         forget(id);
         forget(caller);
@@ -587,6 +731,15 @@ mod tests {
         *BEFORE_ACK.lock().unwrap() = None;
         assert!(!raced.acked && owed(), "the debt put in since stays owed");
 
+        fn switch_transcript() {
+            moved_to("ak-helper", std::path::Path::new("first.jsonl"), std::path::Path::new("second.jsonl"));
+        }
+        asked(format!("{}{}", line("user", "Do it."), line("assistant", "Old transcript.")));
+        *BEFORE_ACK.lock().unwrap() = Some(switch_transcript);
+        let raced = ack();
+        *BEFORE_ACK.lock().unwrap() = None;
+        assert!(!raced.acked && owed(), "the transcript switched without a new send");
+
         transcripts().lock().unwrap().remove(id);
         let _ = std::fs::remove_file(&path);
         forget(id);
@@ -638,7 +791,9 @@ mod tests {
             let text = std::fs::read_to_string(&path).unwrap();
             let rest = &text[(at as usize).min(text.len())..];
             (
-                rest.lines().map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false, final_answer: false }).collect(),
+                rest.lines()
+                    .map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false, joined: false, final_answer: false })
+                    .collect(),
                 text.len() as u64,
             )
         };

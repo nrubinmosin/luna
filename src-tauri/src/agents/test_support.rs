@@ -147,3 +147,28 @@ pub(super) fn reached(point: &str, who: &str) {
         let _ = wait.recv();
     }
 }
+
+pub(crate) fn silent_answer_for_power_test(caller: &str, id: &str) {
+    let mut r = reg().lock().unwrap();
+    let key = (caller.into(), id.into());
+    let o = Owed::from(0, 0);
+    r.owed.insert(key.clone(), o);
+    super::notifier::settle_told(&mut r, key, Settled::Silent(1, true), &o);
+}
+
+pub(crate) fn notifier_tick_for_test(caller: &str) {
+    super::notifier::tick_for_test(caller);
+}
+
+pub(crate) fn claim_refusal_for_test(caller: &str) -> impl Drop {
+    super::notifier::claim_refusal_for_test(caller)
+}
+
+pub(crate) fn expire_refusal_for_test(caller: &str) {
+    reg().lock().unwrap().places_refused.get_mut(caller).unwrap().since =
+        std::time::Instant::now() - std::time::Duration::from_secs(10 * 60);
+}
+
+pub(crate) fn refusal_for_power_test(lead: &str) {
+    super::spawn::refused_a_place(&mut reg().lock().unwrap(), lead);
+}

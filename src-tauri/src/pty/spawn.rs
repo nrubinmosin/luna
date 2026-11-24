@@ -569,6 +569,7 @@ pub(super) async fn spawn(
         // with it, rather than drop or reorder output.
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(OUTPUT_PIECES);
         let reading = id.clone();
+        let transcript_session = id.clone();
         let sent = Arc::clone(&sent);
         let emitter = std::thread::spawn(move || {
             // Carry bytes of a UTF-8 sequence split across reads.
@@ -611,7 +612,15 @@ pub(super) async fn spawn(
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         last_output_ms.store(now_ms(), Ordering::Relaxed);
-                        modes.lock().unwrap_or_else(|e| e.into_inner()).feed(&chunk[..n]);
+                        let thread_changed = {
+                            let mut modes = modes.lock().unwrap_or_else(|e| e.into_inner());
+                            let before = (provider == Provider::Codex).then(|| modes.thread().map(str::to_owned)).flatten();
+                            modes.feed(&chunk[..n]);
+                            provider == Provider::Codex && modes.thread().is_some() && before.as_deref() != modes.thread()
+                        };
+                        if thread_changed {
+                            crate::agents::observe_transcript(&transcript_session);
+                        }
                         let pieces = split_dsr(&mut carry, &chunk[..n]);
                         let last = pieces.len() - 1;
                         for (i, piece) in pieces.into_iter().enumerate() {

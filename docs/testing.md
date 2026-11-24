@@ -65,6 +65,12 @@ The golden, hub and fit tests run in the gate and in CI with the rest of the
 unit tests (the fit test in the debug-built Linux and macOS jobs only). The
 test-build smoke is by hand.
 
+The notifier's seeded test runs 512 histories through notice rendering and
+delivery, with fixture transcripts and a stub terminal. Its expected wakes
+come from the inputs. Set `LUNA_DEBT_SEQUENCES=50000` in the Linux test
+container for a longer run of `seeded_debt_interleavings`. Failures print
+the sequence index, seed, and provider.
+
 ### The owner's desktop is off limits
 
 The test build runs on a desktop someone is using. With `-Background` its

@@ -1,1 +1,1 @@
-The task is from an agent, not a person: rules for a chat with a person (its language, reply format, questions to them) do not apply.
+The task is from an agent, not a person: rules for a chat with a person (its language, reply format, questions to them) do not apply. Only DONE, BLOCKED, QUESTION, FAILED, or PLAN report openings wake your parent early.

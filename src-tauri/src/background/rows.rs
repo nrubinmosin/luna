@@ -936,9 +936,9 @@ mod tests {
                 drop(r);
                 assert!(background_promote(id.clone()).err().is_some_and(|e| e.contains("may still be running")), "{tag} {cli:?}");
                 assert!(!promoting(&id));
-                let sent = send_tracked(&id, "go on", None);
+                let sent = send_tracked(&id, "go on".into());
                 assert!(sent.err().is_some_and(|e| e.contains("may still be running")), "{tag} {cli:?}: no turn beside it");
-                let interrupted = interrupt(&id, "go on", None);
+                let interrupted = interrupt(&id, "go on".into());
                 assert!(interrupted.err().is_some_and(|e| e.contains("may still be running")), "{tag} {cli:?}");
             }
             // The pid is another process's by now: started at another time.

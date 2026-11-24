@@ -126,7 +126,7 @@ pub(super) fn tools_as(persons: bool) -> Value {
             "inputSchema": s(json!({
                 "id": string, "text": string,
                 "interrupt": { "type": "boolean", "description": "stop its turn first (yours only)" },
-                "expectReply": { "type": "boolean", "description": "false: no notice unless a status word or report" },
+                "expectReply": { "type": "boolean", "description": "false: only statuses, asks, or failures wake" },
                 "scope": scope, "requestKey": key
             }), &["id", "text"]),
             "annotations": acts
@@ -143,8 +143,8 @@ pub(super) fn tools_as(persons: bool) -> Value {
         {
             "name": "luna_session_wait",
             "description": say(
-                "Block until a session (yours; scope all: any) ends a turn, stops on a question or permission, or exits; or end your turn instead: a notice brings it. reply: report (default: rest says how many more, file has all), all, none. ids: several, mode any|all. afterTurn: past that turnsEnded. screen: the terminal too.",
-                "Block until a session of yours ends a turn, stops on a question or permission, or exits; or end your turn instead: a notice brings it. reply: report (default: rest says how many more, file has all), all, none. ids: several, mode any|all. afterTurn: past that turnsEnded. screen: the terminal too."
+                "Block until a session (yours; scope all: any) ends a turn, stops on a question or permission, or exits. Notices wake for a status, ask, failure, or stall. reply: report (default: rest says how many more, file has all), all, none. ids: several, mode any|all. afterTurn: past that turnsEnded. screen: the terminal too.",
+                "Block until a session of yours ends a turn, stops on a question or permission, or exits. Notices wake for a status, ask, failure, or stall. reply: report (default: rest says how many more, file has all), all, none. ids: several, mode any|all. afterTurn: past that turnsEnded. screen: the terminal too."
             ),
             "inputSchema": s(json!({
                 "id": string, "ids": strings,

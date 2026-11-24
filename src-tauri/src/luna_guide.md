@@ -104,15 +104,11 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   and latest `#N (key)`. An extra #N labels an older preview; `[unmatched]` means no ordinary prompt matched.
   `Re request N` sections are newest first.
 - `[idle; send to resume]` means only a send wakes it. `[send to resume]` follows interruption
-  or error. `[resumed after core restart]` means it resumed automatically.
-- `[helpers pending]`, `[job running]` (possibly named) and `[N subagents running]` mean work
-  continues; expect news at completion or a fresh turn. Pending leads can signal sooner
-  with `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` first (then colon or space).
-  A silent lead gets one wake when delegates finish; silence again is reported as stuck.
-- A helper saying it is waiting proves nothing; check its `state`.
-- Quiet and background-wait notices come once per turn. The last says `[turn notices stopped]`
-  after 12 turn/job notices per pair in 15 min. Use waits or reads until a person types.
-  Asks still arrive. Recover interrupted native work before relying on it.
+  or error. Restart notices say if the helper resumed automatically.
+- Fresh `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` openings wake you after the turn ends.
+  Asks and failures also wake. Each task gets one idle stall and a separate 30-minute quiet wake.
+  A `PLAN` covers its turn. Other text stays readable. Luna wakes silent leads when delegates finish.
+- After 12 turn/job notices per pair in 15 min, `[turn notices stopped]` says to use waits or reads.
 - Wait takes up to 16 ids. Use `turnsEnded` for `afterTurn`. For a helper, exit means deletion.
   `outcome` is `turn_done`, `waiting`, `exit`, `job_done` (background ended), or `timeout`.
   With multiple ids, `finished` lists completed ids; `pending` leaves that answer owed.
@@ -147,12 +143,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   `interrupt: true` (your own only) makes the text the next turn, behind any queued (`queued` if
   that turn would not stop). Where the user is typing, or left a draft Luna cannot put aside,
   the result says `held: true`: Luna types it in once they are done. Do not send again.
-- `expectReply: false` on a send to a helper (an FYI, "carry on"): its answer comes as a notice
-  only if it opens on a status word or is a report (400+ characters); else it waits in the
-  report for you.
+- `expectReply: false` wakes only for a status, ask, or failure.
 - `autoDelete` (on by default): Luna deletes the helper 30 minutes after its answer reached you,
   not while a job or helper of its runs, however long idle; a read, a report or a send starts
-  that over (`deletesInMin` in get diagnostics). A worktree you made for it stays. One whose turn you
+  that over (`deletesInMin` in get diagnostics). Unread quiet answers hold deletion up to 24 hours. A worktree you made for it stays. One whose turn you
   stopped is never deleted.
 - A deleted session's transcript stays in its account's folder (`luna_run_list` names it). If a
   helper printed what it should not have, tell the user that path.
@@ -164,11 +158,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   and its file ends on it (`undelivered` in reads and waits).
 - A helper stopped before it had a conversation "never got started": the file holds its prompt,
   then that text; a send starts it afresh.
-- `resumeOnRestart` has it go on by itself (afresh on its prompt if it never got started); one
-  notice says so, the usual one follows. Else the plain notice, also where Luna cannot tell the
-  old turn ended, or where you wrote to it first.
+- `resumeOnRestart` has it go on by itself (afresh on its prompt if it never started).
+  The next notice can mention the restart. If it cannot resume, the failure notice says so.
 - The user's chats you wrote to come back when the window starts them, with text held for them;
-  the notice comes then, or after a minute saying they have not.
+  failure news comes then, or after a minute saying they have not.
 - A spawn a restart cut off errors. Wait for the notice before spawning again: no helper came of
   it (a file has its prompt), or with `resumeOnRestart` it started afresh.
 
@@ -182,7 +175,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - Relaying a report, keep its caveats ("possibly a false flag", "not tested live") with the
   claim. Ask reviewers and implementers to say which findings they think wrong, and why.
 - Before ending a turn on "a notice will come", for anything long or overnight: a wait with a
-  timeout, or a look at `luna_session_list` when the user is back. "NOT done yet" comes once.
+  timeout, or check `luna_session_list` when the user is back.
 - `luna_run_list`: past spawns, newest first, deleted helpers too, yours and your helpers'
   (`scope: "all"`: everyone's): `id`, `at`, `ended`, `how`, `name`, `account`, the start of the
   prompt and of the last reply, `transcript`. `q` searches names and prompts; `limit` (10).

@@ -899,7 +899,13 @@ mod tests {
         let (more, _) = messages_from(&path, cursor);
         assert_eq!(
             more,
-            vec![crate::agents::Message { role: "assistant".into(), text: "DONE".into(), after_cli: false, final_answer: false }]
+            vec![crate::agents::Message {
+                role: "assistant".into(),
+                text: "DONE".into(),
+                after_cli: false,
+                joined: false,
+                final_answer: false
+            }]
         );
         std::fs::write(&path, &whole).unwrap();
 

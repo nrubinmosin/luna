@@ -12,6 +12,11 @@ Seen {
             "Looking at the auth module.",
         ),
         (
+            "user",
+            false,
+            "also check logout",
+        ),
+        (
             "assistant",
             false,
             "Found it: the token is never refreshed.\n  Fixing it next.",
@@ -32,6 +37,11 @@ Seen {
             "assistant",
             false,
             "Looking at the auth module.\n[tool: Read]",
+        ),
+        (
+            "user",
+            false,
+            "also check logout",
         ),
         (
             "assistant",

@@ -7,8 +7,8 @@ use crate::agents::admission::{command_reach_now, plain_text};
 use crate::agents::ask::{live, state_of};
 use crate::agents::handover::handovers_of;
 use crate::agents::held::{hold, words};
-use crate::agents::owed::{owe_from, owe_from_at, seen, Asked};
-use crate::agents::read::transcript_end;
+use crate::agents::owed::{owe_sent, seen, Asked};
+use crate::agents::read::send_cursor;
 use crate::agents::registry::{authorize_send, is_mine, label, reg};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -373,8 +373,7 @@ pub(super) fn as_sent(caller: &str, id: &str, text: &str) -> String {
 /// work and dismisses a question that is someone else's to answer.
 /// `key`: the `requestKey` it came with, which notices name its answer by;
 /// `reply`: whether it asks for one, as one that does not wakes the caller only
-/// for a status word or a report (notifier lines.rs `worth_waking`). Both are
-/// a helper's debt's; a chat's has neither.
+/// for a status word, ask, or failure.
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&str>, reply: bool) -> Result<Sent, String> {
     authorize_send(caller, id)?;
     let mine = is_mine(caller, id);
@@ -410,13 +409,15 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     if background {
         // Taken before the text goes in: a turn it starts may be over, and
         // written, by the time the call returns.
-        let cursor = transcript_end(id);
+        let cursor = send_cursor(id);
         // And this, for the debt below: the person may take the helper over
         // once the text is in, which takes it back out (handover.rs).
         let handovers = handovers_of(id);
-        use crate::background::Placed;
+        use crate::background::{Placed, PublishingRequest, Queued};
+        let q = Queued::new(Some(caller.into()), text.clone());
+        let publishing = PublishingRequest::begin(&q);
         let (placed, interrupted, qid) = if interrupt {
-            let i = crate::background::interrupt(id, text, Some(caller))?;
+            let i = crate::background::interrupt(id, q)?;
             let placed = if i.waits {
                 Placed::Waits
             } else if i.queued {
@@ -424,10 +425,10 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
             } else {
                 Placed::Started
             };
-            (placed, i.stopped, None)
+            (placed, i.stopped, i.id)
         } else {
-            let (placed, qid) = crate::background::send_tracked(id, text, Some(caller))?;
-            (placed, false, Some(qid))
+            let (placed, qid) = crate::background::send_tracked(id, q)?;
+            (placed, false, qid)
         };
         #[cfg(test)]
         super::test_support::reached("send placed", caller);
@@ -441,16 +442,17 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
         if placed == Placed::Queued || interrupted {
             baseline += 1;
         }
-        if !owe_from_at(caller, id, baseline, cursor, handovers, &Asked { text, key, reply }) {
+        if !owe_sent(caller, id, baseline, cursor, Some(handovers), &Asked { text, key, reply }, (queued, Some(qid.clone()), false)) {
             return Err(format!(
                 "the person took {id} over as their own chat as this was sent: the text did not go in, and your next notice \
                  says where it is"
             ));
         }
+        drop(publishing);
         // Queued, it may have gone onto the stdin of the process running
         // since, ahead of the debt (background/events.rs `feed_queued`), and
         // that process be over already: the debt ends with that process then.
-        if let Some(qid) = qid.filter(|_| placed == Placed::Queued) {
+        if placed == Placed::Queued {
             if let Some(n) = crate::agents::moved_onto_stdin(id, &[qid]) {
                 baseline = baseline.min(n);
             }
@@ -490,14 +492,14 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     let typed = if going.is_none() || !crate::starts::open(id) {
         None
     } else {
-        match put_in(caller, id, &spill_sent(caller, id, text), before, baseline) {
+        match put_in(caller, id, &spill_sent(caller, id, text), before, baseline, key, reply) {
             Err(e) if crate::starts::refused(&e) => None,
             typed => typed?,
         }
     };
     drop(going);
     let Some(sent) = typed else {
-        hold(caller, id, text)?;
+        hold(caller, id, text, key, reply)?;
         return Ok(Sent {
             ok: true,
             state_before,
@@ -522,6 +524,8 @@ pub(super) fn put_in(
     text: &str,
     before: Option<crate::activity::TurnState>,
     baseline: u32,
+    key: Option<&str>,
+    reply: bool,
 ) -> Result<Option<Sent>, String> {
     // Held text too comes through here, typed long after it was taken.
     command_reach_now(caller, id, text)?;
@@ -530,7 +534,7 @@ pub(super) fn put_in(
     let queued = turn_before == Some(crate::activity::Turn::Busy);
     // Before the text goes in: `type_in` waits for the turn to start, and a
     // short one is over, and written, by then.
-    let cursor = transcript_end(id);
+    let cursor = send_cursor(id);
     let Some(started) = type_text(pty, id, text, turn_before, baseline)? else { return Ok(None) };
     let started = started && !queued;
     if turn_before == Some(crate::activity::Turn::Waiting) {
@@ -542,12 +546,7 @@ pub(super) fn put_in(
     // mid-turn, that is the turn running now or the one the CLI starts on
     // the text after it, whichever the CLI makes of it (QUEUED_GRACE_MS).
     seen(caller, id, baseline);
-    owe_from(caller, id, baseline, cursor);
-    if queued {
-        if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&(caller.to_string(), id.to_string())) {
-            o.queued = true;
-        }
-    }
+    owe_sent(caller, id, baseline, cursor, None, &Asked { text, key, reply }, (queued, None, started));
     Ok(Some(Sent {
         ok: true,
         state_before: "",
@@ -590,7 +589,7 @@ pub(super) fn type_text(
 /// images. So a Codex chat's draft is never typed over: the text is held until
 /// the composer is empty (held.rs `deliver_held`, notifier/mod.rs
 /// `drawn_for_notice`).
-fn puts_draft_aside(provider: Option<Provider>) -> bool {
+pub(super) fn puts_draft_aside(provider: Option<Provider>) -> bool {
     provider == Some(Provider::Claude)
 }
 
@@ -911,9 +910,9 @@ mod tests {
         register("cr-kid", Provider::Codex, "C:\\p", "C:\\acc\\one", Some("cr-full"), false, none);
         // `put_in` types what `send` took and what was held: refused there
         // before anything reaches the terminal.
-        let e = put_in("cr-asks", "cr-chat", "/permissions :workspace", None, 0).err().unwrap();
+        let e = put_in("cr-asks", "cr-chat", "/permissions :workspace", None, 0, None, true).err().unwrap();
         assert!(e.contains("not a prompt"), "{e}");
-        assert!(put_in("cr-full", "cr-chat", " !whoami", None, 0).err().unwrap().contains("not a prompt"), "not its helper");
+        assert!(put_in("cr-full", "cr-chat", " !whoami", None, 0, None, true).err().unwrap().contains("not a prompt"), "not its helper");
         assert_eq!(command_reach_now("cr-full", "cr-kid", "/permissions :workspace"), Ok(()));
         assert_eq!(command_reach_now("cr-asks", "cr-chat", "permissions, please"), Ok(()));
         for id in ["cr-kid", "cr-chat", "cr-asks", "cr-full"] {

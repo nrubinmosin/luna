@@ -189,7 +189,7 @@ owed by the person's chats, outlive a core restart.
   said nothing"), the "seems stuck" line of a woken lead included, as does
   a wait, read or report that hands the answer over (`backgroundStopped`,
   owed.rs `background_stopped_note`). A delivered notice marks that caller
-  told of each loss whose line it carried (notifier `ack_background_stop`,
+  told of each loss whose line it carried (notifier `settle_delivered`,
   lines.rs `loss_line`; never a line without one, such as an exited
   helper's); a hand-over, of the losses its reply said as it was put
   together (`hand_over_said`), so one recorded while a `wait_many` waited on
@@ -282,7 +282,7 @@ owed by the person's chats, outlive a core restart.
   for a later process (queued, or with that one gone, started on or fed to
   the next), which answers it. A wait going by the count the send returned goes by the
   debt's (`Owed::moved_from`), and a line that goes untaken with the process
-  is put past it again (`retried`). With stdin open the CLI never goes by itself, and
+  is put past it again (`retry_deliveries`). With stdin open the CLI never goes by itself, and
   its own ceiling does not count, so Luna closes stdin once the last task
   ends (`background_tasks_changed` with none), at a `result` with none left,
   when nothing is owed to the lead any more between its CLI's turns (the

@@ -76,9 +76,9 @@ they stay in its context all along.
 
 | Text | Who | When, where | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
-| `role-lead`: answer the agent in its language and form, split work among helpers, own what they report, status words, constraints pass down, stop leftovers, no turn ended on "waiting" with nothing to wake it, keep caveats, send and install nothing unasked | leads | layers, as above | 436 | Library → System texts, `role-lead` |
-| `role-helper`: the same, less what is about helpers | helpers | layers, as above | 210 | Library → System texts, `role-helper` |
-| The note after a task (`[A note, not part of the task: …]`): the task comes from an agent; rules for a chat with a person do not apply | leads and helpers | Claude Code: after the first task, once; Codex: after every task, so it adds up in the conversation | 42 | Library → System texts, `note` (one for leads and helpers; one line; it cannot be empty) |
+| `role-lead`: answer the agent in its language and form, split work among helpers, own what they report, status words, constraints pass down, stop leftovers, no turn ended on "waiting" with nothing to wake it, keep caveats, send and install nothing unasked | leads | layers, as above | 403 | Library → System texts, `role-lead` |
+| `role-helper`: the same, less what is about helpers | helpers | layers, as above | 230 | Library → System texts, `role-helper` |
+| The note after a task (`[A note, not part of the task: …]`): the task comes from an agent; rules for a chat with a person do not apply | leads and helpers | Claude Code: after the first task, once; Codex: after every task, so it adds up in the conversation | 63 | Library → System texts, `note` (one for leads and helpers; one line; it cannot be empty) |
 | Constraints: a heading, then each constraint word for word | a helper spawned with `constraints`, and every session under it | layers, last | 57 + the constraints | the agent that spawns; nothing removes one |
 | The library's instructions for some roles: a heading `# Instructions: <name>`, then your file | the roles you ticked | layers | ~5 + your file | the library's **For** column |
 
@@ -172,17 +172,17 @@ included. Checked by `context_page.rs`.
 | `tools-lead` | 7,041 | 1,760 |
 | `per-request-chat` | 9,191 | 2,298 |
 | `per-request-lead` | 9,399 | 2,350 |
-| `per-request-helper` | 831 | 208 |
-| `role-lead` | 1,745 | 436 |
-| `role-helper` | 831 | 208 |
-| `note` | 167 | 42 |
+| `per-request-helper` | 919 | 230 |
+| `role-lead` | 1,611 | 403 |
+| `role-helper` | 919 | 230 |
+| `note` | 253 | 63 |
 | `constraints-heading` | 229 | 57 |
 | `notice-tag` | 37 | 9 |
 | `guide-index` | 449 | 112 |
 | `guide-sessions` | 4,829 | 1,207 |
 | `guide-accounts` | 1,284 | 321 |
 | `guide-spawning` | 1,490 | 373 |
-| `guide-getting` | 1,914 | 479 |
-| `guide-answering` | 2,705 | 676 |
-| `guide-restart` | 1,073 | 268 |
-| `guide-working` | 2,246 | 562 |
+| `guide-getting` | 1,649 | 412 |
+| `guide-answering` | 2,616 | 654 |
+| `guide-restart` | 1,013 | 253 |
+| `guide-working` | 2,215 | 554 |

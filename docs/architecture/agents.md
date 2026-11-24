@@ -245,7 +245,8 @@ then the window's `background_promoted`) becomes theirs for good
    it finds the handover and goes nowhere. The window's word is acted on once
    (`Entry::handing`); said again, or after the record is gone, it changes
    nothing.
-3. Each session owed by it, and each sender of that text, gets one line in
+3. Its former parent, each caller with an active or watched debt, and each
+   sender of that text gets one line in
    `Registry::news`: its parent that the person took it over and nothing more
    is owed, the others that nothing more is owed by it; each with the file its
    undelivered text is in (`note_file`). `news` is saved in `chat-ties.json`,
@@ -530,7 +531,8 @@ Invariants:
   begun for 8 s (`LET_GO_MS`).
 - `wait_many`: finished ones stay owed and reserved from the notice
   (`reserved`) until the response; a cancel undoes them together except an
-  answer a later call delivered (`receipts`).
+  answer a later call delivered (`receipts`). Partial responses retain
+  separate receipts for the request IDs each collected.
 
 ## Session tool results
 
@@ -575,33 +577,70 @@ turn, stopped on a prompt (once per stop) or exited.
 - A `wait` still out for that answer (`waits`) delivers it instead; if it has
   not within 10 s the notice goes (Claude Code moves an MCP call past 120 s to
   the background and may drop it).
-- A turn after which the helper still runs processes waits up to 20 s, then
-  says "NOT done yet" once per debt (`Owed::told_pending`), with a short tag
-  naming the pending work (`[helpers pending]`, `[job running]` or a subagent count).
-  After that the caller hears only of a turn no notice started (`notice_turn`,
-  `real_turn_past`) or the job's end (`Verdict::JobOver`), however long the
-  job does nothing: what it does is not measured, and idle is no proof of an
-  end. "What is left" and "the job's end" are the session's record's
-  (`activity::Life`, `TurnState::children_busy`): Claude Code's shells, crons
-  and subagents by its hooks and registry, a Codex chat's shells in its job, a
-  helper's processes in its job. A job's end is clocked on the debt
-  itself (`Owed::held`): the notifier and a `wait` go by the same 20 s
-  (`held_for_wait`, `job_end_stood`), so the end reaches the caller once.
+- After a turn leaves work running, a status notice can name it with
+  `[helpers pending]`, `[job running]` or a subagent count. Activity comes from
+  the session record (`activity::Life`, `TurnState::children_busy`): shells,
+  crons, subagents and the helper job's processes. The notifier and `wait`
+  share a 20-second grace on the debt for a job's end
+  (`held_for_wait`, `job_end_stood`).
 - A notice is an ordinary turn of the caller; a dev caller with no terminal gets
   none, its lines going to the log. Typing one takes seconds and the turn it
-  starts may ask again meanwhile, so the notifier changes the debt only if it is
-  still the one it announced.
+  starts may ask again meanwhile. A notice, wait or complete read settles the
+  request numbers it covered, scoped to the transcript and each request's
+  delivery state. A notice acknowledges the restart interruptions and loss
+  IDs carried in its rendered text. If Enter produces no observed turn and
+  the composer still holds the text, Luna keeps the debt and marks the draft.
+  With an empty or unreadable composer, Luna acknowledges the write and
+  leaves the turn unmarked, so later notices can proceed. Caller notice
+  expiry leaves a report cursor available for a transcript line still being
+  written.
 - Lines no debt brings (a helper taken over, an auto-delete, a queued text
   refused, or a system notice) wait for a caller a restart has yet to bring back for as
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
   `chat-ties.json` until told.
-- **Riders.** A job's end with nothing said (`Settled::NoNews`), the idle line,
-  and a refusal for want of places are no reason
-  to wake a caller: they ride with the next notice (`riders_go`), and go alone
-  only once they are all it is owed, nothing in Luna is busy, or after
-  `RIDE_MAX_MS`. Quota news does not ride: its lines go into the notice's lines
-  as they are put together (mod.rs, before `riders_go` is asked), like a turn's
-  end, so a window at 90% wakes the top chat and brings the riders with it.
+- **Wake policy.** A fresh `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
+  opening wakes an owed caller after the turn ends. A prompt, question,
+  failure or exit can also wake it. A status or answer covers a numbered
+  request after the CLI confirms delivery or its transcript shows the prompt. An untold request
+  that wants a reply gets one idle stall, carrying what the session said,
+  including any interim reply when a background job ends silently.
+  Work, queued inputs and due replies keep that stall back. A peer's due
+  reply holds it even while the peer is idle, including an actionable status
+  from an FYI. Callers inside the same idle
+  cycle can get their own stalls. Callers outside the cycle wait for those
+  due replies. The notifier samples the dependency graph once per tick and
+  reuses transcript, failure, and activity checks across notices. A draft holds only its
+  own notice. Interim and suppressed text
+  stays readable. After a PLAN, the idle stall stays covered through that
+  turn and later turns started by FYIs or a lead's delegate notices. A
+  joined FYI stays part of the original turn. A turn seen before its prompt
+  is written is reconsidered if its transcript grows. For eight seconds
+  after a silent or skipped end, a status appended past the last complete
+  line the notifier read can reopen the debt. If a new turn starts, busy
+  polls check for the status before its transcript boundary and delivery
+  waits for idle. Once found, the status stays
+  owed across batching, a busy caller, and a core restart. Permission prompts,
+  failures, exits and restart
+  interruptions still go to the caller. A tripped breaker allows the first
+  failure of a pair and leaves the pair's other debts as they are. When it
+  lifts, the notifier renders the accumulated replies and the current
+  outcome. A failure or restart cut after a silent settlement wakes that
+  caller for a later PLAN turn or a turn
+  started by one of its requests. A separate allowance per task covers
+  the 30-minute quiet check, including when a turn waits for its own background
+  work.
+  Ties save request intent and coverage, idle plan state, quiet allowance,
+  the transcript boundary confirmed by the last notice, and untold restart
+  interruptions. A move to another transcript captures
+  the destination offset and invalidates settlements from the old file.
+  Silent debts are saved separately so older cores skip them.
+- **Riders.** Later quiet lines accompany another notice. A place refusal
+  can go alone after ten minutes or when the top chat has no active debt.
+  An untold refusal holds the power-off countdown for up to ten minutes
+  while its top chat can take it. A claimed refusal holds it through power
+  admission. It expires with that chat or its line.
+  Suppressed answers hold no countdown. Quota and system notices keep
+  their own policy.
 - **Company.** A notice ready for an idle caller that is owed an answer by
   another session still mid-turn (`Turn::Busy`) waits for it up to
   `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
@@ -611,27 +650,16 @@ turn, stopped on a prompt (once per stop) or exited.
   `Settled::Asked`) never waits.
 - A helper with its own helpers out (`waits_on_helpers`) reads `background`; a
   turn on a notice from them counts once it has all their answers.
-- **Leads.** A lead (`is_lead`: spawned with tools) whose delegates still work
-  (its own helpers out, or what its CLI left in the background) is not done as
-  a matter of course: a turn it ends then settles as `Settled::Skip` (no
-  notice, `told_pending` set, the debt's offset kept, where that turn's text
-  ends kept as `Owed::held_to`), so what it wrote rides in its report with
-  the next notice, never "NOT done yet". Not the first
-  turn to answer a send of its caller's (`Owed::by_send`, before
-  `told_pending`): that is the answer asked for, unless the send asked for
-  none. A message whose
-  first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
-  (`said::says_status`, case-sensitive, alone or before `:` or a space,
-  markdown marks aside) goes at once (`worth_waking`), and so does a turn on
-  its helpers' notices that wrote one (`news_for_parent`, only ever upward).
-  Prompts, questions, errors, exits and the quiet-turn notices go as ever.
-  The lead's role text says so (`resources/system/role-lead.md`).
+- **Leads.** Turn ends while delegates work follow the same rule as for helpers.
+  The skipped turn's transcript end (`Owed::held_to`) distinguishes its interim
+  text from an answer after its delegates finish.
   Once all its delegates are done (`Verdict::JobOver`, or a turn on its own
   helpers' notices once they have all answered, `turns_on_helpers`) with
   nothing said of them (`quiet_on_helpers`, `quiet_since_held`: that last
   turn wrote nothing, or nothing since `held_to`; what it wrote while they
   worked waits for its parent and is no word on their end),
-  Luna wakes the lead instead of telling its parent (`wake_lead`). Whether
+  Luna wakes the lead instead of telling its parent (`wake_lead`), unless
+  a recorded PLAN is awaiting approval. Whether
   its interim turn was held back first is no matter: a helper that answers
   within that turn's reply grace ends before the notifier has looked at it.
   A notice never drops what a session wrote because its last turn wrote
@@ -677,7 +705,12 @@ turn, stopped on a prompt (once per stop) or exited.
   were cut and their work is not done, with no advice on how to work.
   Each turn's loss is its own, with its own cause: a caller hears each it
   has yet to hear of, once, a woken lead's "seems stuck" line included,
-  and a reply acknowledges those it said, never one recorded since.
+  and a reply acknowledges the losses it included. An outstanding loss can
+  wake the caller after the answer has settled. A launch that fails before
+  opening the prompt records the undelivered batch before it publishes the
+  turn end. Loss collection waits for the request number and delivery ID
+  before exposing a send's lost text. Interrupting sends keep their
+  replacement's ID, so that failure settles exactly the requests in the batch.
   Claude Code's own stop with none named, and a Codex stop an older
   core saved uncounted, keep their own lines (`BACKGROUND_STOPPED`,
   `SUBAGENTS_INTERRUPTED`).
@@ -694,10 +727,9 @@ turn, stopped on a prompt (once per stop) or exited.
   reply carries its prompt match past the read cursor. Session ties save the
   count, open request heads, and pending match. A legacy debt stays
   unnumbered until settled. Legacy or downgraded numbering may repeat once.
-- **No reply asked.** A send with `expectReply: false` sets `Owed::no_reply`
-  (a later send that asks for one clears it). A turn that answers it wakes the
-  caller only with a status word or a message of 400 characters or more;
-  otherwise the debt settles with no notice (`Settled::Unasked`). A send that
+- **No reply asked.** `expectReply: false` wakes only for a status, ask, or
+  failure. It retains the existing task's wake state. A send that wants a
+  reply starts a new task. A send that
   takes in a debt a notice may be telling of as it comes keeps what it owes
   of its own past each debt it took in, the last four (`Owed::since`, by
   `rev`): once that notice settles the debt it was put together on, whichever
@@ -714,8 +746,13 @@ turn, stopped on a prompt (once per stop) or exited.
   that notice and its top chat gets the details while the breaker is active.
   A core restart clears the breaker and any pending trip details. The log
   warns, the desktop is told once, and a person
-  typing into either chat lifts it. Prompts, questions and exits still come
-  (`standing_line`).
+  typing into either chat lifts it. Prompts, questions, exits and a pair's
+  first failure still come. The first-failure allowance resets when the
+  breaker lifts. Other failures count toward the breaker. A loss-only notice
+  counts once for the IDs it acknowledges, with the same allowance for the
+  first failure after a trip. If its report file cannot be written, the
+  notice carries the text itself: up to 2000 characters, shared evenly
+  among the messages.
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
   window (`<data>/quota-told.json`). Breaker lines, folder-skills failures and places notices
@@ -799,6 +836,10 @@ none is `transcriptMissing`, not "no reply".
 `wait` on it, no helper of its own, nothing its turns left still in its job
 (its record not active, however long that has done nothing), and no turn for 30 minutes, as `delete` would.
 Any `read` / `wait` / `send` restarts the clock (`deletesInMin`).
+A silent settlement keeps its unread cursor without holding up a lead.
+The notifier marks unread answers before checking whether their caller can
+take a notice. Unread text holds auto-delete until it is read or 24 hours elapse, even
+after the notifier stops waiting for a caller to reopen after a restart.
 A helper an agent killed mid-turn is left alone. On by default.
 
 The person's Delete on a helper, or on a chat with its helpers ticked

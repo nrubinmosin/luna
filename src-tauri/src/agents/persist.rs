@@ -5,7 +5,7 @@
 
 use crate::agents::held::{GoingIn, Held};
 use crate::agents::notifier::system::{read_saved, SystemNews};
-use crate::agents::owed::{Owed, Requests};
+use crate::agents::owed::{Owed, Requests, WakeState};
 use crate::agents::read::transcripts;
 use crate::agents::registry::{account_name, is_dev, label, reg, register, without_retired, Known, Registry, CODEX_TRUST};
 use crate::agents::spawn::SpawnTaken;
@@ -40,6 +40,9 @@ pub struct Ties {
     pub orphan: bool,
     /// (caller, baseline, cursor) of every answer owed by it (see `Owed`).
     pub owed: Vec<(String, u32, u64)>,
+    /// Older cores must not interpret these readable answers as active debt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) silent_owed: Vec<(String, u32, u64)>,
     /// Numbering by caller, with prompt heads only while an answer is owed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(super) requests: BTreeMap<String, Requests>,
@@ -57,9 +60,44 @@ pub struct Ties {
     /// with the core.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub told_pending: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) notices: BTreeMap<String, SavedNotice>,
     /// See `Registry::tasks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub(super) struct SavedNotice {
+    wake: WakeState,
+    no_reply: bool,
+    resumed: bool,
+    job_went: bool,
+    held_to: Option<u64>,
+}
+
+impl SavedNotice {
+    fn of(o: &Owed, job_running: Option<bool>) -> Option<Self> {
+        let wake =
+            WakeState { job_running: (o.active() || o.watches_later_turns()) && job_running.unwrap_or(o.wake.job_running), ..o.wake };
+        let saved = Self { wake, no_reply: o.no_reply, resumed: o.resumed, job_went: o.job_went, held_to: o.held_to };
+        (o.told_pending
+            || saved.wake != WakeState::default()
+            || saved.no_reply
+            || saved.resumed
+            || saved.job_went
+            || saved.held_to.is_some())
+        .then_some(saved)
+    }
+
+    fn restore(&self, o: &mut Owed) {
+        o.wake = self.wake;
+        o.no_reply = self.no_reply;
+        o.resumed = self.resumed;
+        o.held_to = self.held_to;
+        o.job_went = self.job_went || self.wake.job_running;
+    }
 }
 
 /// One helper's ties, as a save keeps them (`ties_of_each`).
@@ -76,6 +114,7 @@ pub fn ties_of_each(ids: &[&str]) -> Vec<Option<Ties>> {
 
 pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
     let k = r.known.get(id)?;
+    let job_running = crate::activity::turn_state(id).map(|t| t.children_busy);
     Some(Ties {
         parent: k.parent.clone(),
         name: r.names.get(id).cloned(),
@@ -83,7 +122,13 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         tools: k.tools,
         auto_delete: r.auto.contains_key(id),
         orphan: k.orphan,
-        owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
+        owed: r.owed.iter().filter(|((_, s), o)| s == id && o.active()).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
+        silent_owed: r
+            .owed
+            .iter()
+            .filter(|((_, s), o)| s == id && !o.active())
+            .map(|((c, _), o)| (c.clone(), o.baseline, o.cursor))
+            .collect(),
         requests: r
             .requests
             .iter()
@@ -103,6 +148,12 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
         told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
+        notices: r
+            .owed
+            .iter()
+            .filter(|((_, s), _)| s == id)
+            .filter_map(|((c, _), o)| SavedNotice::of(o, job_running).map(|state| (c.clone(), state)))
+            .collect(),
         task: r.tasks.get(id).cloned(),
     })
 }
@@ -117,10 +168,10 @@ fn told_job_went(told_pending: &[String], caller: &str, baseline: u32, cursor: u
 
 /// A helper a previous core saved is known again, as it was. Returns the
 /// token for its MCP config, a fresh one: the old core's went with it.
-pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, ties: Ties) -> Option<String> {
-    let token = register(id, provider, folder, account_path, ties.parent.as_deref(), ties.tools, ties.settings);
+pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, mut ties: Ties) -> Option<String> {
+    let token = register(id, provider, folder, account_path, ties.parent.as_deref(), ties.tools, std::mem::take(&mut ties.settings));
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(name) = ties.name {
+    if let Some(name) = ties.name.take() {
         r.names.insert(id.to_string(), name);
     }
     if let Some(k) = r.known.get_mut(id) {
@@ -130,19 +181,30 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     if ties.auto_delete {
         r.auto.insert(id.to_string(), Auto::default());
     }
-    for (caller, baseline, cursor) in ties.owed {
-        let mut o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));
-        o.request_match = ties.request_matches.get(&caller).copied();
-        r.owed.insert((caller, id.to_string()), o);
-    }
-    r.requests.extend(ties.requests.into_iter().map(|(caller, requests)| ((caller, id.to_string()), requests)));
-    for (caller, n) in ties.seen {
-        r.seen.insert((caller, id.to_string()), n);
-    }
+    restore_answers(&mut r, id, &mut ties);
     if let Some(task) = ties.task {
         r.tasks.insert(id.to_string(), task);
     }
     token
+}
+
+pub(super) fn restore_answers(r: &mut Registry, id: &str, ties: &mut Ties) {
+    for (caller, baseline, cursor) in std::mem::take(&mut ties.owed).into_iter().chain(std::mem::take(&mut ties.silent_owed)) {
+        let mut o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));
+        if let Some(notice) = ties.notices.get(&caller) {
+            notice.restore(&mut o);
+        }
+        o.request_match = ties.request_matches.get(&caller).copied();
+        if let Some(requests) = ties.requests.get(&caller) {
+            o.upto = requests.made;
+            o.queued = requests.open.iter().any(|q| !q.taken && q.queued);
+        }
+        r.owed.insert((caller, id.to_string()), o);
+    }
+    r.requests.extend(std::mem::take(&mut ties.requests).into_iter().map(|(caller, requests)| ((caller, id.to_string()), requests)));
+    for (caller, n) in std::mem::take(&mut ties.seen) {
+        r.seen.insert((caller, id.to_string()), n);
+    }
 }
 
 /// A chat of the person's, as `<data>/chat-ties.json` keeps it for the core
@@ -175,6 +237,10 @@ pub(super) struct SavedSend {
     pub(super) text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) going_in: Option<GoingIn>,
+    #[serde(default)]
+    pub(super) key: Option<String>,
+    #[serde(default = "super::said::reply_by_default")]
+    pub(super) reply: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -629,7 +695,14 @@ pub(super) fn chats_now() -> SavedChats {
         let sends: Vec<SavedSend> = r
             .held
             .iter()
-            .map(|h| SavedSend { caller: h.caller.clone(), id: h.id.clone(), text: h.text.clone(), going_in: h.going_in.clone() })
+            .map(|h| SavedSend {
+                caller: h.caller.clone(),
+                id: h.id.clone(),
+                text: h.text.clone(),
+                going_in: h.going_in.clone(),
+                key: h.key.clone(),
+                reply: h.reply,
+            })
             .collect();
         let chats: Vec<SavedChat> = r
             .known
@@ -774,16 +847,26 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         // it was being written by went with it, and the one the window starts
         // is between turns. That turn counts as ended, as a helper's does.
         let mut count = c.turns_ended;
-        for (caller, baseline, cursor) in ties.owed {
+        for (caller, baseline, cursor) in ties.owed.into_iter().chain(ties.silent_owed) {
             // Its turn was over, told so: what it left went with the core. Not
             // one it was in the middle of again: that turn is cut short below.
             let mut o = told_job_went(&ties.told_pending, &caller, baseline, cursor)
                 .filter(|_| !c.mid_turn)
                 .unwrap_or_else(|| Owed::from(baseline, cursor));
             o.request_match = ties.request_matches.get(&caller).copied();
-            if !o.job_went && (c.turns_ended <= baseline || ties.cut_short.contains(&caller)) {
+            if let Some(requests) = ties.requests.get(&caller) {
+                o.upto = requests.made;
+                o.queued = requests.open.iter().any(|q| !q.taken && q.queued);
+            }
+            if let Some(notice) = ties.notices.get(&caller) {
+                notice.restore(&mut o);
+            }
+            if (o.active() || o.watches_later_turns())
+                && !o.job_went
+                && (c.mid_turn || (o.active() && c.turns_ended <= baseline && !o.told_pending) || ties.cut_short.contains(&caller))
+            {
                 o.cut_short = true;
-                count = count.max(baseline.saturating_add(1));
+                count = count.max(o.notice_baseline().saturating_add(1));
             }
             r.owed.insert((caller, c.id.clone()), o);
         }
@@ -797,7 +880,7 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         counts.push((c.id, count, c.transcript));
     }
     for h in saved.sends {
-        r.held.push(Held { caller: h.caller, id: h.id, text: h.text, since: now_ms(), going_in: h.going_in });
+        r.held.push(Held { caller: h.caller, id: h.id, text: h.text, since: now_ms(), going_in: h.going_in, key: h.key, reply: h.reply });
     }
     for mut s in saved.spawns {
         s.left_by_core = true;
@@ -951,7 +1034,7 @@ pub fn take_up_spawns() {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let Some(spawn) = r.spawns.get_mut(&request) else { continue };
         spawn.owed_placed = true;
-        let opening = Request { n: 1, key: spawn.params.request_key.clone(), head: request_head(&spawn.params.prompt) };
+        let opening = Request::new(1, spawn.params.request_key.clone(), request_head(&spawn.params.prompt), true);
         let key = (caller, id);
         if r.owed.contains_key(&key) {
             continue;
@@ -1430,7 +1513,7 @@ mod tests {
         };
         ask(0, 0, "first");
         let first = reg().lock().unwrap().owed[&key];
-        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(1, 50, Some(1)), &first);
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(1, 50, Some(1), None, false), &first);
         round_trip();
         let pending = reg().lock().unwrap().owed[&key];
         assert!(pending.told_pending && pending.request_match == Some(1));
@@ -1440,6 +1523,52 @@ mod tests {
         assert!(reg().lock().unwrap().owed[&key].request_match.is_none());
         assert_eq!(requests_of(caller, id).iter().map(|q| q.n).collect::<Vec<_>>(), [2]);
         forget(id);
+    }
+
+    #[test]
+    fn silent_answers_are_saved_outside_the_older_readers_debts() {
+        use crate::agents::notifier::{settle_told, Settled};
+        let (caller, id) = ("downgrade-answer-caller", "downgrade-answer-helper");
+        let key = (caller.into(), id.into());
+        let ties = owed_chat(id, caller, 0, 0).ties;
+        tie_back(id, Provider::Claude, ".", "acc", ties);
+        let debt = reg().lock().unwrap().owed[&key];
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Silent(1, true), &debt);
+        let saved = serde_json::to_value(ties_of(id).unwrap()).unwrap();
+        assert_eq!(saved["owed"], serde_json::json!([]));
+        forget(id);
+        tie_back(id, Provider::Claude, ".", "acc", serde_json::from_value(saved).unwrap());
+        assert!(!reg().lock().unwrap().owed[&key].active());
+        assert!(reg().lock().unwrap().owed[&key].wake.unread_since.is_some());
+        forget(id);
+    }
+
+    #[test]
+    fn a_restart_records_an_interruption_after_an_idle_plan() {
+        let (id, caller) = ("plan-restart-chat", "plan-restart-caller");
+        let key = (caller.into(), id.into());
+        let mut chat = owed_chat(id, caller, 3, 0);
+        chat.ties.silent_owed = std::mem::take(&mut chat.ties.owed);
+        chat.ties.notices.insert(
+            caller.into(),
+            SavedNotice { wake: WakeState { plan_through: Some(3), silent: Some(3), ..WakeState::default() }, ..Default::default() },
+        );
+        chat.mid_turn = true;
+        take_up(vec![chat], Vec::new(), Vec::new());
+        let (known, debt) = {
+            let r = reg().lock().unwrap();
+            let mut known = r.known[id].clone();
+            known.waiting = false;
+            (known, r.owed[&key])
+        };
+        assert!(debt.cut_short && debt.watches_later_turns());
+        assert_eq!(crate::activity::turns_counted(id), Some(4));
+        let Some((Some(line), Settled::Exited)) = notice_line(crate::pty::manager(), caller, "Session", id, &known, debt) else {
+            panic!("the caller hears that the restart cut off the turn");
+        };
+        assert!(line.contains("core restarted"), "{line}");
+        forget(id);
+        crate::activity::forget(id);
     }
 
     #[test]
@@ -1531,7 +1660,14 @@ mod tests {
         chat.ties.seen = vec![("tc-other".into(), 5)];
         take_up(
             vec![chat],
-            vec![SavedSend { caller: "tc-other".into(), id: "tc-chat".into(), text: "held across".into(), going_in: None }],
+            vec![SavedSend {
+                caller: "tc-other".into(),
+                id: "tc-chat".into(),
+                text: "held across".into(),
+                going_in: None,
+                key: Some("fyi".into()),
+                reply: false,
+            }],
             Vec::new(),
         );
         let key = |caller: &str| (caller.to_string(), "tc-chat".to_string());
@@ -1543,7 +1679,7 @@ mod tests {
             assert!(!r.owed[&key("tc-other")].cut_short, "its answer was in before the core went");
             assert!(r.owed[&key("tc-peer")].cut_short, "this one never will be");
             assert_eq!(r.seen.get(&key("tc-other")), Some(&5));
-            assert!(r.held.iter().any(|h| h.id == "tc-chat" && h.text == "held across"));
+            assert!(r.held.iter().any(|h| h.id == "tc-chat" && h.text == "held across" && !h.reply && h.key.as_deref() == Some("fyi")));
         }
         assert_eq!(crate::activity::turns_counted("tc-chat"), Some(6), "the stopped turn counts as ended, as a helper's does");
         let k = reg().lock().unwrap().known["tc-chat"].clone();
@@ -1752,7 +1888,14 @@ mod tests {
         let _sweep = sweep_only(&["ho-chat"]);
         take_up(
             vec![owed_chat("ho-chat", "ho-parent", 3, 40)],
-            vec![SavedSend { caller: "ho-parent".into(), id: "ho-chat".into(), text: "and this".into(), going_in: None }],
+            vec![SavedSend {
+                caller: "ho-parent".into(),
+                id: "ho-chat".into(),
+                text: "and this".into(),
+                going_in: None,
+                key: None,
+                reply: true,
+            }],
             Vec::new(),
         );
         assert!(is_held("ho-parent", "ho-chat"));

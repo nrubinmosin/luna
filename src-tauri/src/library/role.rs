@@ -390,9 +390,12 @@ const NOTES_SERVED_MAX: usize = 64;
 
 /// Luna's own notes before this one, still after the tasks in conversations
 /// they began: 0.21's, the same for a lead and a helper.
-const NOTES_BEFORE: [&str; 1] = ["This task comes from another agent, not a person: reply to that agent, in the language and \
+const NOTES_BEFORE: [&str; 2] = [
+    "This task comes from another agent, not a person: reply to that agent, in the language and \
                                   form its task asks for. Rules written for a chat with a person (its language, its reply \
-                                  format, questions to that person) do not apply here."];
+                                  format, questions to that person) do not apply here.",
+    "The task is from an agent, not a person: rules for a chat with a person (its language, reply format, questions to them) do not apply.",
+];
 
 fn sha_of(text: &str) -> String {
     Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()

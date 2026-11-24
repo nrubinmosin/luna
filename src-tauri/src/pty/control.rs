@@ -848,7 +848,7 @@ impl PtyManager {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::spawn::{capture, exit_word, reader_exited, said, spawn, Attached, Launch, ADOPTED_GONE};
     use super::super::{InputTx, ReaderEnd};
     use super::*;
@@ -1045,6 +1045,66 @@ mod tests {
             stashing: Arc::new(AtomicBool::new(false)),
         };
         (session, quit)
+    }
+
+    pub(crate) struct NoticeTerminal<'a> {
+        id: &'a str,
+        quit: Arc<AtomicBool>,
+        pub(crate) input: std::sync::mpsc::Receiver<String>,
+    }
+
+    impl NoticeTerminal<'_> {
+        pub(crate) fn show_output(&self, output: &str) {
+            let sessions = manager().sessions.lock().unwrap();
+            let mut scrollback = sessions[self.id].scrollback.lock().unwrap();
+            scrollback.bytes.extend(output.as_bytes());
+            scrollback.written += output.len() as u64;
+        }
+
+        pub(crate) fn typed_at(&self, at: u64) {
+            let sessions = manager().sessions.lock().unwrap();
+            sessions[self.id].typed_ms.store(at, Ordering::Relaxed);
+        }
+    }
+
+    impl Drop for NoticeTerminal<'_> {
+        fn drop(&mut self) {
+            manager().sessions.lock().unwrap().remove(self.id);
+            self.quit.store(true, Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn notice_terminal(id: &str, provider: Provider, draft: bool) -> NoticeTerminal<'_> {
+        let (mut session, quit) = fake_session_built(id, ".", true, None, Box::new(|_, _, _| {}));
+        session.provider = provider;
+        session.spawned_at_ms = now_ms().saturating_sub(120_000) as u128;
+        session.draft.store(u64::from(draft), Ordering::SeqCst);
+        {
+            let mut screen = session.scrollback.lock().unwrap();
+            screen.bytes.extend(b"Ready\r\n");
+            screen.written = screen.bytes.len() as u64;
+        }
+        let (writer, reader, pending) = InputTx::new(id);
+        session.input_tx = Arc::new(writer);
+        let (tx, input) = std::sync::mpsc::channel();
+        let chat = id.to_string();
+        std::thread::spawn(move || {
+            for input in reader {
+                pending.release(input.len());
+                if let Input::Bytes(bytes) = input {
+                    let submitted = bytes == b"\r";
+                    let _ = tx.send(String::from_utf8_lossy(&bytes).into_owned());
+                    if submitted {
+                        let count = crate::activity::turn_state(&chat).unwrap().turns_ended;
+                        crate::activity::count_at_least(&chat, count + 1);
+                    }
+                }
+            }
+        });
+        manager().sessions.lock().unwrap().insert(id.to_string(), session);
+        crate::activity::between_turns_for_test(id);
+        crate::activity::count_at_least(id, 1);
+        NoticeTerminal { id, quit, input }
     }
 
     /// Until the delete or kill has taken `id`'s session out of the map.

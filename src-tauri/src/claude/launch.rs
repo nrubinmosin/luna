@@ -472,6 +472,9 @@ pub(crate) fn claude_settings(
         // prompt or a question up. Not `idle_prompt` and the rest, which
         // would each run a curl for nothing.
         hooks.insert("Notification".into(), only("permission_prompt|elicitation_dialog"));
+        if helper.is_none() {
+            hooks.insert("SessionStart".into(), hook());
+        }
         // A subagent's life, which a background agent lives past the turn
         // that started it (activity/hooks.rs `HookEvent::AgentAtWork`).
         hooks.insert("SubagentStart".into(), hook());
@@ -614,7 +617,10 @@ mod tests {
         };
         let settings = claude_settings(Some(found), &none, "/d/core", None);
         let hooks = settings["hooks"].as_object().unwrap();
-        assert_eq!(hooks.len(), 10);
+        assert_eq!(hooks.len(), 11);
+        assert!(hooks.contains_key("SessionStart"), "a chat observes transcript switches before the next prompt");
+        let helper = claude_settings(Some(found), &none, "/d/core", Some(HelperSettings { connectors: false }));
+        assert!(helper["hooks"].get("SessionStart").is_none(), "background helpers report their transcript in their stream");
         assert_eq!(hooks["Notification"][0]["matcher"], "permission_prompt|elicitation_dialog");
         assert_eq!(hooks["PreToolUse"][0]["matcher"], "AskUserQuestion");
         let prefix = if cfg!(windows) { "" } else { "exec >/dev/null 2>&1; " };

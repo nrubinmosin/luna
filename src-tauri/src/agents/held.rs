@@ -6,7 +6,7 @@
 use crate::agents::ask::{ask_of, live};
 use crate::agents::delivery::{put_in, spill_sent, still_starting, TypingInto, SEND_TYPING_MS};
 use crate::agents::notifier::NOTIFY_EVERY;
-use crate::agents::owed::{owe_from, seen, Owed};
+use crate::agents::owed::{owe_asked, seen, Asked};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{transcript_end, transcript_path, Message};
 use crate::agents::registry::{is_dev, label, reg, Registry};
@@ -20,6 +20,8 @@ pub(super) struct Held {
     pub(super) id: String,
     pub(super) text: String,
     pub(super) since: u64,
+    pub(super) key: Option<String>,
+    pub(super) reply: bool,
     /// On its way in: found so by the next core, a core went during that.
     pub(super) going_in: Option<GoingIn>,
 }
@@ -59,7 +61,7 @@ const HELD_MAX: usize = 16 * 1024 * 1024;
 /// Puts a caller's text by for the held sender to type in (`deliver_held`),
 /// or refuses it, saying why, past `HELD_MAX` held for the chat: text held
 /// for a chat with none held always goes by.
-pub(super) fn hold(caller: &str, id: &str, text: &str) -> Result<(), String> {
+pub(super) fn hold(caller: &str, id: &str, text: &str, key: Option<&str>, reply: bool) -> Result<(), String> {
     {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         if let Err(held) = room_for(&r.held, id, text) {
@@ -73,7 +75,15 @@ pub(super) fn hold(caller: &str, id: &str, text: &str) -> Result<(), String> {
                 held / 1024
             ));
         }
-        r.held.push(Held { caller: caller.to_string(), id: id.to_string(), text: text.to_string(), since: now_ms(), going_in: None });
+        r.held.push(Held {
+            caller: caller.to_string(),
+            id: id.to_string(),
+            text: text.to_string(),
+            since: now_ms(),
+            key: key.map(str::to_owned),
+            reply,
+            going_in: None,
+        });
     }
     crate::log::info(
         "agents",
@@ -126,12 +136,12 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
             reconcile_held(pty, &id);
         }
     }
-    let held: Vec<(String, String, String, u64)> = {
+    let held: Vec<_> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        r.held.iter().map(|h| (h.caller.clone(), h.id.clone(), h.text.clone(), h.since)).collect()
+        r.held.iter().map(|h| (h.caller.clone(), h.id.clone(), h.text.clone(), h.since, h.key.clone(), h.reply)).collect()
     };
     let mut stuck: std::collections::HashSet<String> = Default::default();
-    for (caller, id, text, since) in held {
+    for (caller, id, text, since, key, reply) in held {
         #[cfg(test)]
         if !crate::agents::sweep_includes(&id) {
             continue;
@@ -146,13 +156,20 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
             if reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&id).is_some_and(|k| returning(k, core_up_ms())) {
                 continue;
             }
-            drop_it(&mut reg().lock().unwrap_or_else(|e| e.into_inner()));
-            if !is_dev(&caller) {
-                let ended = crate::activity::turn_state(&id).map_or(0, |t| t.turns_ended);
-                let mut o = Owed::from(ended, transcript_end(&id));
-                o.lost = true;
-                reg().lock().unwrap_or_else(|e| e.into_inner()).owed.insert((caller.clone(), id.clone()), o);
+            let who = label(&id);
+            let saved = !is_dev(&caller);
+            let line = saved.then(|| {
+                let file = crate::agents::said::note_file(&id, &text);
+                let where_or_text = file.map_or_else(|| format!("Undelivered text: {text}"), |path| format!("File {}", path.display()));
+                format!("{who} exited before your held send went in. {where_or_text}")
+            });
+            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            drop_it(&mut r);
+            if let Some(line) = line {
+                r.news.push((caller.clone(), line));
             }
+            drop(r);
+            crate::background::save();
             continue;
         }
         // One at a time per session, so they go in the order they came.
@@ -174,7 +191,7 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
         let typed = if going.is_some() {
             let going = spill_sent(&caller, &id, &text);
             mark_going_in(&id, &going, transcript_end(&id), Some((caller.as_str(), since)));
-            put_in(&caller, &id, &going, before, baseline)
+            put_in(&caller, &id, &going, before, baseline, key.as_deref(), reply)
         } else {
             Ok(None)
         };
@@ -247,14 +264,18 @@ pub(super) fn said_to(messages: &[Message], needle: &str) -> WentIn {
 /// What did not goes in as any held text. What cannot be told is not typed again
 /// either, and the sender is told: twice is what an agent cannot take back.
 pub(super) fn reconcile_held(pty: &crate::pty::PtyManager, id: &str) {
-    let marked: Vec<(String, String, GoingIn)> = {
+    let marked: Vec<_> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        r.held.iter().filter(|h| h.id == id).filter_map(|h| Some((h.caller.clone(), h.text.clone(), h.going_in.clone()?))).collect()
+        r.held
+            .iter()
+            .filter(|h| h.id == id)
+            .filter_map(|h| Some((h.caller.clone(), h.text.clone(), h.key.clone(), h.reply, h.going_in.clone()?)))
+            .collect()
     };
     if marked.is_empty() {
         return;
     }
-    for (caller, text, g) in marked {
+    for (caller, text, key, reply, g) in marked {
         let went = went_in(pty, id, &g);
         {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -269,7 +290,7 @@ pub(super) fn reconcile_held(pty: &crate::pty::PtyManager, id: &str) {
         }
         crate::log::warn("agents", &format!("text from {} to {} was going in as a core went: {went:?}", label(&caller), label(id)));
         if went != WentIn::No {
-            owe_cut_short(&caller, id, g.cursor, went == WentIn::CannotTell);
+            owe_cut_short(&caller, id, g.cursor, went == WentIn::CannotTell, &Asked { text: &g.needle, key: key.as_deref(), reply });
         }
     }
     crate::background::save();
@@ -277,10 +298,10 @@ pub(super) fn reconcile_held(pty: &crate::pty::PtyManager, id: &str) {
 
 /// `caller`'s text went in and its turn went with a core: as `take_up_chats` has it
 /// for a debt known as the core went, found out only now.
-fn owe_cut_short(caller: &str, id: &str, cursor: u64, unsure: bool) {
+fn owe_cut_short(caller: &str, id: &str, cursor: u64, unsure: bool, asked: &Asked) {
     let count = crate::activity::turns_counted(id).unwrap_or(0);
     seen(caller, id, count);
-    owe_from(caller, id, count, cursor);
+    owe_asked(caller, id, count, cursor, asked);
     if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&(caller.to_string(), id.to_string())) {
         o.cut_short = true;
         o.resumed = false;
@@ -332,7 +353,8 @@ mod tests {
     /// none held takes any.
     #[test]
     fn text_past_what_a_chat_may_have_held_is_refused() {
-        let held = |id: &str, text: String| Held { caller: "c".into(), id: id.into(), text, since: 1, going_in: None };
+        let held =
+            |id: &str, text: String| Held { caller: "c".into(), id: id.into(), text, since: 1, key: None, reply: true, going_in: None };
         assert_eq!(room_for(&[], "hb-chat", &"x".repeat(HELD_MAX + 1)), Ok(()));
         let now = vec![held("hb-chat", "x".repeat(HELD_MAX - 1)), held("hb-other", "y".repeat(HELD_MAX))];
         assert_eq!(room_for(&now, "hb-chat", "z"), Ok(()), "up to the bound");
@@ -342,7 +364,8 @@ mod tests {
 
     #[test]
     fn text_going_in_is_found_in_what_the_session_was_told() {
-        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let m =
+            |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, joined: false, final_answer: false };
         let needle = needle_of("[tag] carry on\n\nThese messages:\n\nthe held   text", "the held\ntext");
         assert_eq!(needle, "the held text", "words, however they are laid out");
         let told = [m("assistant", "the held text"), m("user", "[tag] carry on\n\nthe held\n text and more")];
@@ -362,6 +385,8 @@ mod tests {
             id: "gi-chat".into(),
             text: text.into(),
             since,
+            key: None,
+            reply: true,
             going_in: None,
         };
         reg().lock().unwrap().held.extend([held("gi-a", "first", 1), held("gi-b", "second", 2)]);
@@ -388,13 +413,14 @@ mod tests {
         crate::activity::keep_count("cs-chat", 3);
         // Back under this core, with a track to count on.
         crate::activity::on_hook("cs-chat", crate::activity::HookEvent::Gone);
-        owe_cut_short("cs-caller", "cs-chat", 55, true);
+        owe_cut_short("cs-caller", "cs-chat", 55, true, &Asked { text: "FYI", key: None, reply: false });
         let o = reg().lock().unwrap().owed[&("cs-caller".to_string(), "cs-chat".to_string())];
         assert!(o.cut_short && o.late && o.unsure && !o.resumed && o.baseline == 3 && o.cursor == 55);
         assert_eq!(crate::activity::turns_counted("cs-chat"), Some(4), "so its end reads as one");
+        assert!(o.no_reply, "restart preserves a held sends' reply intent");
         let (line, how) = notice_for("cs-caller", "cs-chat", 4);
         let line = line.unwrap();
-        assert!(matches!(how, Settled::Answered));
+        assert!(matches!(how, Settled::Failed));
         assert!(line.contains("did NOT finish") && line.contains("cannot tell whether your last message reached it"), "{line}");
         forget("cs-chat");
         crate::activity::forget("cs-chat");

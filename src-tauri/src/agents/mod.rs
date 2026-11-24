@@ -39,7 +39,7 @@ mod said;
 pub(crate) mod spawn;
 mod teardown;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 pub(crate) use test_support::sweep_includes;
 mod wait;
@@ -58,10 +58,9 @@ pub(crate) fn caller_worktree_for_test(caller: &str) -> Option<String> {
 }
 pub use list::{account_get, account_list, session_get, session_list, SessionQuery};
 pub use lost::undelivered_left;
-#[cfg(test)]
-pub(crate) use notifier::riders_go;
+pub(crate) use notifier::places_pending;
 pub use notifier::{notify, NOTICE_TAG};
-pub use owed::{callers_owed, moved_onto_stdin, resumed, retried};
+pub use owed::{callers_owed, moved_onto_stdin, resumed, retry_deliveries};
 pub use persist::{
     admit_shutdown, call_off_update, freeze_chats, freeze_for_update, newer_build, restore_chats, restore_update_stop, save_chats,
     stopped_for_update, take_up_spawns, thaw_chats, tie_back, ties_of_each, update_call_offs, window_came, Stop, Ties, Window,
@@ -69,6 +68,7 @@ pub use persist::{
 #[cfg(test)]
 pub(crate) use persist::{chats_frozen, stops_for_test};
 pub(crate) use persist::{of_retired_handoff, retired_opening, without_handed_off};
+pub(crate) use read::{observe_claude_switch, observe_transcript};
 pub use read::{read, report_get, Message};
 pub(crate) use registry::mint;
 #[cfg(test)]

@@ -6,7 +6,7 @@
 use crate::agents::ask::live;
 use crate::agents::notifier::system::skills_result;
 use crate::agents::notifier::usage::save_quota_told;
-use crate::agents::read::{transcript_path, transcripts};
+use crate::agents::read::{forget_transcript, transcript_path};
 use crate::agents::registry::{authorize, descendants, label, named, persons_chat_in, reg, top_of, Known, Registry};
 use crate::agents::said::replies_since;
 use crate::throttle::now_ms;
@@ -162,19 +162,35 @@ fn remove(id: &str, known: Known, _held: &crate::background::DeleteClaim) -> Res
     Ok(Removed { ok: true })
 }
 
+/// How long an unread answer delays auto-delete.
+pub(super) const UNREAD_ANSWER_MS: u64 = 24 * 60 * 60 * 1000;
+
+pub(super) fn unread_holds(o: &crate::agents::owed::Owed, now: u64) -> bool {
+    unread_until(o).or_else(|| o.wake.reconciling.then_some(o.wake.delivery_expired).flatten()).is_some_and(|until| now < until)
+}
+
+pub(super) fn unread_until(o: &crate::agents::owed::Owed) -> Option<u64> {
+    o.wake.unread_since.map(|since| since.saturating_add(UNREAD_ANSWER_MS))
+}
+
 /// Deletes the `autoDelete` helpers that are done with: nobody is owed their
 /// answer or waiting on them, nothing is owed to them, no helper of theirs is
 /// still there, nothing their turns left is still in their job, and they have
 /// sat idle — or exited — for AUTO_DELETE_IDLE_MS since. Its worktree stays,
 /// with whatever work is in it.
-pub(super) fn reap(pty: &crate::pty::PtyManager) {
+#[cfg(test)]
+fn reap(pty: &crate::pty::PtyManager) {
+    reap_with_losses(pty, &[]);
+}
+
+pub(super) fn reap_with_losses(pty: &crate::pty::PtyManager, losses: &[(String, String)]) {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.keys().cloned().collect();
     #[cfg(test)]
     let ids = ids.into_iter().filter(|id| crate::agents::sweep_includes(id)).collect();
-    reap_these(pty, ids);
+    reap_these(pty, ids, losses);
 }
 
-fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
+fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>, losses: &[(String, String)]) {
     for id in ids {
         // Not active by its record: between turns with nothing left running,
         // however long that has done nothing.
@@ -185,15 +201,24 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
         let helpers_there = below.iter().any(|k| live(pty, k));
         let known = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            let quiet = !helpers_there && !r.owed.iter().any(|((c, s), _)| *s == id || *c == id) && !r.waits.keys().any(|(_, s)| *s == id);
+            let quiet = !helpers_there
+                && !r.owed.iter().any(|((c, s), o)| o.active() && (*s == id || *c == id))
+                && !r.waits.keys().any(|(_, s)| *s == id)
+                && !losses.iter().any(|(caller, helper)| {
+                    helper == &id
+                        && super::notifier::owed_stands(&r.known, caller, &id, super::persist::core_up_ms())
+                        && r.owed.get(&(caller.clone(), id.clone())).is_none_or(|o| o.wake.delivery_expired.is_none())
+                });
+            let now = now_ms();
+            let unread = r.owed.iter().any(|((_, s), o)| *s == id && unread_holds(o, now));
             let known = r.known.get(&id).cloned();
             let Some(a) = r.auto.get_mut(&id) else { continue };
             if !(quiet && idle) {
                 a.idle_since = None;
                 continue;
             }
-            let since = *a.idle_since.get_or_insert(now_ms());
-            if now_ms().saturating_sub(since) < AUTO_DELETE_IDLE_MS {
+            let since = *a.idle_since.get_or_insert(now);
+            if unread || now.saturating_sub(since) < AUTO_DELETE_IDLE_MS {
                 continue;
             }
             a.deleting = true;
@@ -304,6 +329,8 @@ pub fn forget(id: &str) {
     r.requests.retain(|(who, chat), _| who != id && chat != id);
     r.notice_times.retain(|(who, chat), _| who != id && chat != id);
     r.stopped.retain(|(who, chat), _| who != id && chat != id);
+    r.failures_told.retain(|(who, chat), _| who != id && chat != id);
+    r.transcript_generations.remove(id);
     r.exits.remove(id);
     let told = r.quota_told.len();
     r.quota_told.retain(|(caller, _, _), _| caller != id);
@@ -313,7 +340,7 @@ pub fn forget(id: &str) {
     if quota_now {
         save_quota_told();
     }
-    transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    forget_transcript(id);
     if spawned {
         crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
     }
@@ -375,6 +402,37 @@ mod tests {
         reap(pty);
         assert_eq!(since(), None, "a follow-up starts it over");
         reg().lock().unwrap().auto.remove("ad-child");
+    }
+
+    #[test]
+    fn unread_silent_answers_hold_auto_delete_until_read_or_expired() {
+        for read in [true, false] {
+            let id = if read { "silent-auto-read" } else { "silent-auto-expired" };
+            let parent = "silent-auto-parent";
+            let key = (parent.to_string(), id.to_string());
+            register(id, Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some(parent), false, serde_json::json!({}));
+            owe_from(parent, id, 0, 0);
+            let debt = reg().lock().unwrap().owed[&key];
+            {
+                let mut r = reg().lock().unwrap();
+                r.auto.insert(id.into(), Auto { idle_since: Some(0), ..Auto::default() });
+                super::super::notifier::settle_told(&mut r, key.clone(), super::super::notifier::Settled::Silent(1, true), &debt);
+            }
+            let pty = crate::pty::manager();
+            reap_these(pty, vec![id.into()], &[]);
+            assert!(reg().lock().unwrap().known.contains_key(id), "unread answer is retained");
+            if read {
+                let undo = super::super::owed::read_silent(parent, id, debt.rev, debt.transcript_rev).expect("answer read");
+                undo();
+                reap_these(pty, vec![id.into()], &[]);
+                assert!(reg().lock().unwrap().known.contains_key(id), "a canceled read restores retention");
+                let _ = super::super::owed::read_silent(parent, id, debt.rev, debt.transcript_rev).expect("answer read again");
+            } else {
+                reg().lock().unwrap().owed.get_mut(&key).unwrap().wake.unread_since = Some(0);
+            }
+            reap_these(pty, vec![id.into()], &[]);
+            assert!(!reg().lock().unwrap().known.contains_key(id), "delete after read or expiry");
+        }
     }
 
     /// An `autoDelete` helper with something its turns left still in its job is

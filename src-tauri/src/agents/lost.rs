@@ -37,9 +37,9 @@ pub(super) struct Undelivered {
     pub(super) queued: Vec<crate::background::Queued>,
 }
 
-/// Takes off what `undelivered_for` gives, `caller` having been told.
-pub(super) fn take_undelivered(id: &str, caller: &str, parent: bool) -> Undelivered {
-    Undelivered { queued: crate::background::take_undelivered_for(id, caller, parent) }
+/// Takes off the queued losses the caller was told.
+pub(super) fn take_undelivered_ids(id: &str, caller: &str, parent: bool, ids: Option<&[String]>) -> Undelivered {
+    Undelivered { queued: crate::background::take_undelivered_for(id, caller, parent, ids) }
 }
 
 pub(super) fn put_undelivered_back(id: &str, taken: Undelivered) {
@@ -92,18 +92,34 @@ pub(super) fn undelivered_line(lost: &[String], after_answer: bool, file: Option
     }
 }
 
+/// The same for a notice with no file to name: the words themselves, on one
+/// line and cut to what a notice should cost, a share of that for each so that
+/// a long one hides no other.
+pub(super) fn undelivered_inline(lost: &[String]) -> String {
+    const MOST: usize = 2000;
+    let share = MOST / lost.len().max(1);
+    let said = lost.iter().map(|text| {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat: String = flat.chars().filter(|c| !c.is_control()).collect();
+        let shown: String = flat.chars().take(share).collect();
+        let cut = if shown.len() < flat.len() { "… (cut)" } else { "" };
+        format!("\"{shown}{cut}\"")
+    });
+    format!(" Not delivered: {} queued for it; send again what still matters: {}", count_of(lost), said.collect::<Vec<_>>().join(", "))
+}
+
 /// The same for a tool result: where they are, or them, cut as any words are
 /// that one result carries, should no file take them. Only what `caller` itself
 /// is to hear of.
-pub(super) fn undelivered_note(caller: &str, id: &str) -> Option<String> {
+pub(super) fn undelivered_note(caller: &str, id: &str) -> (Option<String>, Vec<String>) {
     let parent = parent_of(id).as_deref() == Some(caller);
-    let lost = undelivered_for(id, caller, parent);
+    let (ids, lost): (Vec<_>, Vec<_>) = crate::background::undelivered_snapshot(id, caller, parent).into_iter().unzip();
     if lost.is_empty() {
-        return None;
+        return (None, ids);
     }
     let text = undelivered_text(&lost);
     let whole = lost_whole(caller, id);
-    Some(match note_file(id, &text) {
+    let note = match note_file(id, &text) {
         Some(path) if whole => {
             format!(
                 "It never got started: Luna's core restarted before its first turn got anywhere; {}. Send again what still matters.",
@@ -112,7 +128,8 @@ pub(super) fn undelivered_note(caller: &str, id: &str) -> Option<String> {
         }
         Some(path) => undelivered_line(&lost, false, Some(&path)).trim_start().to_string(),
         None => text.chars().take(MAX_TEXT).collect::<String>(),
-    })
+    };
+    (Some(note), ids)
 }
 
 /// How a notice says what it gives back of a helper that never got started.
@@ -168,8 +185,8 @@ mod tests {
         let held = std::fs::read_to_string(file).unwrap();
         let _ = std::fs::remove_file(file);
         assert!(held.contains("b's words") && !held.contains("a's private"), "{held}");
-        assert!(undelivered_note("qs-nobody", "qs-child").is_none(), "another reader hears nothing of it");
-        assert!(undelivered_note("qs-parent", "qs-child").is_none(), "nor does its parent, of what others sent");
+        assert!(undelivered_note("qs-nobody", "qs-child").0.is_none(), "another reader hears nothing of it");
+        assert!(undelivered_note("qs-parent", "qs-child").0.is_none(), "nor does its parent, of what others sent");
 
         // Handed over, it is gone; a cancel crossing the response brings it back.
         let of_a = || crate::background::undelivered_for("qs-child", "qs-a", false);

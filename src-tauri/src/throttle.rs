@@ -26,7 +26,28 @@ fn map() -> &'static Mutex<HashMap<String, Throttle>> {
 }
 
 pub fn now_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = TEST_TIME.with(std::cell::Cell::get) {
+        return now;
+    }
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_TIME: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn at_time_for_test<T>(now: u64, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<u64>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_TIME.with(|clock| clock.set(self.0));
+        }
+    }
+    let _restore = Restore(TEST_TIME.with(|clock| clock.replace(Some(now))));
+    run()
 }
 
 /// Seconds left of a hold on this key, if one is in force.

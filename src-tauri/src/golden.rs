@@ -325,7 +325,7 @@ pub(crate) fn claude_chat_settings() -> serde_json::Value {
     let only = |matcher: &str| serde_json::json!([{ "matcher": matcher, "hooks": [handler] }]);
     settings["hooks"] = serde_json::json!({
         "UserPromptSubmit": hook, "PostToolUse": hook, "Stop": hook, "StopFailure": hook,
-        "Notification": only("permission_prompt|elicitation_dialog"), "SessionEnd": hook, "PermissionRequest": hook,
+        "Notification": only("permission_prompt|elicitation_dialog"), "SessionEnd": hook, "PermissionRequest": hook, "SessionStart": hook,
         "SubagentStart": hook, "SubagentStop": hook,
         "PreToolUse": only("AskUserQuestion"),
     });

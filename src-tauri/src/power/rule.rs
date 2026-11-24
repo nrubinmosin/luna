@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// Whether a rule is held up: by an active session (`Life::active`, not known
 /// included), or by an agent's call that may yet start one.
 fn held_up(st: &State, summary: &Summary) -> bool {
-    summary.busy > 0 || st.admitted > 0
+    summary.busy > 0 || st.admitted > 0 || crate::agents::places_pending(&summary.sessions)
 }
 
 /// The last activity a board says, a board made before any read being no
@@ -455,24 +455,64 @@ mod tests {
 
     const END: u64 = 60_000 + COUNTDOWN_MS;
 
-    /// A line held for a notice to ride with (agents/notifier/mod.rs `riders_go`) keeps its
-    /// debt open, which is nothing to a power-off: whatever lets one start counting
-    /// lets the line through that gate first, and the turn it starts cancels the
-    /// count. Only that gate: a line a draft holds back does not stop a count.
     #[test]
-    fn a_power_off_does_not_go_ahead_of_a_line_held_back() {
-        let mut st = armed(Action::Shutdown, 0);
-        let now = 1_000_000;
-        let (fresh, rest_owed) = (now - 30_000, false);
-        // Someone at work: nothing fires, and the line may wait.
-        let at_work = board(1, None);
-        assert!(!advance(&mut st, false, &at_work, at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
-        assert!(!crate::agents::riders_go(false, rest_owed, fresh, now, at_work.busy));
-        // All quiet: the count starts, and the line is free to go.
-        let quiet = board(0, Some(now - 1000));
-        assert!(advance(&mut st, false, &quiet, at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
-        assert!(crate::agents::riders_go(false, rest_owed, fresh, now, quiet.busy));
-        assert_eq!(advance(&mut st, false, &at_work, at(now + 1000)), vec![Effect::Canceled], "and its caller's turn stops the count");
+    fn an_unread_answer_allows_countdown_but_a_place_refusal_holds_it() {
+        use crate::activity::{Life, Phase, SessionLife};
+        use crate::agents::{
+            forget, register,
+            test_support::{
+                claim_refusal_for_test, expire_refusal_for_test, notifier_tick_for_test, refusal_for_power_test,
+                silent_answer_for_power_test,
+            },
+        };
+        use crate::provider::Provider;
+        let (chat, lead) = ("power-refusal-chat", "power-refusal-lead");
+        register(chat, Provider::Claude, "C:/p", "C:/acc/one", None, true, serde_json::json!({}));
+        register(lead, Provider::Claude, "C:/p", "C:/acc/one", Some(chat), true, serde_json::json!({"background": true}));
+        silent_answer_for_power_test(chat, lead);
+        let summary = Summary::of(vec![SessionLife::of(chat, Life { phase: Phase::Ended, ..Life::default() })], at(0));
+        let now = at(1_000);
+        let countdown =
+            || advance(&mut armed(Action::Shutdown, 0), false, &summary, now).iter().any(|e| matches!(e, Effect::Countdown { .. }));
+        let terminal = crate::pty::notice_terminal(chat, Provider::Codex, false);
+        assert!(countdown(), "unread answers are not active");
+        let (lock, gate, clock) = due();
+        let mut claim = None;
+        let fresh = || {
+            refusal_for_power_test(lead);
+            claim = Some(claim_refusal_for_test(chat));
+            crate::pty::manager().set_draft(chat, 1);
+            summary.clone()
+        };
+        let (state, _, result) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || at(0), || clock);
+        assert_eq!(result, Effect::Canceled, "the notifier claimed the refusal but has not entered power admission");
+        drop(state);
+        crate::pty::manager().set_draft(chat, 0);
+        drop(claim);
+        assert!(!countdown(), "a live top chat can still take the refusal");
+        notifier_tick_for_test(chat);
+        assert!(terminal.input.try_iter().collect::<String>().contains("No place was left"));
+        assert!(countdown(), "the notifier delivered it");
+        refusal_for_power_test(lead);
+        crate::pty::manager().set_draft(chat, 1);
+        notifier_tick_for_test(chat);
+        assert!(terminal.input.try_recv().is_err() && countdown(), "the draft holds the notice only");
+        crate::pty::manager().set_draft(chat, 0);
+        expire_refusal_for_test(chat);
+        assert!(countdown(), "the hold has a deadline");
+        drop(terminal);
+        notifier_tick_for_test(chat);
+        let terminal = crate::pty::notice_terminal(chat, Provider::Codex, false);
+        assert!(countdown(), "a closed chat's refusal expired");
+        notifier_tick_for_test(chat);
+        assert!(terminal.input.try_recv().is_err());
+        refusal_for_power_test(lead);
+        forget(lead);
+        assert!(countdown(), "the line has no chat to notify for this refusal");
+        notifier_tick_for_test(chat);
+        assert!(terminal.input.try_recv().is_err());
+        forget(chat);
+        crate::activity::forget(chat);
     }
 
     #[test]

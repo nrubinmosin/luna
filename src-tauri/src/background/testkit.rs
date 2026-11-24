@@ -52,6 +52,17 @@ pub fn queue_for_test(id: &str, text: &str) {
     lock().entries.get_mut(id).unwrap().queue.push(Queued::from(text));
 }
 
+#[cfg(test)]
+pub fn fail_next_launch_for_test(id: &str, queued: Queued) {
+    lock().entries.get_mut(id).unwrap().queue.push(queued);
+    fail_queued_launch_for_test(id);
+}
+
+#[cfg(test)]
+pub(crate) fn fail_queued_launch_for_test(id: &str) {
+    turn_over_with(id, Some(0), |id, _| run_turn_with(id, None, || Err("Launch failed before the prompt opened".into())));
+}
+
 /// A turn begins on what is queued, as `turn_over` starts the next.
 #[cfg(test)]
 pub fn start_queued_for_test(id: &str) {
@@ -285,6 +296,11 @@ pub(crate) fn in_turn_for_test(id: &str) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn acknowledge_delivery_for_test(id: &str, q: &Queued) {
+    received(lock().entries.get_mut(id).expect("a test helper"), q);
+}
+
 /// A test helper in a turn that has said nothing for `quiet` ms.
 #[cfg(test)]
 pub(crate) fn quiet_for_test(id: &str, quiet: u64) {
@@ -333,6 +349,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         in_flight: Vec::new(),
         fed: Vec::new(),
         drained: Vec::new(),
+        received: Default::default(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         calls: VecDeque::new(),
@@ -404,6 +421,7 @@ pub(super) fn entry(provider: Provider) -> Entry {
         in_flight: Vec::new(),
         fed: Vec::new(),
         drained: Vec::new(),
+        received: Default::default(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         calls: VecDeque::new(),

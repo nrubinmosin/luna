@@ -180,6 +180,10 @@ pub(super) struct Observed {
     /// started later tells a cut turn its own way (`cut_short`).
     #[serde(skip)]
     pub(super) stopped: Option<(u32, String)>,
+    /// The turn failed before opening the batch's prompt. The batch's
+    /// undelivered IDs carry its outcome across a core restart.
+    #[serde(skip)]
+    pub(super) unopened: Option<u32>,
     /// Which turn this is, for what is read of the last one once it is over.
     #[serde(skip)]
     pub(super) generation: u64,
