@@ -56,7 +56,7 @@ pub(super) fn owed_chat(id: &str, caller: &str, baseline: u32, cursor: u64) -> S
 }
 
 pub(super) fn take_up(chats: Vec<SavedChat>, sends: Vec<SavedSend>, spawns: Vec<SpawnTaken>) {
-    let saved = SavedChats { chats, sends, spawns, news: Vec::new(), no_handoff: true };
+    let saved = SavedChats { chats, sends, spawns, no_handoff: true, ..SavedChats::default() };
     take_up_chats(serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap());
 }
 
