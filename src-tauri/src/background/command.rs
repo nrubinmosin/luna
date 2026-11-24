@@ -196,7 +196,7 @@ pub(super) fn command_and_open(
             // The folders' skills as a plugin of this helper's own, made afresh
             // every turn (library/session_plugin.rs) once nothing that can
             // refuse the turn is left; a turn whose plugin will not write runs
-            // without them, said in what it applied and to its parent
+            // without them, said in what it applied and to its top chat
             // (`background/run.rs`).
             let skills_off = crate::library::give_plugins(id, &mut skills).err();
             args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);

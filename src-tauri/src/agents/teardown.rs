@@ -294,7 +294,7 @@ pub fn forget(id: &str) {
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
     r.places_refused.remove(id);
-    r.system_news.retain(|n| n.chat != id && !n.about(id));
+    r.system_news.retain(|n| !n.about(id));
     r.hook_asks.remove(id);
     r.notice_turns.remove(id);
     r.woken.remove(id);

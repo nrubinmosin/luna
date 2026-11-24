@@ -139,6 +139,7 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     r.answered.retain(|(_, s), _| s != id);
     r.notice_times.retain(|(_, s), _| s != id);
     r.stopped.retain(|(_, s), _| s != id);
+    r.system_news.retain(|n| !n.about(id));
     // What only a helper has: nothing deletes it now but the person.
     r.auto.remove(id);
     // Its token goes with it: from here on it would pass for a person's chat,

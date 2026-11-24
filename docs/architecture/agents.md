@@ -711,13 +711,14 @@ turn, stopped on a prompt (once per stop) or exited.
 - **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller,
   session) pair (`BREAKER_NOTICES`), that pair's turn and job news stops. A
   chat caller hears in the last notice. A lead gets a short warning in
-  that notice and its top chat gets the details. The log warns, the desktop is told once, and a person
+  that notice and its top chat gets the details while the breaker is active.
+  A core restart clears the breaker and any pending trip details. The log
+  warns, the desktop is told once, and a person
   typing into either chat lifts it. Prompts, questions and exits still come
   (`standing_line`).
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
-  window (`<data>/quota-told.json`). `quota_due` uses the same lineage as
-  `quota_news`. Breaker lines, folder-skills failures and places notices
+  window (`<data>/quota-told.json`). Breaker lines, folder-skills failures and places notices
   also go to the top chat. Folder-skills news is told once until the cause
   changes or clears. News can wait for a top chat to register after a restart.
   With no chat above the delegates there is no recipient. Leads

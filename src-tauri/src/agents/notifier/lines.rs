@@ -3,7 +3,6 @@
 
 use crate::agents::ask::{ask_of, live};
 use crate::agents::lost::{never_started_what, sentence, undelivered_for, undelivered_line, undelivered_text};
-use crate::agents::notifier::usage::quota_due;
 use crate::agents::notifier::Settled;
 use crate::agents::owed::requests_of;
 use crate::agents::owed::{Owed, QUEUED_GRACE_MS};
@@ -616,7 +615,7 @@ pub(in crate::agents) fn notice_line(
         // Too short a turn for a notice of its own in between.
         let resumed = if o.resumed { " [resumed after core restart]" } else { "" };
         // A cut-off line already says a send has it carry on.
-        let idle = if parent && stopped.is_empty() && alive && runs_nothing(pty, id, caller, ts) { NOTHING_RUNNING } else { "" };
+        let idle = if parent && stopped.is_empty() && alive && runs_nothing(id, caller, ts) { NOTHING_RUNNING } else { "" };
         return Some((Some(format!("{who} finished its turn{reply}.{idle}{stopped}{lost}{resumed}{unsure}")), Settled::Answered));
     }
     // A turn gone quiet is told once, and once more if it then answers and
@@ -660,24 +659,19 @@ const NOTHING_RUNNING: &str = " [idle; send to resume]";
 /// (`news`) or a spawn a core's going cut off. Usage and places news can
 /// wake a top chat only. Each is read as it stands when the notice is made.
 /// Only the work Luna sees counts.
-fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option<crate::activity::TurnState>) -> bool {
+fn runs_nothing(id: &str, caller: &str, ts: Option<crate::activity::TurnState>) -> bool {
     if !ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy) {
         return false;
     }
     if crate::background::has_work(id) {
         return false;
     }
-    let quiet = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        !r.owed.keys().any(|(c, h)| c == id && h != caller)
-            && !r.waits.keys().chain(r.reserved.keys()).any(|(c, _)| c == id)
-            && !r.held.iter().any(|h| h.id == id)
-            && !r.news.iter().any(|(c, _)| c == id)
-            && !r.spawns.values().any(|s| s.caller == id && (s.left_by_core || s.news.is_some()))
-            && !r.places_refused.contains_key(id)
-    };
-    // Quota checks whether delegates are live off the registry's lock.
-    quiet && !quota_due(pty, id)
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    !r.owed.keys().any(|(c, h)| c == id && h != caller)
+        && !r.waits.keys().chain(r.reserved.keys()).any(|(c, _)| c == id)
+        && !r.held.iter().any(|h| h.id == id)
+        && !r.news.iter().any(|(c, _)| c == id)
+        && !r.spawns.values().any(|s| s.caller == id && (s.left_by_core || s.news.is_some()))
 }
 
 /// What a notice says of a helper whose CLI stopped what its last turn left in
@@ -2416,7 +2410,6 @@ mod tests {
         let (top, id, other) = ("rn-top", "rn-lead", "rn-other");
         let state = |turn, children_busy| Some(TurnState { turn, busy: turn == Turn::Busy, turns_ended: 1, children_busy });
         let idle = state(Turn::Idle, false);
-        let pty = crate::pty::manager();
         let account = "C:\\acc\\anthropic\\one";
         for s in [top, other] {
             register(s, Provider::Claude, "C:\\p", account, None, false, serde_json::json!({}));
@@ -2424,12 +2417,12 @@ mod tests {
         register(id, Provider::Claude, "C:\\p", account, Some(top), true, serde_json::json!({ "background": true }));
         let fresh = || crate::background::idle_for_test(id, Provider::Claude, 1, false);
         let key = |c: &str| (id.to_string(), c.to_string());
-        let stops = |what: &str| assert!(!runs_nothing(pty, id, top, idle), "{what}");
+        let stops = |what: &str| assert!(!runs_nothing(id, top, idle), "{what}");
         fresh();
-        assert!(runs_nothing(pty, id, top, idle), "nothing at all");
-        assert!(!runs_nothing(pty, id, top, None), "no state: not known to be idle");
-        assert!(!runs_nothing(pty, id, top, state(Turn::Busy, false)), "a turn runs");
-        assert!(!runs_nothing(pty, id, top, state(Turn::Idle, true)), "a job or subagent its turns left runs");
+        assert!(runs_nothing(id, top, idle), "nothing at all");
+        assert!(!runs_nothing(id, top, None), "no state: not known to be idle");
+        assert!(!runs_nothing(id, top, state(Turn::Busy, false)), "a turn runs");
+        assert!(!runs_nothing(id, top, state(Turn::Idle, true)), "a job or subagent its turns left runs");
         // What its record in the background holds for it.
         crate::background::set_running_for_test(id);
         stops("a process of its own runs");
@@ -2442,7 +2435,7 @@ mod tests {
         crate::background::hold_for_test(id);
         stops("it holds on a permission");
         fresh();
-        assert!(runs_nothing(pty, id, top, idle));
+        assert!(runs_nothing(id, top, idle));
         // What the registry holds for it.
         reg().lock().unwrap().held.push(Held { caller: other.into(), id: id.into(), text: "x".into(), since: 0, going_in: None });
         stops("text held back for a draft");
@@ -2460,12 +2453,12 @@ mod tests {
         let sub = "rn-sub";
         register(sub, Provider::Claude, "C:\\p", "C:/acc/anthropic/rn-acc", Some(id), false, serde_json::json!({}));
         crate::background::idle_for_test(sub, Provider::Claude, 1, false);
-        assert!(runs_nothing(pty, id, top, idle), "an idle helper of its own, nothing to say of it");
+        assert!(runs_nothing(id, top, idle), "an idle helper of its own, nothing to say of it");
         let window = |pct: f64| serde_json::json!({ "limits": [{ "label": "5h", "usedPct": pct }] });
         reg().lock().unwrap().usage.insert("claude/rn-acc".into(), window(95.0));
-        assert!(runs_nothing(pty, id, top, idle), "only the top chat hears quota");
+        assert!(runs_nothing(id, top, idle), "only the top chat hears quota");
         reg().lock().unwrap().usage.insert("claude/rn-acc".into(), window(40.0));
-        assert!(runs_nothing(pty, id, top, idle), "a window below every level");
+        assert!(runs_nothing(id, top, idle), "a window below every level");
         reg().lock().unwrap().usage.remove("claude/rn-acc");
         crate::background::gone_for_test(sub);
         forget(sub);
@@ -2474,18 +2467,14 @@ mod tests {
         reg().lock().unwrap().spawns.insert(cut.request, cut);
         stops("a spawn a core's going cut off, to be told");
         reg().lock().unwrap().spawns.remove(&9_177_001);
-        let places = crate::agents::spawn::PlacesRefused { since: 0, who: vec!["x".into()] };
-        reg().lock().unwrap().places_refused.insert(id.into(), places);
-        stops("a place refused below it, to be told");
-        reg().lock().unwrap().places_refused.remove(id);
-        assert!(runs_nothing(pty, id, top, idle));
+        assert!(runs_nothing(id, top, idle));
         owe_from(id, other, 0, 0);
         stops("an answer owed to it by a session it wrote to");
         reg().lock().unwrap().owed.remove(&key(other));
         owe_from(id, top, 0, 0);
-        assert!(runs_nothing(pty, id, top, idle), "an answer owed to it by the caller is the caller's to send");
+        assert!(runs_nothing(id, top, idle), "an answer owed to it by the caller is the caller's to send");
         reg().lock().unwrap().owed.remove(&key(top));
-        assert!(runs_nothing(pty, id, top, idle));
+        assert!(runs_nothing(id, top, idle));
         crate::background::gone_for_test(id);
         for s in [id, top, other] {
             forget(s);

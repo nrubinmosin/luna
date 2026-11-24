@@ -116,30 +116,6 @@ fn accounts_below(r: &Registry) -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// Whether `caller` has a usage window to hear of (`quota_news`) by the usage
-/// as it stands now, not as the notifier's last look read it: what the window
-/// has published since is said at its next look, and wakes the caller.
-pub(in crate::agents) fn quota_due(pty: &crate::pty::PtyManager, caller: &str) -> bool {
-    let (windows, helpers) = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        if !persons_chat_in(&r, caller) {
-            return false;
-        }
-        let below: Vec<(String, String)> = accounts_below(&r).into_iter().filter(|(c, ..)| c == caller).map(|(_, a, h)| (a, h)).collect();
-        (windows_of(&r), below)
-    };
-    // Off the registry's lock, as `quota_news` asks.
-    let accounts: Vec<String> = helpers.into_iter().filter(|(_, h)| live(pty, h)).map(|(a, _)| a).collect();
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let now = now_ms();
-    accounts.iter().any(|account| {
-        windows.get(account).into_iter().flatten().any(|(label, pct, resets_at)| {
-            let key = (caller.to_string(), account.clone(), label.clone());
-            quota_step(r.quota_told.get(&key), *pct, resets_at.as_deref(), now).1
-        })
-    })
-}
-
 /// A usage window a caller is yet to hear of.
 pub(in crate::agents) struct QuotaNews {
     pub(in crate::agents) key: (String, String, String),
@@ -266,7 +242,7 @@ mod tests {
         };
         set(92);
         assert!(!quota_news(pty).values().flatten().any(|n| n.key.1 == "claude/qn-hot"), "the top is missing");
-        assert!(!quota_due(pty, "qn-mid"));
+
         register("qn-top", Provider::Claude, "C:/p", top_acc, None, true, none);
         let old = ("qn-mid".into(), "claude/qn-hot".into(), "week".into());
         reg().lock().unwrap().quota_told.insert(old, QuotaTold { level: 95, resets_at: None });
@@ -276,13 +252,11 @@ mod tests {
         let mut news = quota_news(pty);
         for delegate in ["qn-mid", "qn-lead", "qn-low", "qn-peer"] {
             assert!(!news.contains_key(delegate));
-            assert!(!quota_due(pty, delegate));
         }
         let lines = &news["qn-top"];
         assert_eq!(lines.len(), 1, "one shared delegate account, excluding the chat's own and the dead delegate's");
         assert_eq!(lines[0].key.1, "claude/qn-hot");
         assert!(lines[0].line.contains("has used 92% of its \"week\" window"), "{}", lines[0].line);
-        assert!(quota_due(pty, "qn-top"));
         assert!(!reg().lock().unwrap().quota_told.keys().any(|(c, _, _)| c == "qn-mid"));
 
         // Not told until the notice has gone in: asked again until it has.
@@ -291,7 +265,7 @@ mod tests {
             reg().lock().unwrap().quota_told.insert(n.key, n.told);
         }
         assert!(!quota_news(pty).contains_key("qn-top"), "once");
-        assert!(!quota_due(pty, "qn-top"));
+
         set(96);
         assert_eq!(quota_news(pty)["qn-top"][0].told.level, 95, "the next level");
         forget("qn-top");
