@@ -1122,6 +1122,10 @@ mod tests {
         let (a, b) = ("pp-a", "pp-b");
         let key = |caller: &str, id: &str| (caller.to_string(), id.to_string());
         let mut turns: HashMap<&str, u32> = HashMap::from([(a, 1), (b, 1)]);
+        // The notifier sweep in another test drops debts of unknown chats.
+        for id in [a, b] {
+            register(id, Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, serde_json::json!({}));
+        }
         owe_from(a, b, 0, 0);
         owe_from(b, a, 0, 0);
         let mut notices = 0;
