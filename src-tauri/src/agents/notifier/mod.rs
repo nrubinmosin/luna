@@ -762,10 +762,10 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
         }
         let Some(turn) = crate::activity::turn_state(id) else { continue };
         let busy = turn.turn == crate::activity::Turn::Busy;
-        let late_status = o.late_transcript_cursor().filter(|(checked, _)| *checked <= turn.turns_ended).and_then(|(checked, from)| {
-            (busy || turn.turn == crate::activity::Turn::Idle)
-                .then(|| lines::status_after(pty, id, provider, from, busy || checked < turn.turns_ended))
-                .flatten()
+        let late = o.late_transcript_cursor().filter(|(checked, _)| *checked <= turn.turns_ended);
+        let bounded = late.is_some_and(|(checked, _)| busy || checked < turn.turns_ended);
+        let late_status = late.and_then(|(_, from)| {
+            (busy || turn.turn == crate::activity::Turn::Idle).then(|| lines::status_after(pty, id, provider, from, bounded)).flatten()
         });
         let end = if let Some(end) = late_status {
             end
@@ -780,9 +780,9 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
             }
             end
         };
-        // A late status is bounded by the next prompt, so a turn that has since
-        // ended or begun takes nothing from it.
-        if late_status.is_none()
+        // A late status read up to the next prompt is of the turn before it,
+        // whatever has begun or ended since.
+        if !(bounded && late_status.is_some())
             && crate::activity::turn_state(id).is_none_or(|now| now.turn != turn.turn || now.turns_ended != turn.turns_ended)
         {
             continue;

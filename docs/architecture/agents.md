@@ -751,7 +751,8 @@ turn, stopped on a prompt (once per stop) or exited.
   breaker lifts. Other failures count toward the breaker. A loss-only notice
   counts once for the IDs it acknowledges, with the same allowance for the
   first failure after a trip. If its report file cannot be written, the
-  notice carries the text itself, up to 2000 characters.
+  notice carries the text itself: up to 2000 characters, shared evenly
+  among the messages.
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
   window (`<data>/quota-told.json`). Breaker lines, folder-skills failures and places notices

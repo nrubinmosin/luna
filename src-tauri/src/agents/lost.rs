@@ -93,14 +93,19 @@ pub(super) fn undelivered_line(lost: &[String], after_answer: bool, file: Option
 }
 
 /// The same for a notice with no file to name: the words themselves, on one
-/// line and cut to what a notice should cost.
+/// line and cut to what a notice should cost, a share of that for each so that
+/// a long one hides no other.
 pub(super) fn undelivered_inline(lost: &[String]) -> String {
     const MOST: usize = 2000;
-    let flat = lost.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
-    let flat: String = flat.chars().filter(|c| !c.is_control()).collect();
-    let shown: String = flat.chars().take(MOST).collect();
-    let cut = if shown.len() < flat.len() { "… (cut)" } else { "" };
-    format!(" Not delivered: {} queued for it; send again what still matters: \"{shown}{cut}\"", count_of(lost))
+    let share = MOST / lost.len().max(1);
+    let said = lost.iter().map(|text| {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat: String = flat.chars().filter(|c| !c.is_control()).collect();
+        let shown: String = flat.chars().take(share).collect();
+        let cut = if shown.len() < flat.len() { "… (cut)" } else { "" };
+        format!("\"{shown}{cut}\"")
+    });
+    format!(" Not delivered: {} queued for it; send again what still matters: {}", count_of(lost), said.collect::<Vec<_>>().join(", "))
 }
 
 /// The same for a tool result: where they are, or them, cut as any words are
