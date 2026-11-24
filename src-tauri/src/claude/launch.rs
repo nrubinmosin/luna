@@ -617,7 +617,10 @@ mod tests {
         };
         let settings = claude_settings(Some(found), &none, "/d/core", None);
         let hooks = settings["hooks"].as_object().unwrap();
-        assert_eq!(hooks.len(), 10);
+        assert_eq!(hooks.len(), 11);
+        assert!(hooks.contains_key("SessionStart"), "a chat observes transcript switches before the next prompt");
+        let helper = claude_settings(Some(found), &none, "/d/core", Some(HelperSettings { connectors: false }));
+        assert!(helper["hooks"].get("SessionStart").is_none(), "background helpers report their transcript in their stream");
         assert_eq!(hooks["Notification"][0]["matcher"], "permission_prompt|elicitation_dialog");
         assert_eq!(hooks["PreToolUse"][0]["matcher"], "AskUserQuestion");
         let prefix = if cfg!(windows) { "" } else { "exec >/dev/null 2>&1; " };
