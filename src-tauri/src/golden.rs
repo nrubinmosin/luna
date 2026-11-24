@@ -82,7 +82,7 @@ impl Redact {
         let git: Vec<(String, String)> =
             envs.iter().filter(|(k, _)| k.starts_with("GIT_CONFIG_")).map(|(k, v)| (k.to_string(), v.clone())).collect();
         if !git.is_empty() {
-            assert_eq!(git, git_ssl_backend(), "git's entries: those this process has, then the backend");
+            assert!(git == git_ssl_backend(), "git's entries: those this process has, then the backend");
         }
         let mut out = Vec::new();
         for (k, v) in envs {
@@ -91,8 +91,12 @@ impl Redact {
                     assert_eq!(crate::agents::caller_of(v).as_deref(), Some(self.id.as_str()), "the token is this session's");
                     "<token>".to_string()
                 }
+                crate::codex::hooks::HOOK_URL_ENV => {
+                    assert!(self.texts.iter().any(|(from, to)| to == "<hook-url>" && from == v), "the hook URL is this chat's");
+                    "<hook-url>".to_string()
+                }
                 "PATH" => {
-                    assert_eq!(*v, sandbox_path(), "this process's PATH, the Store's app aliases left out");
+                    assert!(*v == sandbox_path(), "this process's PATH, the Store's app aliases left out");
                     "<sandbox-path>".to_string()
                 }
                 k if k.starts_with("GIT_CONFIG_") => {
@@ -124,7 +128,7 @@ impl Redact {
             .map(|a| {
                 assert!(token.as_ref().is_none_or(|t| !a.value.contains(t.as_str())), "{}: the token is not shown", a.key);
                 for url in &urls {
-                    assert!(!a.value.contains(url.as_str()), "{}: no hub URL is shown: {}", a.key, a.value);
+                    assert!(!a.value.contains(url.as_str()), "{}: no hub URL is shown", a.key);
                 }
                 (a.key.to_string(), a.class, self.text(&a.value))
             })
@@ -135,9 +139,7 @@ impl Redact {
     /// of `args` (cli/probe.rs), so a version that dropped one never becomes
     /// current.
     pub(crate) fn assert_probed(provider: crate::provider::Provider, args: &[String]) {
-        if let Err(e) = crate::cli::probe_covers(provider, args) {
-            panic!("{e}");
-        }
+        assert!(crate::cli::probe_covers(provider, args).is_ok(), "the offline probe covers the {provider:?} launch");
     }
 
     /// That what was applied shows the whole process as it runs, so the two
@@ -157,14 +159,16 @@ impl Redact {
                 "-c" => {
                     let value = args.get(i + 1).map(String::as_str).unwrap_or_default();
                     let key = value.split('=').next().unwrap_or_default();
-                    assert!(shown(key), "-c {key} is not among what was applied: {applied:#?}");
+                    assert!(shown(key), "override at argument {i} is missing from applied settings");
                     i += 1;
                 }
-                flag if flag.starts_with('-') && flag.contains('=') => assert!(shown(flag), "{flag} not shown: {applied:#?}"),
+                flag if flag.starts_with('-') && flag.contains('=') => {
+                    assert!(shown(flag), "flag at argument {i} is missing from applied settings");
+                }
                 flag if flag.starts_with('-') => {
-                    assert!(shown(flag), "{flag} not shown: {applied:#?}");
+                    assert!(shown(flag), "flag at argument {i} is missing from applied settings");
                     if let Some(value) = args.get(i + 1).filter(|v| !v.starts_with('-')) {
-                        assert!(shown(value), "{flag}'s value {value} not shown: {applied:#?}");
+                        assert!(shown(value), "value after argument {i} is missing from applied settings");
                         i += 1;
                     }
                 }
@@ -173,9 +177,9 @@ impl Redact {
             i += 1;
         }
         for (k, _) in envs {
-            assert!(shown(k), "{k} is set and not shown: {applied:#?}");
+            assert!(shown(k), "{k} is missing from applied settings");
         }
-        assert!(shown(cwd), "the folder it starts in, {cwd}, is not shown: {applied:#?}");
+        assert!(shown(cwd), "the launch folder is missing from applied settings");
     }
 
     /// A JSON file a start wrote, placeholders in.
@@ -310,29 +314,27 @@ pub(crate) fn pairs(envs: &[(&str, &str)]) -> Vec<(String, String)> {
     envs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
-/// The curl a Claude Code hook runs, by name.
-pub(crate) fn claude_curl() -> &'static str {
-    if cfg!(windows) {
-        "curl.exe"
-    } else {
-        "curl"
-    }
-}
-
-/// The settings file of a chat: its hooks (`<hook-url>`) and the fullscreen
-/// renderer.
+/// The settings file of a chat: its hooks, a Codex chat's curl command, and
+/// the fullscreen renderer; no hooks on a machine with no curl to run them
+/// (`codex_hook_curl`).
 pub(crate) fn claude_chat_settings() -> serde_json::Value {
-    let command = format!("{} -s -m 3 -X POST --data-binary @- <hook-url>", claude_curl());
-    let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }]);
-    let pre = vec![serde_json::json!({ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] })];
     let mut settings = claude_terminal_settings();
+    let Some(curl) = crate::pty::codex_hook_curl() else { return settings };
+    let handler = crate::claude::launch::status_hook(&curl);
+    let hook = serde_json::json!([{ "hooks": [handler] }]);
+    let only = |matcher: &str| serde_json::json!([{ "matcher": matcher, "hooks": [handler] }]);
     settings["hooks"] = serde_json::json!({
         "UserPromptSubmit": hook, "PostToolUse": hook, "Stop": hook, "StopFailure": hook,
-        "Notification": hook, "SessionEnd": hook, "PermissionRequest": hook,
+        "Notification": only("permission_prompt|elicitation_dialog"), "SessionEnd": hook, "PermissionRequest": hook,
         "SubagentStart": hook, "SubagentStop": hook,
-        "PreToolUse": pre,
+        "PreToolUse": only("AskUserQuestion"),
     });
     settings
+}
+
+/// What a chat with hooks says of them as applied, where it has them.
+pub(crate) fn claude_hooks_applied() -> Option<&'static str> {
+    crate::pty::codex_hook_curl().map(|_| "hooks in --settings <settings-file>; their URL in LUNA_HOOK_URL, not shown")
 }
 
 /// What every Claude Code settings file holds: Luna's `core/` denied to the
@@ -383,7 +385,8 @@ pub(crate) fn codex_status_hooks() -> Vec<String> {
     crate::pty::codex_hook_curl().map(|curl| crate::codex::hooks::status_hook_args(&curl, cfg!(windows))).unwrap_or_default()
 }
 
-/// The hook URL a Codex chat is given in its environment, where it gets hooks.
+/// The hook URL a chat is given in its environment, where it gets hooks: a
+/// Codex chat's and a Claude Code chat's alike.
 pub(crate) fn codex_hook_env() -> Vec<(String, String)> {
     crate::pty::codex_hook_curl().map(|_| ("LUNA_HOOK_URL".to_string(), "<hook-url>".to_string())).into_iter().collect()
 }

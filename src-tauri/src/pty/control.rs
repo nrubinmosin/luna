@@ -217,7 +217,7 @@ pub(crate) fn kill_tree(pid: Option<u32>) {
 
 /// How long a session gets to leave on its own before it is taken down.
 /// Neither CLI is out within two seconds of its second Ctrl+C: Claude Code
-/// runs its exit hooks first — among them Luna's own SessionEnd hook, a curl
+/// runs its exit hooks first — among them Luna's own SessionEnd hook, a post
 /// with a 3 s timeout — and Codex shuts its MCP servers down. At 1.5 s every
 /// deleted chat ended in the hard kill this is meant to avoid. The same for
 /// every session at once: an update, Quit and shut-down-when-done.

@@ -42,15 +42,18 @@ pub(crate) const EVENTS: [(&str, &str, u64); 8] = [
 /// would read otherwise), the variable is read by curl itself (`--variable`,
 /// curl 8.3 and later), `"@-"` and `"*"` are quoted for PowerShell. And it
 /// stays on loopback and quiet: `-q` first, so no `.curlrc` or `_curlrc` adds a
-/// proxy or a trace; `--noproxy "*"`, so no proxy variable the session
-/// inherits sends the URL and its secret, or the hook's body, anywhere; the
-/// hub's empty answer to the null device and `-s`, so nothing comes back for
-/// Codex to read as the hook's output. A curl too old fails the hook, and the
-/// record reads the rollout alone.
+/// proxy or a trace; `--stderr` before anything curl may refuse (`-s` does not
+/// hold back what it says of its own options); `--noproxy "*"`, so no proxy
+/// variable the session inherits sends the URL and its secret, or the hook's
+/// body, anywhere; the hub's empty answer to the null device and `-s`, so
+/// nothing comes back for Codex to read as the hook's output. Nor may curl's
+/// exit code stop anything: Codex takes a hook's exit 2, which curl gives for
+/// an option or a variable it cannot use, as a block only with a reason on
+/// its stderr (0.171.0 `hooks/src/events/`), and there is none.
 pub(crate) fn command(curl: &str, windows: bool) -> String {
     let null = if windows { "NUL" } else { "/dev/null" };
     format!(
-        "{curl} -q -s -o {null} --noproxy \"*\" -m 2 -X POST --data-binary \"@-\" --variable \"%{HOOK_URL_ENV}\" --expand-url \"{{{{{HOOK_URL_ENV}}}}}\""
+        "{curl} -q --stderr {null} -s -o {null} --noproxy \"*\" -m 2 -X POST --data-binary \"@-\" --variable \"%{HOOK_URL_ENV}\" --expand-url \"{{{{{HOOK_URL_ENV}}}}}\""
     )
 }
 
@@ -66,6 +69,14 @@ pub(crate) fn usable_curl(path: &str, windows: bool) -> bool {
     } else {
         path.starts_with('/') && path.chars().all(plain)
     }
+}
+
+/// Whether a curl's `--version` says it takes the command: 8.3 is the first
+/// with `--variable` and `--expand-url`.
+pub(crate) fn new_enough(version: &str) -> bool {
+    let said = version.lines().find_map(|l| l.strip_prefix("curl ")).and_then(|l| l.split_whitespace().next());
+    let mut parts = said.unwrap_or_default().split(['.', '-']).map(|n| n.parse::<u32>().ok());
+    matches!((parts.next().flatten(), parts.next().flatten()), (Some(major), Some(minor)) if (major, minor) >= (8, 3))
 }
 
 /// Where Codex says a `-c` override comes from, as its hooks' trust keys name
@@ -131,23 +142,23 @@ mod tests {
     const WINDOWS_CURL: &str = r"C:\WINDOWS\System32\curl.exe";
     const UNIX_CURL: &str = "/usr/bin/curl";
 
-    /// The hashes Codex 0.169.0 itself computed for these hooks on Windows,
+    /// The hashes Codex 0.171.0 itself computed for these hooks on Windows,
     /// the curl at `WINDOWS_CURL` (`hooks/list` over `codex app-server`,
-    /// 2026-11-20: each `trusted`, its `currentHash` this; without Luna's
+    /// 2026-11-24: each `trusted`, its `currentHash` this; without Luna's
     /// entries each `untrusted`). Fixed strings: a Codex that hashes otherwise
     /// is caught live (docs/cli-compatibility.md), not here.
     #[test]
     fn the_hashes_are_the_ones_codex_computes() {
         let command = command(WINDOWS_CURL, true);
         let seen = [
-            ("user_prompt_submit", 5, "sha256:37d25fb513a0f90f987753108089e86d17e188b71d6273e156bdb09da3509a42"),
-            ("post_tool_use", 5, "sha256:2712a8670c86bb43eb8e18c6f1024559ccf0c3ab8576feab4557cdbde21db73b"),
-            ("permission_request", 5, "sha256:74b436a3aa928b79b2350f5ed5a17856e16897b60468d0ed12500b25c311dc10"),
-            ("stop", 5, "sha256:456fe622872ba863f8a019e525f0dc882692f8c05e916614c0df4fad2a01ed90"),
-            ("subagent_start", 5, "sha256:a3845432fe47bb02e5dde64fc697667d9a78b8e1278e6a6f357aa952badbd223"),
-            ("subagent_stop", 5, "sha256:ffa1e6696d01e490328bade03b8de713c816d28418c736ad0698062e00ff90b5"),
-            ("interrupt", 3, "sha256:c57f943086f7da7f657b3994da24f634ad09b987ec0054b43ff05d7f82f83115"),
-            ("session_end", 3, "sha256:d3bfffb0ddb198fff0e9e77e7fa093d638519c655f0f49341b00ecd172b3f8ae"),
+            ("user_prompt_submit", 5, "sha256:76fe801755c0d48ef172e4aea2fe5fde64429f27a23be21b6e0a0bf109dd02db"),
+            ("post_tool_use", 5, "sha256:5078d1ea540a8a8a6538c0840b687e75b620676c16b46061f0a67ea6b2905a3e"),
+            ("permission_request", 5, "sha256:a3b17ab16695e4dac6b610c37730426adbd946216b88a0ac205cb19cb3d42983"),
+            ("stop", 5, "sha256:4ada55a2cc674072066df30dc0bcf519449976f8c0ac91117f761bc290226c26"),
+            ("subagent_start", 5, "sha256:e852a69f9249688331598944926efabdbaf14efb1856d56c37859e2705ad6d33"),
+            ("subagent_stop", 5, "sha256:16f5c522e0b5be04d4db806168041b098c150dbecfe0b78fccc59c53e04e96a6"),
+            ("interrupt", 3, "sha256:65091a096dfd79703dcf65229f101e7fd962c51130a17603c6ce5081fa455925"),
+            ("session_end", 3, "sha256:048da677658d9107d40c54b58146043ba835c25938c6318fbc59975ce5d87a77"),
         ];
         for (label, timeout, hash) in seen {
             assert_eq!(trusted_hash(label, &command, timeout), hash, "{label}");
@@ -208,16 +219,31 @@ mod tests {
     fn the_command_stays_on_loopback_quiet_and_names_the_variable_not_the_url() {
         assert_eq!(
             command(WINDOWS_CURL, true),
-            r#"C:\WINDOWS\System32\curl.exe -q -s -o NUL --noproxy "*" -m 2 -X POST --data-binary "@-" --variable "%LUNA_HOOK_URL" --expand-url "{{LUNA_HOOK_URL}}""#
+            r#"C:\WINDOWS\System32\curl.exe -q --stderr NUL -s -o NUL --noproxy "*" -m 2 -X POST --data-binary "@-" --variable "%LUNA_HOOK_URL" --expand-url "{{LUNA_HOOK_URL}}""#
         );
         assert_eq!(
             command(UNIX_CURL, false),
-            r#"/usr/bin/curl -q -s -o /dev/null --noproxy "*" -m 2 -X POST --data-binary "@-" --variable "%LUNA_HOOK_URL" --expand-url "{{LUNA_HOOK_URL}}""#
+            r#"/usr/bin/curl -q --stderr /dev/null -s -o /dev/null --noproxy "*" -m 2 -X POST --data-binary "@-" --variable "%LUNA_HOOK_URL" --expand-url "{{LUNA_HOOK_URL}}""#
         );
         for (curl, windows) in [(WINDOWS_CURL, true), (UNIX_CURL, false)] {
             let c = command(curl, windows);
-            assert!(c.starts_with(&format!("{curl} -q ")), "-q is read only as the first argument: {c}");
+            assert!(c.starts_with(&format!("{curl} -q --stderr ")), "-q is read only as the first argument: {c}");
             assert!(!c.contains("http"), "{c}");
+        }
+    }
+
+    #[test]
+    fn a_curl_is_new_enough_from_8_3_on() {
+        for yes in [
+            "curl 8.3.0 (x86_64-pc-linux-gnu) libcurl/8.3.0",
+            "curl 8.22.0 (Windows) libcurl/8.22.0 Schannel",
+            "WARNING: this libcurl is Debug-enabled, do not use in production\n\ncurl 8.23.0-DEV (x86_64-w64-mingw32)",
+            "curl 9.0.0",
+        ] {
+            assert!(new_enough(yes), "{yes}");
+        }
+        for no in ["curl 8.2.1 (x86_64-pc-linux-gnu) libcurl/8.2.1", "curl 7.88.1", "", "curl ", "curl x.y", "8.5.0", "curl: no 8.5"] {
+            assert!(!new_enough(no), "{no}");
         }
     }
 

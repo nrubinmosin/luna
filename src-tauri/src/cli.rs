@@ -48,7 +48,7 @@ pub(crate) mod authenticode;
 mod canary;
 mod choice;
 mod in_use;
-mod probe;
+pub(crate) mod probe;
 pub(crate) use probe::Tree as ProbeTree;
 mod state;
 

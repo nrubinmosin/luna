@@ -13,12 +13,17 @@ use super::spawn::{spawn, Attached, Launch};
 use crate::claude::launch::{self as claude_launch, claude_settings, with_role, HelperSettings, CLAUDE_MCP_TOKEN_ENV};
 use crate::codex::launch::{self as codex_launch, AUTO_REVIEW, AUTO_REVIEW_SANDBOX, READ_ONLY_NET};
 use crate::provider::Provider;
+use std::collections::BTreeMap;
+use std::fs::Metadata;
+use std::time::{Instant, SystemTime};
 
 /// The settings a Claude Code session is started with, as its `--settings`
 /// (one only: a second takes the first's place). `hooks`: each event posts
 /// its stdin to Luna's loopback listener (hub.rs) and prints nothing — a
 /// hook's stdout is added to the model's context, silence is free — while
-/// the listener is on. `library`: what the
+/// the listener is on, by a Codex chat's curl command (claude/launch.rs
+/// `hook_command`), the URL with its secret returned for the session's
+/// environment, never written into the file; no curl, no hooks. `library`: what the
 /// library's folders keep from the session (library/folders.rs
 /// `SessionSkills`) — skills off in `skillOverrides`, which settings of this
 /// source beat whatever the account's or the project's say, and the
@@ -32,30 +37,31 @@ use crate::provider::Provider;
 /// be written: a session carries the core-folder deny or does not start
 /// (threat model F3), so the caller refuses the launch rather than run without
 /// it. With the file, what it holds as applied (claude/launch.rs
-/// `settings_applied`).
+/// `settings_applied`), and the hooks' URL.
 pub(crate) fn claude_settings_file(
     chat_id: &str,
     hooks: bool,
     library: &crate::library::SessionSkills,
     helper: Option<HelperSettings>,
     notes: Option<&std::path::Path>,
-) -> Result<(std::path::PathBuf, Vec<crate::applied::Applied>), String> {
+) -> Result<(std::path::PathBuf, Vec<crate::applied::Applied>, Option<String>), String> {
     let core = crate::ipc::core_dir().to_string_lossy().into_owned();
-    let hook_url = crate::hub::hook_url(chat_id).filter(|_| hooks);
+    let hook = hooks.then(|| crate::hub::hook_url(chat_id).zip(codex_hook_curl())).flatten();
     let notes = notes.map(|n| n.to_string_lossy().into_owned());
-    let mut settings = claude_settings(hook_url.as_deref(), library, &core, helper);
+    let mut settings = claude_settings(hook.as_ref().map(|(_, curl)| curl.as_str()), library, &core, helper);
     if let Some(notes) = &notes {
         claude_launch::notes_allow(&mut settings, notes);
     }
-    // Owner-only: the hook URLs in it carry the hub's secret.
+    // Owner-only, though no secret is in it: the hooks read it from the
+    // environment.
     let dir = crate::paths::data_dir().join("hooks");
     crate::secret::private_dir(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
     let path = dir.join(format!("{}.json", crate::paths::id_file_name(chat_id)));
     let json = serde_json::to_string_pretty(&settings).map_err(|e| format!("the settings do not serialize: {e}"))?;
     crate::secret::write_private(&path, json.as_bytes()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-    let mut applied = claude_launch::settings_applied(&path.to_string_lossy(), hook_url.is_some(), library, &core, notes.as_deref());
+    let mut applied = claude_launch::settings_applied(&path.to_string_lossy(), hook.is_some(), library, &core, notes.as_deref());
     applied.extend(helper.map(|h| claude_launch::helper_settings_applied(h, &path.to_string_lossy())).unwrap_or_default());
-    Ok((path, applied))
+    Ok((path, applied, hook.map(|(url, _)| url)))
 }
 
 /// A login session's `--settings` (the providers' `loginSession`): the
@@ -394,21 +400,151 @@ pub(crate) fn codex_git_envs(sandbox: &str) -> Vec<(&'static str, String)> {
     .clone()
 }
 
-/// The curl a Codex chat's status hooks post with (codex/hooks.rs `command`),
-/// by an absolute path found now, so no shell looks for one in the project's
-/// folder: on Windows its own, `%SystemRoot%\System32\curl.exe`; elsewhere the
-/// first `curl` on this process's PATH. None, and the chat gets no hooks,
-/// where there is none or its path would not stand bare in a shell
-/// (`usable_curl`).
+/// The curl a chat's status hooks post with (codex/hooks.rs `command`), a
+/// Codex chat's and a Claude Code chat's alike, by an absolute path found
+/// now, so no shell looks for one in the project's folder: on Windows its
+/// own alone, `%SystemRoot%\System32\curl.exe`; elsewhere the first that will
+/// do in the absolute entries of this process's PATH (who writes in one of
+/// those is out of scope, as for git). It will do if it is a file with an
+/// execute bit (`runnable`), its path stands bare in a shell (`usable_curl`)
+/// and it is new enough (`curl_new_enough`). None, and the chat gets no
+/// hooks, its status read off the session's files and screen; the log says
+/// so once.
 pub(crate) fn codex_hook_curl() -> Option<String> {
-    let found = if cfg!(windows) {
-        let root = std::env::var_os("SystemRoot")?;
-        Some(std::path::Path::new(&root).join("System32").join("curl.exe")).filter(|p| p.is_file())
+    static ASKED: std::sync::Mutex<BTreeMap<std::path::PathBuf, CurlVerdict>> = std::sync::Mutex::new(BTreeMap::new());
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    let mut asked = ASKED.lock().unwrap_or_else(|e| e.into_inner());
+    let found = pick_curl(curl_dirs(), deadline, |path, stamp| {
+        curl_new_enough(&mut asked, path, stamp, deadline, |left| {
+            let cmd = curl_probe(path);
+            crate::cli::probe::run_within(cmd, &path.to_string_lossy(), left)
+                .is_ok_and(|(code, said)| code == Some(0) && crate::codex::hooks::new_enough(&said))
+        })
+    });
+    if found.is_none() {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| {
+            crate::log::warn("hooks", "chats get no status hooks: no curl 8.3 or later at a plain absolute path to run them with")
+        });
+    }
+    found
+}
+
+/// The folders a chat's curl is looked for in, in order.
+fn curl_dirs() -> Vec<std::path::PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("SystemRoot").map(|root| std::path::Path::new(&root).join("System32")).into_iter().collect()
     } else {
-        std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join("curl")).find(|p| p.is_file())
-    };
-    let path = found?.to_str()?.to_string();
-    crate::codex::hooks::usable_curl(&path, cfg!(windows)).then_some(path)
+        std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default()
+    }
+}
+
+/// The first curl in `dirs` that will do (`codex_hook_curl`), every check
+/// made of each: one that will not do hides no later one.
+fn pick_curl(
+    dirs: Vec<std::path::PathBuf>,
+    deadline: Instant,
+    mut new_enough: impl FnMut(&std::path::Path, CurlStamp) -> bool,
+) -> Option<String> {
+    let name = if cfg!(windows) { "curl.exe" } else { "curl" };
+    dirs.into_iter().take_while(|_| Instant::now() < deadline).filter(|dir| dir.is_absolute()).map(|dir| dir.join(name)).find_map(|path| {
+        if !crate::codex::hooks::usable_curl(path.to_str()?, cfg!(windows)) {
+            return None;
+        }
+        #[cfg(unix)]
+        let path = path.canonicalize().ok()?;
+        let shown = path.to_str()?;
+        if !crate::codex::hooks::usable_curl(shown, cfg!(windows)) {
+            return None;
+        }
+        new_enough(&path, CurlStamp::read(&path)?).then(|| shown.to_string())
+    })
+}
+
+/// No inherited environment belongs in a version probe. Luna may itself
+/// have been started inside a CLI session with tool or provider credentials.
+fn curl_probe(path: &std::path::Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(path);
+    cmd.env_clear().args(["-q", "--version"]);
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        cmd.env("SystemRoot", root);
+    }
+    cmd
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CurlStamp {
+    modified: SystemTime,
+    len: u64,
+    #[cfg(windows)]
+    file_id: String,
+    #[cfg(unix)]
+    file_id: (u64, u64),
+}
+
+impl CurlStamp {
+    fn read(path: &std::path::Path) -> Option<Self> {
+        let metadata = path.metadata().ok()?;
+        if !runnable(&metadata) {
+            return None;
+        }
+        #[cfg(windows)]
+        let (metadata, file_id) = {
+            let file = std::fs::File::open(path).ok()?;
+            (file.metadata().ok()?, crate::desktop::volume::file_id(&file)?)
+        };
+        #[cfg(unix)]
+        let file_id = {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino())
+        };
+        Some(Self { modified: metadata.modified().ok()?, len: metadata.len(), file_id })
+    }
+}
+
+fn runnable(metadata: &Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return false;
+        }
+    }
+    metadata.is_file()
+}
+
+struct CurlVerdict {
+    stamp: CurlStamp,
+    retry_after: Option<Instant>,
+}
+
+/// Leave some of the shared launch budget for later PATH entries. An
+/// unchanged failure stays quiet for a while, and a replacement is probed
+/// even during that interval.
+fn curl_new_enough(
+    asked: &mut BTreeMap<std::path::PathBuf, CurlVerdict>,
+    path: &std::path::Path,
+    stamp: CurlStamp,
+    deadline: Instant,
+    probe: impl FnOnce(std::time::Duration) -> bool,
+) -> bool {
+    let now = Instant::now();
+    if let Some(known) = asked.get(path).filter(|known| known.stamp == stamp) {
+        match known.retry_after {
+            None => return true,
+            Some(retry) if now < retry => return false,
+            Some(_) => {}
+        }
+    }
+    let left = deadline.saturating_duration_since(now).min(std::time::Duration::from_secs(1));
+    if left.is_zero() {
+        return false;
+    }
+    let good = probe(left);
+    let retry_after = (!good).then(|| Instant::now() + std::time::Duration::from_secs(30));
+    asked.insert(path.to_path_buf(), CurlVerdict { stamp, retry_after });
+    good
 }
 
 /// PATH for a Codex session in that sandbox, where it has a Windows one: this
@@ -672,11 +808,12 @@ pub async fn ensure_claude_session(
         // Mandatory: it carries the core-folder deny (threat model F3). If it
         // cannot be written, the session does not start rather than run
         // without it. A login session's goes inline (`claude_login_settings`).
-        let (settings_given, settings_applied) = if login {
-            claude_login_settings()
+        let (settings_given, settings_applied, hook_url) = if login {
+            let (json, applied) = claude_login_settings();
+            (json, applied, None)
         } else {
-            let (file, applied) = claude_settings_file(&id, true, &skills, None, notes.as_deref())?;
-            (file.to_string_lossy().into_owned(), applied)
+            let (file, applied, hook_url) = claude_settings_file(&id, true, &skills, None, notes.as_deref())?;
+            (file.to_string_lossy().into_owned(), applied, hook_url)
         };
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
@@ -740,6 +877,7 @@ pub async fn ensure_claude_session(
             agent: agent.as_deref(),
             read_only,
             mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
+            hook_url: hook_url.as_deref(),
             instructions_file: instructions_file.as_deref(),
             fresh_prompt,
             skill_args: &skills.args,
@@ -955,6 +1093,140 @@ mod tests {
     use super::super::spawn::{capture, INHERITED_SESSION_VARS};
     use super::*;
 
+    /// A curl Luna takes is a file it may run: off Windows, one with an
+    /// execute bit; never a folder.
+    #[test]
+    fn a_curl_is_a_file_that_runs() {
+        let dir = std::env::temp_dir().join(format!("luna-curl-pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("folder")).unwrap();
+        let file = dir.join("curl");
+        std::fs::write(&file, "#!/bin/sh\n").unwrap();
+        assert!(CurlStamp::read(&dir.join("folder")).is_none());
+        assert!(CurlStamp::read(&dir.join("absent")).is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(CurlStamp::read(&file).is_none(), "no execute bit");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(CurlStamp::read(&file).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A relative entry, a path a shell would split, a file that does not run
+    /// and a curl too old are passed over for a later one that will do, and
+    /// only one that could be used is run to ask its version.
+    #[cfg(unix)]
+    #[test]
+    fn a_curl_that_will_not_do_hides_no_later_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("luna-curl-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (name, mode) in [("a b", 0o755), ("plain-file", 0o644), ("old", 0o755), ("good", 0o755), ("later", 0o755)] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("curl"), "").unwrap();
+            std::fs::set_permissions(dir.join(name).join("curl"), std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let dirs = ["", "bin", "."].map(std::path::PathBuf::from).into_iter();
+        use std::os::unix::fs::symlink;
+        std::fs::create_dir_all(dir.join("linked-dir")).unwrap();
+        symlink(dir.join("good"), dir.join("linked-dir/curl")).unwrap();
+        std::fs::create_dir_all(dir.join("linked-file")).unwrap();
+        symlink(dir.join("good/curl"), dir.join("linked-file/curl")).unwrap();
+        let dirs = dirs.chain(["a b", "absent", "plain-file", "linked-dir", "old", "linked-file", "later"].map(|n| dir.join(n)));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let path = |name: &str| dir.join(name).join("curl").canonicalize().unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        let picked = pick_curl(dirs.clone().collect(), deadline, |p, _| {
+            asked.borrow_mut().push(p.to_path_buf());
+            p != path("old")
+        });
+        assert_eq!(picked.as_deref(), path("good").to_str());
+        assert_eq!(asked.into_inner(), [path("old"), path("good")]);
+        assert_eq!(pick_curl(dirs.clone().collect(), Instant::now(), |_, _| panic!("discovery ran past its deadline")), None);
+        assert_eq!(pick_curl(dirs.collect(), deadline, |_, _| false), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn curl_probe_deadlines_and_verdicts_follow_the_executable() {
+        use std::time::Duration;
+        let dir = std::env::temp_dir().join(format!("luna-curl-verdict-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("curl");
+        let new = dir.join("new");
+        let old = dir.join("old");
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        for p in [&path, &new] {
+            let file = std::fs::File::create(p).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let mut asked = BTreeMap::new();
+        let expired = Instant::now();
+        let deadline = expired + Duration::from_secs(3);
+        let stamp = || CurlStamp::read(&path).unwrap();
+        let before = stamp();
+        let unexpected = |_| panic!("a probe ran outside its budget or during cooldown");
+        assert!(!curl_new_enough(&mut asked, &path, stamp(), expired, unexpected));
+        assert!(!curl_new_enough(&mut asked, &path, stamp(), deadline, |left| {
+            assert_eq!(left, Duration::from_secs(1));
+            false
+        }));
+        assert!(!curl_new_enough(&mut asked, &path, stamp(), deadline, unexpected));
+        asked.get_mut(&path).unwrap().retry_after = Some(expired);
+        assert!(!curl_new_enough(&mut asked, &path, stamp(), deadline, |_| false));
+        std::fs::rename(&path, &old).unwrap();
+        std::fs::rename(&new, &path).unwrap();
+        let after = stamp();
+        assert_eq!((before.modified, before.len), (after.modified, after.len));
+        assert_ne!(before.file_id, after.file_id);
+        assert!(curl_new_enough(&mut asked, &path, stamp(), deadline, |_| true));
+        assert!(curl_new_enough(&mut asked, &path, stamp(), expired, unexpected));
+        let write = || std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        write().set_len(1).unwrap();
+        write().set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+        assert_eq!(stamp().modified, modified);
+        assert!(curl_new_enough(&mut asked, &path, stamp(), deadline, |_| true));
+        write().set_times(std::fs::FileTimes::new().set_modified(modified + Duration::from_secs(1))).unwrap();
+        assert!(!curl_new_enough(&mut asked, &path, stamp(), deadline, |_| false));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_curl_version_probe_inherits_no_session_or_provider_credentials() {
+        const TEST: &str = "pty::start::tests::a_curl_version_probe_inherits_no_session_or_provider_credentials";
+        let names = ["LUNA_CURL_PROBE_TEST", "LUNA_MCP_TOKEN", "LUNA_HOOK_URL", "CLAUDE_CODE_MESSAGING_TOKEN", "OPENAI_API_KEY"];
+        if std::env::var_os(names[0]).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .envs(names.map(|k| (k, "sentinel")))
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "the curl probe starts without the injected environment");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("luna-curl-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("curl");
+        let write = "printf '#!/bin/sh\n/usr/bin/env\n' > \"$1\" && chmod 755 \"$1\"";
+        assert!(std::process::Command::new("/bin/sh").args(["-c", write, "write"]).arg(&path).status().unwrap().success());
+        let out = curl_probe(&path).output().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(out.status.success());
+        let said = String::from_utf8(out.stdout).unwrap();
+        for name in names {
+            assert!(!said.contains(name), "{name} reached curl");
+        }
+    }
+
     #[test]
     fn a_session_is_told_its_id_and_a_helper_its_parent() {
         assert_eq!(session_envs("c1", None), [("LUNA_SESSION_ID", "c1".to_string())]);
@@ -1111,11 +1383,11 @@ mod tests {
     /// endpoint handles are never inherited (endpoint/ `no_child_inherits_either_end`).
     fn no_way_into_the_core(args: &[String], envs: &[(&str, String)]) {
         let all = args.iter().map(String::as_str).chain(envs.iter().flat_map(|(k, v)| [*k, v.as_str()]));
-        for s in all {
+        for (i, s) in all.enumerate() {
             let endpoint = s.contains(r"\pipe\rm-luna-core-") || s.contains("/core/core-") || s.contains(r"\core\core-");
-            assert!(!endpoint && !s.contains("core.json"), "a start carries something of the core's: {s}");
+            assert!(!endpoint && !s.contains("core.json"), "launch field {i} names a core endpoint or discovery file");
         }
-        assert!(envs.iter().all(|(k, _)| !k.starts_with("LUNA_CORE")), "{envs:?}");
+        assert!(envs.iter().all(|(k, _)| !k.starts_with("LUNA_CORE")), "the launch has no core environment variables");
     }
 
     /// The window's ask for a Claude Code chat; each case changes what it is about.
@@ -1242,8 +1514,13 @@ mod tests {
         format!("unset {}", super::super::spawn::removed_env().join(", "))
     }
 
+    /// A Claude Code chat's environment, its hooks' URL in it where it has
+    /// them.
     fn claude_envs(id: &str, account: &str) -> Vec<(String, String)> {
-        pairs(&[("CLAUDE_CONFIG_DIR", account), ("DISABLE_AUTOUPDATER", "1"), ("CLAUDE_CODE_NO_FLICKER", "1"), ("LUNA_SESSION_ID", id)])
+        let mut envs = pairs(&[("CLAUDE_CONFIG_DIR", account), ("DISABLE_AUTOUPDATER", "1"), ("CLAUDE_CODE_NO_FLICKER", "1")]);
+        envs.extend(golden::codex_hook_env());
+        envs.extend(pairs(&[("LUNA_SESSION_ID", id)]));
+        envs
     }
 
     #[test]
@@ -1272,7 +1549,7 @@ mod tests {
             ("model", UserAction, "--model opus"),
             ("effort", UserAction, "--effort high"),
             ("permission-mode", UserAction, "--permission-mode default"),
-            ("activity-hooks", Runtime, "hooks in --settings <settings-file>"),
+            ("activity-hooks", Runtime, golden::claude_hooks_applied().unwrap_or_default()),
             ("core-read-deny", Boundary, "permissions.deny Read(//<core-dir>/**) in --settings <settings-file>"),
             ("claude.fullscreen", Runtime, "tui: fullscreen in --settings <settings-file>, CLAUDE_CODE_NO_FLICKER=1"),
             // Settings' default; the golden account has no `.claude.json`,
@@ -1281,7 +1558,9 @@ mod tests {
             ("terminal", Runtime, "TERM=xterm-256color"),
             ("cwd", Runtime, "cwd /golden/project"),
         ];
-        let mut want: Vec<_> = want.into_iter().map(|(k, c, v)| (k.to_string(), c, v.to_string())).collect();
+        // No curl on this machine, no hooks.
+        let want = want.into_iter().filter(|(k, _, v)| *k != "activity-hooks" || !v.is_empty());
+        let mut want: Vec<_> = want.map(|(k, c, v)| (k.to_string(), c, v.to_string())).collect();
         want.push(("inherited-env-cleared".into(), Runtime, removed()));
         assert_eq!(s.applied, want);
     }
@@ -1573,7 +1852,9 @@ mod tests {
                 r#"{"permissions":{"deny":["Read(//<core-dir>/**)"]},"tui":"fullscreen"}"#,
             ])
         );
-        assert_eq!(s.envs, claude_envs(ID, ACC), "no token: not a chat agents may reach");
+        let envs =
+            pairs(&[("CLAUDE_CONFIG_DIR", ACC), ("DISABLE_AUTOUPDATER", "1"), ("CLAUDE_CODE_NO_FLICKER", "1"), ("LUNA_SESSION_ID", ID)]);
+        assert_eq!(s.envs, envs, "no token: not a chat agents may reach; no hooks either");
         assert!(s.settings.is_none() && s.mcp.is_none() && s.instructions.is_none(), "no file of Luna's: the core's deny goes inline");
         assert_eq!(s.cwd, ACC);
         assert_eq!(s.value("core-read-deny").map(|v| v.starts_with("permissions.deny Read(//<core-dir>/**) in --settings {")), Some(true));
@@ -1678,42 +1959,47 @@ mod tests {
         );
         assert_eq!(
             s.envs,
-            pairs(&[
-                ("CLAUDE_CONFIG_DIR", "/golden/acc-claude"),
-                ("DISABLE_AUTOUPDATER", "1"),
-                ("CLAUDE_CODE_NO_FLICKER", "1"),
-                ("LUNA_MCP_TOKEN", "<token>"),
-                ("LUNA_SESSION_ID", ID),
-            ])
+            [
+                pairs(&[
+                    ("CLAUDE_CONFIG_DIR", "/golden/acc-claude"),
+                    ("DISABLE_AUTOUPDATER", "1"),
+                    ("CLAUDE_CODE_NO_FLICKER", "1"),
+                    ("LUNA_MCP_TOKEN", "<token>"),
+                ]),
+                golden::codex_hook_env(),
+                pairs(&[("LUNA_SESSION_ID", ID)]),
+            ]
+            .concat()
         );
         let mut settings = golden::claude_chat_settings();
         settings["permissions"]["allow"] = serde_json::json!(["Read(//<notes-dir>/**)"]);
         assert_eq!(s.settings, Some(settings), "its notes readable without asking, by no --add-dir");
         assert_eq!(s.mcp, Some(golden::claude_mcp_config()), "the token stays in the environment");
         assert_eq!(s.describe, "model sonnet perm bypassPermissions worktree false");
-        assert_eq!(
-            s.keys(),
-            [
-                "account",
-                "no-self-update",
-                "session-id",
-                "model",
-                "effort",
-                "permission-mode",
-                "activity-hooks",
-                "core-read-deny",
-                "notes-dir",
-                "agent",
-                "read-only",
-                "luna-tools",
-                "claude.fresh-prompt",
-                "claude.fullscreen",
-                "copy-on-select",
-                "terminal",
-                "cwd",
-                "inherited-env-cleared",
-            ]
-        );
+        let keys = [
+            "account",
+            "no-self-update",
+            "session-id",
+            "model",
+            "effort",
+            "permission-mode",
+            "activity-hooks",
+            "core-read-deny",
+            "notes-dir",
+            "agent",
+            "read-only",
+            "luna-tools",
+            "claude.fresh-prompt",
+            "claude.fullscreen",
+            "copy-on-select",
+            "terminal",
+            "cwd",
+            "inherited-env-cleared",
+        ];
+        // No curl on this machine, no hooks.
+        let hooks = golden::claude_hooks_applied().is_some();
+        let keys: Vec<&str> = keys.into_iter().filter(|k| hooks || *k != "activity-hooks").collect();
+        assert_eq!(s.keys(), keys);
         assert_eq!(s.value("session-id"), Some("LUNA_SESSION_ID=golden-claude-tooled"));
         assert_eq!(s.value("notes-dir"), Some("permissions.allow Read(//<notes-dir>/**) in --settings <settings-file>"));
     }
@@ -2051,7 +2337,9 @@ mod tests {
         .start(ID, &r);
         assert!(!resumed_elsewhere.args.iter().any(|a| a.starts_with("projects=")), "a resume in another project needs its own trust");
         assert!(resumed_elsewhere.value("session-trust-dropped").is_some());
-        let other = CodexAsk { account: acc, ..CodexAsk::chat() }.start("golden-codex-no-trust", &r);
+        let other_id = "golden-codex-no-trust";
+        let other_redact = Redact::for_chat(other_id).with(acc.clone(), "<acc>");
+        let other = CodexAsk { account: acc, ..CodexAsk::chat() }.start(other_id, &other_redact);
         assert!(!other.args.iter().any(|a| a.starts_with("projects=")));
         assert_eq!(std::fs::read_to_string(config).unwrap(), old);
         let _ = std::fs::remove_dir_all(account);

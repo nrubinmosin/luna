@@ -192,7 +192,7 @@ pub(super) fn command_and_open(
                 &dir,
                 own.as_deref(),
             );
-            let (settings, holds) = crate::pty::claude_settings_file(id, false, &skills, Some(helper), None)?;
+            let (settings, holds, _) = crate::pty::claude_settings_file(id, false, &skills, Some(helper), None)?;
             // The folders' skills as a plugin of this helper's own, made afresh
             // every turn (library/session_plugin.rs) once nothing that can
             // refuse the turn is left; a turn whose plugin will not write runs

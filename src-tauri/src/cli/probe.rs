@@ -290,7 +290,7 @@ impl Tree {
 /// Runs `cmd` with its output piped, `within` for the whole of it: the run
 /// and its output read to the end, at most `OUTPUT_CAP` of each stream. What
 /// it started is ended either way.
-fn run_within(mut cmd: Process, shown: &str, within: Duration) -> Result<(Option<i32>, String), String> {
+pub(crate) fn run_within(mut cmd: Process, shown: &str, within: Duration) -> Result<(Option<i32>, String), String> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut tree = Tree::spawn(cmd).map_err(|e| format!("could not run {shown}: {e}"))?;
     // Each stream whole, or why not: a read that failed, or one cut at the
