@@ -204,8 +204,10 @@ mod tests {
         assert_eq!(news(pty)[chat].len(), 1);
         forget(chat);
         failure("disk full");
-        assert!(!reg().lock().unwrap().system_news.iter().any(|n| n.about(helper)));
+        let pending = news(pty);
+        assert!(!pending.contains_key(lead) && !pending.contains_key(chat), "an orphaned line has no recipient");
         forget(helper);
+        assert!(!reg().lock().unwrap().system_news.iter().any(|n| n.about(helper)), "deleting the subject drops the failure");
         forget(lead);
     }
 
