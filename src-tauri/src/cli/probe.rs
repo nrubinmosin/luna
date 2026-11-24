@@ -95,7 +95,7 @@ const CODEX: &[Command] = &[
             "--dangerously-bypass-approvals-and-sandbox",
         ],
     },
-    Command { path: &["app-server"], flags: &["-c"] },
+    Command { path: &["app-server"], flags: &["-c", "--listen"] },
     Command { path: &["login"], flags: &[] },
     Command { path: &["debug", "models"], flags: &["--bundled"] },
 ];

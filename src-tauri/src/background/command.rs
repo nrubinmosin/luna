@@ -8,9 +8,6 @@ use crate::applied::{Applied, Item};
 /// in, its environment, and what Luna applied in them (applied.rs).
 pub(super) type Command = (Vec<String>, String, Vec<(&'static str, String)>, Vec<Applied>);
 
-/// The thread-level override for the one Luna tool that can require approval.
-pub(super) const SPAWN_APPROVAL_KEY: &str = "mcp_servers.luna.tools.luna_session_spawn.approval_mode";
-
 /// How long `claude -p`, its stdin closed, waits for what its turn left in the
 /// background before it stops it, in ms (`0`: as long as that takes).
 const BG_WAIT_CEILING_ENV: &str = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS";
@@ -58,12 +55,42 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
 /// once its server is up (appserver.rs): `thread/start` with the folder, the
 /// model and the role layers, or `thread/resume` of the thread an earlier
 /// turn started, with the same.
+#[cfg(test)]
 pub(super) fn command_and_open(
     e: &Entry,
     id: &str,
     texts: &crate::library::RoleTexts,
     compact_tokens: Option<u32>,
 ) -> Result<(Command, Option<Value>), String> {
+    let (mut command, open) = build_command(e, id, texts, compact_tokens)?;
+    let Some(open) = open else { return Ok((command, None)) };
+    let trust = crate::codex::trust::trust_override(&crate::codex::trust::override_key(&e.spec.folder));
+    let response = crate::codex::snapshot::testing::fixture_for(&e.spec.account_path, &command.1, &trust);
+    let snapshot = crate::codex::snapshot::Snapshot::response(&response)?;
+    let prepared = open.prepare(&snapshot, &e.spec)?;
+    command.3.extend(prepared.applied);
+    Ok((command, Some(prepared.open)))
+}
+
+pub(super) struct CodexOpen {
+    pub(super) request: Value,
+    pub(super) luna_url: Option<String>,
+    role_layers: Option<String>,
+    role_applied: Vec<Applied>,
+    library_args: Vec<String>,
+}
+
+pub(super) struct PreparedOpen {
+    pub(super) open: Value,
+    pub(super) applied: Vec<Applied>,
+}
+
+pub(super) fn build_command(
+    e: &Entry,
+    id: &str,
+    texts: &crate::library::RoleTexts,
+    compact_tokens: Option<u32>,
+) -> Result<(Command, Option<CodexOpen>), String> {
     let mut open = None;
     let s = &e.spec;
     let role = role_of(s);
@@ -239,15 +266,19 @@ pub(super) fn command_and_open(
             // One `codex app-server` a turn, spoken to over its stdio
             // (appserver.rs): the thread is opened and the turn started by
             // requests, not flags, and the turn's text goes in `turn/start`.
-            args.push("app-server".into());
-            // Cold resume reloads the server's -c; the saved thread settings
-            // do not carry this limit (Codex 0.171.0).
+            use crate::codex::snapshot::{LOCAL_APP_SERVER, NO_STARTUP_PLUGINS};
+            args.extend(["app-server", "--listen", "stdio://", "-c", NO_STARTUP_PLUGINS].map(str::to_owned));
+            let (key, value) = LOCAL_APP_SERVER;
+            applied.push(Item::HelperHeadless.with(format!(
+                "app-server --listen stdio:// -c {NO_STARTUP_PLUGINS} with {key}={value}. Send config/read, then thread/start or thread/resume, then turn/start."
+            )));
+            // Cold resume reloads the server's flags rather than restoring
+            // the limit from the thread (Codex 0.171.0).
             if let Some(limit) = compact_tokens {
                 let value = format!("{}={limit}", crate::codex::config::AUTO_COMPACT_LIMIT_KEY);
                 applied.push(Item::DelegateAutoCompaction.with(format!("-c {value}")));
                 args.extend(["-c".into(), value]);
             }
-            applied.push(Item::HelperHeadless.with("app-server: JSON-RPC on stdio, thread/start or thread/resume, then turn/start"));
             // A conversation resumes, and one not begun starts, where an
             // earlier turn worked if that is still there.
             if let Some(wt) = made.filter(|w| std::path::Path::new(w).is_dir()) {
@@ -286,7 +317,6 @@ pub(super) fn command_and_open(
             // `settings_differ`).
             let mut typed = serde_json::Map::new();
             let mut config = serde_json::Map::new();
-            let inherited_approval = !s.auto_review && s.approval.is_none() && resume.is_some();
             if s.auto_review {
                 typed.insert("approvalPolicy".into(), json!("on-request"));
                 typed.insert("approvalsReviewer".into(), json!("auto_review"));
@@ -340,11 +370,6 @@ pub(super) fn command_and_open(
                 }
                 args.extend(sandbox);
             }
-            let own = crate::codex::config::windows_sandbox_set(&s.account_path);
-            if let Some(sb) = crate::codex::launch::codex_windows_sandbox(&s.mode).filter(|_| !own) {
-                applied.push(Item::WindowsSandbox.with(format!("-c {sb}")));
-                args.extend(["-c".into(), sb]);
-            }
             if let Some(path) = crate::pty::codex_sandbox_path(&s.mode) {
                 envs.push(("PATH", path));
                 applied.push(Item::SandboxPath.with("PATH without …\\Microsoft\\WindowsApps"));
@@ -353,39 +378,10 @@ pub(super) fn command_and_open(
             applied.push(Item::NoAutoUpdate.with(format!("-c {}", crate::codex::launch::NO_UPDATE_CHECK)));
             args.extend(crate::codex::launch::no_memories());
             applied.push(crate::codex::launch::no_memories_applied());
-            // Luna's own server, with its tools: none while the hub is not up.
-            let luna = s.token.clone().filter(|_| s.tools).zip(crate::hub::mcp_url()).map(|(token, url)| {
-                let approval = typed.get("approvalPolicy").and_then(Value::as_str);
-                let prompt = crate::codex::defaults::prompt_for_spawn(approval, &s.account_path, &dir);
-                // The process can also start a replacement thread. Only the
-                // resume request can use an exception based on the old policy.
-                let prompt = if inherited_approval && !prompt {
-                    config.insert(SPAWN_APPROVAL_KEY.into(), json!("approve"));
-                    true
-                } else {
-                    prompt
-                };
-                (crate::codex::launch::mcp_args(&url, prompt), token, prompt)
-            });
-            if luna.is_some() {
-                let found = crate::codex::config::servers_named(&s.account_path, &dir, crate::codex::launch::LUNA_SERVER, Some(&trust_key))
-                    .map_err(|e| {
-                        format!("the helper is not started: Luna could not read whether its run has an MCP server named luna ({e})")
-                    })?;
-                crate::codex::launch::luna_server_free(&found, !s.connectors, "the helper")?;
-            }
-            // Before Luna's own server and the library's plugins: the tables
-            // these give whole would replace what an earlier `-c` set in them.
-            if !s.connectors {
-                let mcp = crate::codex::config::helper_mcp(&s.account_path, &dir, &trust_key)?;
-                let off = crate::codex::launch::connectors_off(&mcp, luna.is_some());
-                applied.push(crate::codex::launch::connectors_off_applied(&off));
-                args.extend(off);
-            }
-            if let Some((mcp, token, prompt)) = luna {
-                args.extend(mcp);
-                envs.push(("LUNA_MCP_TOKEN", token));
-                applied.push(Item::LunaTools.with(crate::codex::launch::luna_tools_value(prompt)));
+            // Only the later thread request may name Luna's server.
+            let luna = s.token.as_ref().filter(|_| s.tools).zip(crate::hub::mcp_url());
+            if let Some((token, _)) = &luna {
+                envs.push(("LUNA_MCP_TOKEN", (*token).clone()));
             }
             let git = crate::pty::codex_git_envs(&s.mode);
             if !git.is_empty() {
@@ -396,34 +392,17 @@ pub(super) fn command_and_open(
             let mut library = crate::library::session_args(Provider::Codex, &s.account_path, &dir, role);
             applied.extend(crate::codex::launch::library_applied(&library.args, library.hidden.len()));
             applied.extend(crate::library::audience_applied(&library));
-            args.extend(std::mem::take(&mut library.args));
+            let library_args = std::mem::take(&mut library.args);
+            args.extend(library_args.iter().cloned());
             if !library.hidden.is_empty() {
                 let selectors: Vec<_> = library.hidden.iter().map(|path| json!({ "path": path, "enabled": false })).collect();
                 config.insert("skills.config".into(), Value::Array(selectors));
             }
-            // Its role layers, on every turn's thread request: Codex takes them
-            // at the thread's start and after a compaction (library/role.rs),
-            // after its config's own value, which a value given here replaces.
-            // Whole: a JSON request has no command line to fit, so what a
-            // chat's `-c` spills to a file (pty/start.rs `codex_role_args`)
-            // goes here as it is. The folder is trusted for the run, so its
-            // project's config counts.
-            let instructions = crate::library::role_layers(texts, &library, &constraints).map(|layers| {
-                let stack = crate::codex::config::developer_instructions_in(&s.account_path, &dir, Some(&trust_key));
-                let value = match stack.value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    Some(own) => format!("{own}\n\n{layers}"),
-                    None => layers,
-                };
-                let how = match stack.value {
-                    Some(_) => "developerInstructions of the thread, after the config's own",
-                    None => "developerInstructions of the thread",
-                };
-                applied.extend(crate::library::layers_applied(texts, &library, &constraints, how));
-                if !stack.unsure.is_empty() {
-                    applied.push(Item::RoleLayersUnsure.with(stack.unsure.join("; ")));
-                }
-                value
-            });
+            let role_layers = crate::library::role_layers(texts, &library, &constraints);
+            let role_applied = role_layers
+                .as_ref()
+                .map(|_| crate::library::layers_applied(texts, &library, &constraints, "developerInstructions of the thread"))
+                .unwrap_or_default();
             if let (Some(_), Some(note)) = (&s.parent, &texts.note) {
                 applied.push(Item::HelperIdentity.with(format!("a note after every prompt: {note}")));
             }
@@ -434,23 +413,89 @@ pub(super) fn command_and_open(
             if let Some(m) = &s.model {
                 params["model"] = json!(m);
             }
-            if let Some(value) = instructions {
-                params["developerInstructions"] = json!(value);
-            }
             for (k, v) in typed {
                 params[k.as_str()] = v;
             }
             if !config.is_empty() {
                 params["config"] = Value::Object(config);
             }
+            envs.push((key, value.to_owned()));
             let method = if resume.is_some() { "thread/resume" } else { "thread/start" };
-            open = Some(json!({ "method": method, "params": params }));
+            open = Some(CodexOpen {
+                request: json!({ "method": method, "params": params }),
+                luna_url: luna.map(|(_, url)| url),
+                role_layers,
+                role_applied,
+                library_args,
+            });
         }
     }
     envs.extend(crate::pty::session_envs(id, s.parent.as_deref()));
     // No terminal: a helper's CLI writes to pipes (`run.rs`, `clean_env`).
     crate::pty::finish_spec(&mut envs, &mut applied, &dir, false);
     Ok(((args, dir, envs, applied), open))
+}
+
+impl CodexOpen {
+    pub(super) fn prepare(&self, snapshot: &crate::codex::snapshot::Snapshot, spec: &Spec) -> Result<PreparedOpen, String> {
+        use crate::codex::launch;
+        let luna = self.luna_url.is_some();
+        let mut open = self.request.clone();
+        let resume = open["method"] == "thread/resume";
+        let params = open["params"].as_object_mut().ok_or("the helper's thread request has no params")?;
+        let mut config = params.remove("config").and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        let approval = params.get("approvalPolicy").and_then(Value::as_str);
+        let mut applied = Vec::new();
+
+        config.insert("features.plugins".into(), json!(snapshot.thread_plugins()));
+        let windows = launch::codex_windows_sandbox(&spec.mode).filter(|_| !snapshot.own_windows_sandbox());
+        if let Some(argument) = &windows {
+            let (key, value) = argument.split_once('=').expect("a Windows sandbox override has a value");
+            config.insert(key.into(), serde_json::from_str(value).expect("a Windows sandbox mode is a quoted string"));
+            applied.push(Item::WindowsSandbox.with(format!("{argument} in thread config")));
+        }
+
+        if !spec.connectors {
+            let mcp = snapshot.helper_mcp()?;
+            let off = launch::connectors_off(&mcp, luna, &self.library_args);
+            applied.push(Item::HelperMcpAlone.with(format!("Thread config {}", Value::Object(off.clone()))));
+            config.extend(off);
+        }
+
+        let prompt = luna && snapshot.prompt_for_spawn(approval, &spec.account_path);
+        let inherited_exception = luna && resume && !spec.auto_review && spec.approval.is_none() && !prompt;
+        if let Some(url) = &self.luna_url {
+            let servers = config.entry("mcp_servers").or_insert_with(|| json!({}));
+            let mut server = launch::helper_mcp_config(url, prompt || inherited_exception);
+            if inherited_exception {
+                server["tools"]["luna_session_spawn"]["approval_mode"] = json!("approve");
+            }
+            if !spec.connectors {
+                server["http_headers_helper"] = json!(launch::INERT_HEADERS_HELPER);
+            }
+            let keys = server.as_object().expect("Luna's MCP server is a table").keys().map(String::as_str).collect::<Vec<_>>().join(", ");
+            applied.push(Item::LunaTools.with(format!("Thread config mcp_servers.luna ({keys}). Token in LUNA_MCP_TOKEN.")));
+            servers[launch::LUNA_SERVER] = server;
+        }
+        if !config.is_empty() {
+            params.insert("config".into(), Value::Object(config));
+        }
+
+        if let Some(layers) = &self.role_layers {
+            applied.extend(self.role_applied.iter().cloned());
+            let stack = snapshot.developer_instructions();
+            let value = match stack.value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                Some(own) => format!("{own}\n\n{layers}"),
+                None => layers.clone(),
+            };
+            params.insert("developerInstructions".into(), json!(value));
+            if !stack.unsure.is_empty() {
+                applied.push(Item::RoleLayersUnsure.with(stack.unsure.join("; ")));
+            }
+        }
+
+        Ok(PreparedOpen { open, applied })
+    }
 }
 
 /// The profile and the folder Luna's sandbox `-c`s deny (codex/launch.rs
@@ -926,7 +971,7 @@ mod tests {
         assert!(has(&args, "--replay-user-messages"), "its word that a line was taken in");
         let (args, _, _, _) = command_for(&entry(Provider::Codex), "x").unwrap();
         assert!(!has(&args, "--input-format") && !has(&args, "--replay-user-messages") && !has(&args, "-"), "{args:?}");
-        assert!(!has(&args, "--listen") && !has(&args, "--stdio"), "stdio is the server's own default");
+        assert!(args.windows(2).any(|w| w == ["--listen", "stdio://"]), "{args:?}");
     }
 
     #[test]
@@ -1000,6 +1045,9 @@ mod tests {
                 for selector in selectors {
                     selector["path"] = json!(r.text(selector["path"].as_str().unwrap()));
                 }
+            }
+            if let Some(url) = o.pointer_mut("/params/config/mcp_servers/luna/url") {
+                *url = json!(r.text(url.as_str().unwrap()));
             }
             o
         });
@@ -1251,18 +1299,15 @@ mod tests {
     /// A Codex turn's arguments up to its sandbox: the server, and its folder
     /// trusted for the run.
     fn codex_turn(folder: &str, r: &Redact) -> Vec<String> {
-        let mut args = strings(&["app-server"]);
+        let mut args = strings(&["app-server", "--listen", "stdio://", "-c", "features.plugins=false"]);
         args.extend(crate::codex::trust::trust_override(&crate::codex::trust::override_key(folder)).iter().map(|a| r.text(a)));
         args
     }
 
     /// Held by the sandbox `mode`, its approval its config's own; then
     /// Codex's own update check kept off, and its memories, connectors or not.
-    fn codex_held(sandbox: Vec<String>, windows: bool) -> Vec<String> {
+    fn codex_held(sandbox: Vec<String>) -> Vec<String> {
         let mut args = sandbox;
-        if windows {
-            args.extend(golden::codex_windows_sandbox());
-        }
         args.extend(strings(&["-c", "check_for_update_on_startup=false"]));
         args.extend(strings(&[
             "-c",
@@ -1275,10 +1320,42 @@ mod tests {
         args
     }
 
-    /// The account's apps off for the run, each server its layers name (the
-    /// golden account has none), and plugins no layer names.
-    fn apps_off() -> Vec<String> {
-        strings(&["-c", "features.apps=false", "-c", "plugins={ _default = { enabled = false } }"])
+    fn thread_config(connectors: bool, windows: bool) -> Value {
+        let mut config = json!({"features.plugins": true});
+        if !connectors {
+            config["features.apps"] = json!(false);
+            config["plugins"] = json!({"_default":{"enabled":false}});
+        }
+        if windows && cfg!(windows) {
+            config["windows.sandbox"] = json!("unelevated");
+        }
+        config
+    }
+
+    fn luna_config(prompt: bool) -> Value {
+        let mut config = json!({
+            "enabled": true,
+            "required": false,
+            "environment_id": "local",
+            "startup_readiness": "connection",
+            "supports_parallel_tool_calls": false,
+            "disabled_tools": [],
+            "omit_tools_from": [],
+            "url":"<mcp-url>", "bearer_token_env_var":"LUNA_MCP_TOKEN",
+            "tool_timeout_sec":1900, "default_tools_approval_mode":"approve"
+        });
+        if prompt {
+            config["tools"]["luna_session_spawn"]["approval_mode"] = json!("prompt");
+        }
+        config
+    }
+
+    /// Luna's server for a connectors-off helper: an inherited `luna` table's
+    /// header command replaced by one that runs nothing of the table's.
+    fn luna_config_alone(prompt: bool) -> Value {
+        let mut config = luna_config(prompt);
+        config["http_headers_helper"] = json!("echo {}");
+        config
     }
 
     /// A thread request's typed read-only: the plain mode, or where Luna
@@ -1292,7 +1369,7 @@ mod tests {
 
     fn codex_turn_envs(id: &str, sandboxed: bool) -> Vec<(String, String)> {
         let mut envs = if sandboxed { golden::codex_sandbox_path() } else { Vec::new() };
-        envs.extend(pairs(&[("CODEX_HOME", "C:\\acc"), ("LUNA_SESSION_ID", id)]));
+        envs.extend(pairs(&[("CODEX_HOME", "C:\\acc"), crate::codex::snapshot::LOCAL_APP_SERVER, ("LUNA_SESSION_ID", id)]));
         envs
     }
 
@@ -1303,14 +1380,14 @@ mod tests {
         let e = entry(Provider::Codex);
         let t = turn(&e, ID, &r);
         let mut want = codex_turn("C:\\p", &r);
-        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
-        want.extend(apps_off());
+        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""])));
         assert_eq!(t.args, want);
         assert_eq!(t.dir, "C:\\p");
         assert_eq!(t.envs, codex_turn_envs(ID, true));
         let mut open =
             json!({ "method": "thread/start", "params": { "cwd": "C:\\p", "model": "haiku", "developerInstructions": "<role-layers>" } });
         typed_read_only(&mut open);
+        open["params"]["config"] = thread_config(false, true);
         assert_eq!(t.open, Some(open));
         assert_eq!(t.role.as_deref(), Some(golden::role_layers(crate::library::Role::Helper).as_str()), "its config sets none");
         assert_eq!(t.value("effort"), Some("effort low of turn/start"));
@@ -1323,8 +1400,7 @@ mod tests {
         let mut e = entry(Provider::Codex);
         e.spec.model = None;
         let mut want = codex_turn("C:\\p", &r);
-        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
-        want.extend(apps_off());
+        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""])));
         let t = turn(&e, ID, &r);
         assert_eq!(t.args, want);
         assert_eq!(t.open.unwrap()["method"], "thread/start");
@@ -1335,6 +1411,7 @@ mod tests {
             "threadId": "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", "cwd": "C:\\p", "developerInstructions": "<role-layers>"
         } });
         typed_read_only(&mut open);
+        open["params"]["config"] = thread_config(false, true);
         assert_eq!(t.open, Some(open));
         // Where its first turn said it worked, while that is there.
         let wt = std::env::temp_dir().join(format!("luna-golden-bg-codex-wt-{}", std::process::id()));
@@ -1382,15 +1459,12 @@ mod tests {
         e.spec.account_path = account.to_string_lossy().into_owned();
         let r = Redact::for_chat(ID).with(e.spec.account_path.clone(), "<acc>");
         let t = turn(&e, ID, &r);
-        assert!(!t.args.iter().any(|a| a.starts_with("windows.sandbox")), "{:?}", t.args);
+        assert!(t.open.unwrap()["params"]["config"]["windows.sandbox"].is_null());
         let _ = std::fs::remove_dir_all(&account);
     }
 
-    /// A helper whose spawn names no mode, as the spawn settles it
-    /// (agents/spawn `background_spec`): Codex's own from its config gets no
-    /// sandbox or approval flag; an account Luna cannot read, the closed
-    /// read-only and on-request, passed. With no configured mode, both CLIs
-    /// get their review mode.
+    /// With no mode named at spawn, pass review for an empty stack, leave a
+    /// configured mode to Codex, and keep the closed pair for unreadable choices.
     #[test]
     fn golden_headless_turns_whose_spawn_named_no_mode() {
         crate::codex::config::use_empty_machine_layers_for_test();
@@ -1399,40 +1473,46 @@ mod tests {
         let acc = account.to_string_lossy().into_owned();
         let settled = |config: &str, provider: Provider| {
             std::fs::write(account.join("config.toml"), config).unwrap();
-            crate::agents::spawn::background_spec_for_test(provider, &acc, "C:\\p")
+            crate::agents::spawn::background_spec_for_test(provider, &acc, r"C:\p")
         };
-        let closed =
-            [strings(&["-c", "approval_policy=\"on-request\""]), golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""])].concat();
-        for (config, held) in [
-            (
-                "",
-                codex_held(
-                    strings(&[
-                        "-c",
-                        "approvals_reviewer=\"auto_review\"",
-                        "-c",
-                        "approval_policy=\"on-request\"",
-                        "-c",
-                        "sandbox_mode=\"workspace-write\"",
-                    ]),
-                    true,
-                ),
-            ),
-            ("sandbox_mode = \"danger-full-access\"\n", codex_held(Vec::new(), true)),
-            ("approval_policy = \"sometimes\"\n", codex_held(closed, true)),
+        for (config, reviewer, sandbox, approval) in [
+            ("", Some("auto_review"), Some("workspace-write"), Some("on-request")),
+            ("sandbox_mode = \"danger-full-access\"\n", None, None, None),
+            ("approval_policy = \"sometimes\"\n", None, Some("read-only"), Some("on-request")),
         ] {
             let id = "golden-bg-codex-own";
-            let r = Redact::for_chat(id);
             let mut e = entry(Provider::Codex);
-            let spec = settled(config, Provider::Codex);
-            (e.spec.mode, e.spec.own_mode, e.spec.approval, e.spec.auto_review) =
-                (spec.mode, spec.own_mode, spec.approval, spec.auto_review);
-            let t = turn(&e, id, &r);
-            let mut want = codex_turn("C:\\p", &r);
-            want.extend(held);
-            want.extend(apps_off());
-            assert_eq!(t.args, want, "{config}");
-            assert_eq!(t.envs, codex_turn_envs(id, true), "{config}");
+            e.spec = settled(config, Provider::Codex);
+            let redacted = Redact::for_chat(id).with(acc.clone(), r"C:\acc");
+            let output = turn(&e, id, &redacted);
+            let mode_flags = match (reviewer, sandbox) {
+                (Some(_), _) => strings(&[
+                    "-c",
+                    "approvals_reviewer=\"auto_review\"",
+                    "-c",
+                    "approval_policy=\"on-request\"",
+                    "-c",
+                    "sandbox_mode=\"workspace-write\"",
+                ]),
+                (None, Some("read-only")) => {
+                    [strings(&["-c", "approval_policy=\"on-request\""]), golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""])]
+                        .concat()
+                }
+                _ => Vec::new(),
+            };
+            let mut want = codex_turn(r"C:\p", &redacted);
+            want.extend(codex_held(mode_flags));
+            assert_eq!(output.args, want, "{config}");
+            assert_eq!(output.envs, codex_turn_envs(id, true), "{config}");
+            let open = output.open.unwrap();
+            assert_eq!(open["params"]["approvalsReviewer"].as_str(), reviewer);
+            let selected = open["params"]["sandbox"].as_str().or(open["params"]["permissions"].as_str());
+            if sandbox == Some("read-only") && !cfg!(windows) {
+                assert_eq!(selected, Some("<profile>"));
+            } else {
+                assert_eq!(selected, sandbox);
+            }
+            assert_eq!(open["params"]["approvalPolicy"].as_str(), approval);
         }
         if crate::claude::defaults::managed_mode_for_test() {
             let _ = std::fs::remove_dir_all(&account);
@@ -1459,7 +1539,7 @@ mod tests {
     #[test]
     fn golden_headless_codex_sandboxes_and_the_reviewer() {
         // (sandbox, auto review, what holds it, whether Windows sandboxes it)
-        let read_only_net = codex_held(golden::codex_read_only_net(), true);
+        let read_only_net = codex_held(golden::codex_read_only_net());
         let reviewer = strings(&[
             "-c",
             "approvals_reviewer=\"auto_review\"",
@@ -1469,10 +1549,10 @@ mod tests {
             "sandbox_mode=\"workspace-write\"",
         ]);
         let cases: [(&str, bool, Vec<String>, bool); 4] = [
-            ("workspace-write", false, codex_held(strings(&["-c", "sandbox_mode=\"workspace-write\""]), true), true),
-            ("danger-full-access", false, codex_held(strings(&["-c", "sandbox_mode=\"danger-full-access\""]), false), false),
+            ("workspace-write", false, codex_held(strings(&["-c", "sandbox_mode=\"workspace-write\""])), true),
+            ("danger-full-access", false, codex_held(strings(&["-c", "sandbox_mode=\"danger-full-access\""])), false),
             ("read-only-net", false, read_only_net, true),
-            ("workspace-write", true, codex_held(reviewer, true), true),
+            ("workspace-write", true, codex_held(reviewer), true),
         ];
         for (mode, auto_review, held, sandboxed) in cases {
             let id = format!("golden-bg-codex-{mode}-{auto_review}");
@@ -1485,8 +1565,8 @@ mod tests {
                 let t = turn(&e, &id, &r);
                 let mut want = codex_turn("C:\\p", &r);
                 want.extend(held.clone());
-                want.extend(apps_off());
                 assert_eq!(t.args, want, "{mode} {auto_review}");
+                assert_eq!(t.open.as_ref().unwrap()["params"]["config"], thread_config(false, sandboxed));
                 let mut envs = codex_turn_envs(&id, sandboxed);
                 if mode == crate::codex::launch::READ_ONLY_NET {
                     // git's https, which schannel cannot do there: after the
@@ -1515,14 +1595,13 @@ mod tests {
         e.spec.parent = Some("golden-parent".into());
         let t = turn(&e, ID, &r);
         let mut want = codex_turn("C:\\p", &r);
-        want.extend(codex_held(strings(&["-c", "approval_policy=\"on-request\"", "-c", "sandbox_mode=\"workspace-write\""]), true));
-        want.extend(apps_off());
-        want.extend(golden::codex_mcp(true));
+        want.extend(codex_held(strings(&["-c", "approval_policy=\"on-request\"", "-c", "sandbox_mode=\"workspace-write\""])));
         assert_eq!(t.args, want);
         let mut envs = golden::codex_sandbox_path();
         envs.extend(pairs(&[
             ("LUNA_MCP_TOKEN", "<token>"),
             ("CODEX_HOME", "C:\\acc"),
+            crate::codex::snapshot::LOCAL_APP_SERVER,
             ("LUNA_SESSION_ID", ID),
             ("LUNA_PARENT_ID", "golden-parent"),
         ]));
@@ -1535,11 +1614,10 @@ mod tests {
             e.spec.approval = approval.map(str::to_owned);
             e.spec.auto_review = auto_review;
             let t = turn(&e, ID, &r);
-            assert_eq!(
-                t.args.iter().filter(|a| a.starts_with("mcp_servers.luna.")).collect::<Vec<_>>(),
-                golden::codex_mcp(prompt).iter().filter(|a| *a != "-c").collect::<Vec<_>>(),
-                "{approval:?} {auto_review}",
-            );
+            let mut config = thread_config(false, true);
+            config["mcp_servers"]["luna"] = luna_config_alone(prompt);
+            assert!(t.value("luna-tools").is_some_and(|value| value.contains("http_headers_helper")));
+            assert_eq!(t.open.unwrap()["params"]["config"], config, "{approval:?} {auto_review}");
         }
 
         e.spec.approval = Some("on-request".into());
@@ -1548,19 +1626,23 @@ mod tests {
         // server's requests, not through Luna's tools.
         e.spec.tools = false;
         let t = turn(&e, ID, &r);
-        assert!(!t.args.iter().any(|a| a.starts_with("mcp_servers.")), "{:?}", t.args);
+        assert_eq!(t.open.unwrap()["params"]["config"], thread_config(false, true));
         assert!(!t.envs.iter().any(|(k, _)| k == "LUNA_MCP_TOKEN"));
         // Spawned with `connectors`: its account's apps and servers stay on,
-        // its memories still off.
+        // its memories still off, and its `luna` table keeps any header
+        // command an account or project gave it, as a chat's does.
         e.spec.connectors = true;
         let t = turn(&e, ID, &r);
         let mut want = codex_turn("C:\\p", &r);
-        want.extend(codex_held(strings(&["-c", "approval_policy=\"on-request\"", "-c", "sandbox_mode=\"workspace-write\""]), true));
+        want.extend(codex_held(strings(&["-c", "approval_policy=\"on-request\"", "-c", "sandbox_mode=\"workspace-write\""])));
         assert_eq!(t.args, want);
+        assert_eq!(t.open.unwrap()["params"]["config"], thread_config(true, true));
         e.spec.tools = true;
         let t = turn(&e, ID, &r);
-        want.extend(golden::codex_mcp(true));
         assert_eq!(t.args, want);
+        let mut config = thread_config(true, true);
+        config["mcp_servers"]["luna"] = luna_config(true);
+        assert_eq!(t.open.unwrap()["params"]["config"], config);
         crate::agents::forget(ID);
     }
 
@@ -1580,19 +1662,14 @@ mod tests {
         e.spec.account_path = account.clone();
         let t = turn(&e, ID, &r);
         let mut want = codex_turn("C:\\p", &r);
-        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
-        // One the account calls `luna` is its own, not Luna's, which this helper
-        // without tools is not given: off as well. A name with a dot is a
-        // quoted key in the table, not split.
-        want.extend(strings(&[
-            "-c",
-            "features.apps=false",
-            "-c",
-            "mcp_servers={ gmail = { enabled = false }, luna = { enabled = false }, \"team.slack\" = { enabled = false } }",
-            "-c",
-            "plugins={ \"crm@market\" = { enabled = false }, _default = { enabled = false } }",
-        ]));
+        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""])));
         assert_eq!(t.args, want);
+        let mut expected = thread_config(false, true);
+        expected["mcp_servers"] = json!({
+            "gmail":{"enabled":false}, "luna":{"enabled":false}, "team.slack":{"enabled":false}
+        });
+        expected["plugins"]["crm@market"] = json!({"enabled":false});
+        assert_eq!(t.open.as_ref().unwrap()["params"]["config"], expected);
         assert!(t.value("helper.luna-mcp-alone").is_some_and(|v| v.contains("team.slack")));
         // A project's servers go off as the account's do.
         let project = std::path::Path::new(&account).join("project");
@@ -1601,18 +1678,13 @@ mod tests {
         let mut in_project = entry(Provider::Codex);
         in_project.spec.account_path = account.clone();
         in_project.spec.folder = project.to_string_lossy().into_owned();
-        let (args, _, _, _) = command_for(&in_project, ID).unwrap();
-        assert!(args.iter().any(|a| a.starts_with("mcp_servers=") && a.contains("docs = { enabled = false }")), "{args:?}");
-        // With tools, Luna's own is `luna`: the account's, a url alone, is replaced
-        // whole and turned on, and Luna's keys come after the table, which
-        // would otherwise replace them; one with more of its own stops the start.
+        let open = open_of(&in_project, ID);
+        assert_eq!(open["params"]["config"]["mcp_servers"]["docs"], json!({"enabled":false}));
         e.spec.tools = true;
         e.spec.token = helper_token(ID, &e);
         let t = turn(&e, ID, &r);
-        let table = t.args.iter().position(|a| a.starts_with("mcp_servers={")).unwrap();
-        assert!(t.args[table].contains("luna = { enabled = true }"), "{:?}", t.args);
-        assert!(t.args.iter().skip(table + 1).any(|a| a.starts_with("mcp_servers.luna.url=")), "{:?}", t.args);
-        assert!(t.args.ends_with(&golden::codex_mcp(true)), "{:?}", t.args);
+        expected["mcp_servers"]["luna"] = luna_config_alone(true);
+        assert_eq!(t.open.unwrap()["params"]["config"], expected);
         std::fs::write(std::path::Path::new(&account).join("config.toml"), format!("approval_policy = \"never\"\n{config}")).unwrap();
         let resumed = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b");
         for (approval, thread, learned, effective) in [
@@ -1628,35 +1700,28 @@ mod tests {
             let t = turn(&e, ID, &r);
             let resume_exception = approval.is_none() && effective == Some("never") && !cfg!(target_os = "macos");
             let prompt = approval.is_none() || cfg!(target_os = "macos");
-            assert!(t.args.ends_with(&golden::codex_mcp(prompt)), "{approval:?} {thread:?}: {:?}", t.args);
             let open = t.open.unwrap();
             assert_eq!(open["params"]["approvalPolicy"].as_str(), effective);
-            assert_eq!(open["params"]["config"][SPAWN_APPROVAL_KEY].as_str(), resume_exception.then_some("approve"));
+            let mut luna = luna_config_alone(prompt);
+            if resume_exception {
+                luna["tools"]["luna_session_spawn"]["approval_mode"] = json!("approve");
+            }
+            assert_eq!(open["params"]["config"]["mcp_servers"]["luna"], luna, "{approval:?} {thread:?}");
         }
-        std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
-        let refused = command_for(&e, ID).err().unwrap();
-        assert!(refused.contains("named luna") && refused.contains("rename that server"), "{refused}");
-        // With its connectors it is given Luna's server all the same, and the
-        // account's `luna` would merge into it just as well: refused too, as is
-        // one turning it off, which nothing turns on for it there.
-        e.spec.connectors = true;
-        assert!(command_for(&e, ID).err().unwrap().contains("named luna"));
-        std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\nenabled = false\n").unwrap();
-        assert!(command_for(&e, ID).err().unwrap().contains("its enabled would be merged"));
-        e.spec.connectors = false;
-        assert!(command_for(&e, ID).is_ok(), "without connectors it is turned on");
+        let ((args, _, _, _), _) = build_command(&e, ID, &crate::library::role_texts(role_of(&e.spec)), None).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-c", "features.plugins=false"]));
         e.spec.tools = false;
         e.spec.token = None;
         crate::agents::forget(ID);
         // A config that will not parse: no turn, rather than one with its servers on.
         std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.gmail\n").unwrap();
         let e = command_for(&e, ID).err().unwrap();
-        assert!(e.contains("not started"), "{e}");
-        // Spawned with them, it never needed the list.
+        assert!(e.contains("could not read its launch configuration"), "{e}");
+        // A connector opt-in still requires a valid config snapshot.
         let mut kept = entry(Provider::Codex);
         kept.spec.account_path = account.clone();
         kept.spec.connectors = true;
-        assert!(command_for(&kept, ID).is_ok());
+        assert!(command_for(&kept, ID).err().unwrap().contains("could not read its launch configuration"));
         let _ = std::fs::remove_dir_all(&account);
     }
 
@@ -1691,8 +1756,7 @@ mod tests {
         let (e, r) = library_entry(ID, &lib, Provider::Codex);
         let t = turn(&e, ID, &r);
         let mut want = codex_turn(&lib.folder, &r);
-        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
-        want.extend(apps_off());
+        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""])));
         want.extend(strings(&[
             "-c",
             &format!("plugins.{}@rm-luna.enabled=true", crate::library::GoldenLibrary::SLUG),
@@ -1702,13 +1766,16 @@ mod tests {
         assert_eq!(t.args, want);
         assert_eq!(t.dir, "<project>");
         let mut envs = golden::codex_sandbox_path();
-        envs.extend(pairs(&[("CODEX_HOME", "<acc>"), ("LUNA_SESSION_ID", ID)]));
+        envs.extend(pairs(&[("CODEX_HOME", "<acc>"), crate::codex::snapshot::LOCAL_APP_SERVER, ("LUNA_SESSION_ID", ID)]));
         assert_eq!(t.envs, envs);
         assert_eq!((t.settings, t.instructions), (None, None), "Codex has no way to take other instructions");
         let open = t.open.unwrap();
         assert_eq!(open["method"], "thread/start");
         assert_eq!(open["params"]["cwd"], "<project>");
-        assert_eq!(open["params"]["config"], json!({ "skills.config": [{ "path": "<acc>/skills/review/SKILL.md", "enabled": false }] }));
+        let mut config = thread_config(false, true);
+        config["skills.config"] = json!([{ "path": "<acc>/skills/review/SKILL.md", "enabled": false }]);
+        config["plugins"][format!("{}@rm-luna", crate::library::GoldenLibrary::SLUG)] = json!({"enabled":true});
+        assert_eq!(open["params"]["config"], config);
     }
 
     // A helper's turn on a library whose every entry is the person's chats'
@@ -1743,8 +1810,7 @@ mod tests {
         e.session = Some(THREAD.into());
         let t = turn(&e, ID, &r);
         let mut want = codex_turn(&lib.folder, &r);
-        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
-        want.extend(apps_off());
+        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""])));
         want.extend(strings(&["-c", "skills.config=[{path=\"<acc>/skills/report/SKILL.md\",enabled=false}]"]));
         assert_eq!(t.args, want);
         assert!(!std::path::Path::new(&lib.codex()).join("AGENTS.md").exists(), "nothing of the chats' in the account's own file");
@@ -1756,6 +1822,8 @@ mod tests {
         let open = t.open.unwrap();
         assert_eq!(open["method"], "thread/resume");
         assert_eq!(open["params"]["threadId"], THREAD);
-        assert_eq!(open["params"]["config"], json!({ "skills.config": [{ "path": "<acc>/skills/report/SKILL.md", "enabled": false }] }));
+        let mut config = thread_config(false, true);
+        config["skills.config"] = json!([{ "path": "<acc>/skills/report/SKILL.md", "enabled": false }]);
+        assert_eq!(open["params"]["config"], config);
     }
 }

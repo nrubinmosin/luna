@@ -11,4 +11,5 @@ pub mod launch;
 pub mod limits;
 pub mod models;
 pub mod session;
+pub(crate) mod snapshot;
 pub mod trust;

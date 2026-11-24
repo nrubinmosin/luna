@@ -1,6 +1,7 @@
 //! A Codex helper's turn over `codex app-server` (experimental in 0.169.0):
 //! JSON-RPC 2.0 on the process's stdio, one message a line. Luna is the
-//! client: `initialize`, `thread/start` or `thread/resume`, `turn/start`; then
+//! client: `initialize`, `config/read`, `thread/start` or `thread/resume`,
+//! and `turn/start`. Then it reads
 //! the server's notifications until `turn/completed`, at which Luna closes
 //! stdin and the server goes, which ends the turn as any helper's process
 //! does (events.rs `turn_over`). One process a turn, as `codex exec` was:
@@ -16,6 +17,7 @@
 //! server's request (`reply_when_answered`).
 
 use super::*;
+use std::time::Instant;
 
 const MCP_ELICITATION: &str = "mcpServer/elicitation/request";
 const USER_INPUT: &str = "item/tool/requestUserInput";
@@ -46,11 +48,21 @@ const HANDSHAKE_MS: u64 = 3 * 60 * 1000;
 /// How often a turn is looked at for that (`watch`).
 const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
+enum ConfigExchange {
+    // Only protocol fixtures initialize an already prepared thread.
+    Initialize(Option<Box<CodexOpen>>),
+    Read { open: Box<CodexOpen>, requested: Instant },
+    Ready,
+}
+
 /// A Codex turn's side of its conversation with its server.
 pub(super) struct Rpc {
     /// `thread/start` or `thread/resume` with its params: what follows the
-    /// handshake (command.rs `command_and_open`).
+    /// handshake (command.rs `CodexOpen::prepare`).
     open: Value,
+    exchange: ConfigExchange,
+    start_deadline: Instant,
+    pub(super) thread_opened: bool,
     /// The turn's text and effort, for `turn/start` once the thread is there.
     input: String,
     effort: String,
@@ -61,6 +73,8 @@ pub(super) struct Rpc {
     client_id: String,
     /// Whether Luna supplied its MCP server to this process.
     luna_supplied: bool,
+    /// Whether its startup failure has already been noted for this turn.
+    luna_startup_failed: bool,
     /// `turn/start` as it is to go, held until the text it carries is saved as
     /// sent (`send_turn`).
     pending: Option<Value>,
@@ -94,10 +108,14 @@ impl Rpc {
     pub(super) fn new(open: Value, input: String, effort: String, client_id: String, luna_supplied: bool) -> Rpc {
         Rpc {
             open,
+            exchange: ConfigExchange::Ready,
+            start_deadline: Instant::now() + std::time::Duration::from_millis(HANDSHAKE_MS),
+            thread_opened: false,
             input,
             effort,
             client_id,
             luna_supplied,
+            luna_startup_failed: false,
             pending: None,
             thread: None,
             approval: None,
@@ -108,6 +126,17 @@ impl Rpc {
             done: false,
             broken: None,
         }
+    }
+
+    pub(super) fn starting(open: CodexOpen, input: String, effort: String, client_id: String) -> Self {
+        let mut rpc = Self::new(Value::Null, input, effort, client_id, false);
+        rpc.exchange = ConfigExchange::Initialize(Some(Box::new(open)));
+        rpc
+    }
+
+    #[cfg(test)]
+    fn fixture_initialize(&mut self) {
+        self.exchange = ConfigExchange::Initialize(None);
     }
 
     /// Whether text may join the turn now: it has an id, and is neither
@@ -198,21 +227,62 @@ pub(super) struct Heard {
     pub(super) turn_started: bool,
     /// The saved policy changed when a thread could not resume or started its turn.
     pub(super) approval_changed: bool,
+    /// Read the catalog for this launch after releasing the registry lock.
+    pub(super) compaction: Option<(String, u64, crate::codex::config::Compaction)>,
+    pub(super) config_validated: bool,
 }
 
 /// One message off a turn's server, into helper `id`, under the registry's
 /// lock (run.rs `take_event`).
+#[cfg(test)]
 pub(super) fn on_message(r: &mut Registry, id: &str, v: &Value) -> Heard {
+    on_frame(r, id, Ok(v), Instant::now())
+}
+
+pub(super) fn on_frame(r: &mut Registry, id: &str, frame: Result<&Value, &str>, received: Instant) -> Heard {
     let mut heard = Heard::default();
+    let Some(e) = r.entries.get_mut(id) else { return heard };
+    let rpc = rpc_of(e);
+    let exchanging = rpc.is_some_and(|rpc| !matches!(rpc.exchange, ConfigExchange::Ready));
+    if exchanging && rpc.is_some_and(|rpc| rpc.done) {
+        return heard;
+    }
+    if rpc.is_some_and(|rpc| !rpc.done && rpc.turn.is_none() && received >= rpc.start_deadline) {
+        let why = if exchanging { "the app-server's configuration exchange timed out".into() } else { start_timeout() };
+        broke(e, why, &mut heard);
+        return heard;
+    }
+    let v = match frame {
+        Ok(v) => v,
+        Err(why) => {
+            broke(e, why.into(), &mut heard);
+            return heard;
+        }
+    };
     let (method, rid) = (v.get("method").and_then(Value::as_str), v.get("id"));
+    if exchanging {
+        match (method, rid) {
+            (Some(_), None) => {} // Startup notifications cannot open a thread or ask for tools.
+            (None, Some(rid))
+                if rid.is_string()
+                    && v.get("method").is_none()
+                    && (v["result"].is_object() ^ v["error"].is_object())
+                    && (v.get("result").is_none() || v.get("error").is_none()) =>
+            {
+                answered(e, rid.as_str().unwrap_or_default(), v, received, &mut heard);
+            }
+            _ => broke(e, "unexpected message during the app-server's configuration exchange".into(), &mut heard),
+        }
+        return heard;
+    }
+
     if let (Some(method), Some(rid)) = (method, rid) {
         heard.asks.extend(server_request(r, id, rid, method, &v["params"]));
         return heard;
     }
-    let Some(e) = r.entries.get_mut(id) else { return heard };
     match (method, rid) {
         (Some(method), _) => notified(e, method, &v["params"], &mut heard),
-        (None, Some(rid)) => answered(e, rid.as_str().unwrap_or(""), v, &mut heard),
+        (None, Some(rid)) => answered(e, rid.as_str().unwrap_or(""), v, received, &mut heard),
         (None, None) => {}
     }
     heard
@@ -245,28 +315,13 @@ fn close(e: &mut Entry, heard: &mut Heard) {
 /// The turn cannot go on for `why`, a break of the protocol: its error, and
 /// a failure of its CLI's version for the canary (`went_wrong`).
 fn broke(e: &mut Entry, why: String, heard: &mut Heard) {
-    let why = without_excerpts(&why);
+    let why = crate::codex::snapshot::without_excerpts(&why);
     note(e, &format!("error: {}", one_line(&why)));
     if let Some(rpc) = rpc_mut(e) {
         rpc.broken = Some(why.clone());
     }
     e.error = Some(why);
     close(e, heard);
-}
-
-/// Codex's diagnostic without the source lines it quotes: a config that
-/// will not parse comes back as its file, line and column and what is wrong
-/// there, then the line itself in a gutter ("2 | key = value", with "|" and
-/// caret lines about it; 0.171.0, its TOML errors). The file may be a link
-/// to one that is no config, a linked worktree's main checkout's say, and
-/// what the turn failed for goes to its parent and the log: the gutter
-/// lines go, the rest stays.
-fn without_excerpts(why: &str) -> String {
-    let quoted = |line: &str| {
-        let rest = line.trim_start().trim_start_matches(|c: char| c.is_ascii_digit());
-        rest.trim_start().starts_with('|')
-    };
-    why.lines().filter(|line| !quoted(line)).collect::<Vec<_>>().join("\n")
 }
 
 /// A request of Luna's refused: the turn cannot go on.
@@ -292,7 +347,15 @@ fn start_fresh(e: &mut Entry, why: &str, heard: &mut Heard) {
         if inherited_approval {
             params.remove("approvalPolicy");
             if let Some(config) = params.get_mut("config").and_then(Value::as_object_mut) {
-                config.remove(SPAWN_APPROVAL_KEY);
+                if let Some(approval) = config
+                    .get_mut("mcp_servers")
+                    .and_then(|servers| servers.get_mut("luna"))
+                    .and_then(|luna| luna.get_mut("tools"))
+                    .and_then(|tools| tools.get_mut("luna_session_spawn"))
+                    .and_then(|spawn| spawn.get_mut("approval_mode"))
+                {
+                    *approval = json!("prompt");
+                }
                 if config.is_empty() {
                     params.remove("config");
                 }
@@ -350,17 +413,71 @@ fn settings_differ(asked: &Value, opened: &Value) -> Option<String> {
 }
 
 /// The server's answer to a request of Luna's.
-fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
+fn answered(e: &mut Entry, rid: &str, v: &Value, received: Instant, heard: &mut Heard) {
+    if rpc_of(e).is_some_and(|rpc| rpc.done) {
+        return;
+    }
     let ok = v.get("error").is_none();
     match rid {
-        INIT if !ok => failed(e, "initialize", v, heard),
         INIT => {
-            let open = rpc_of(e).map(|rpc| rpc.open.clone()).unwrap_or(Value::Null);
-            let method = open["method"].as_str().unwrap_or("thread/start").to_string();
-            let sent = send(e, notification("initialized")) && send(e, request(OPEN, &method, open["params"].clone()));
-            if !sent {
+            let Some(rpc) = rpc_mut(e) else { return };
+            let ConfigExchange::Initialize(open) = &mut rpc.exchange else {
+                return broke(e, "duplicate initialize response".into(), heard);
+            };
+            if !ok {
+                return failed(e, "initialize", v, heard);
+            }
+            let line = if let Some(open) = open.take() {
+                let Some(cwd) = open.request["params"]["cwd"].as_str() else {
+                    return broke(e, "the helper's config/read has no cwd".into(), heard);
+                };
+                let line = format!("{}\n", crate::codex::snapshot::request(cwd));
+                rpc.exchange = ConfigExchange::Read { open, requested: Instant::now() };
+                line
+            } else {
+                // Protocol fixtures recorded with an already prepared thread.
+                rpc.exchange = ConfigExchange::Ready;
+                let method = rpc.open["method"].as_str().unwrap_or("thread/start");
+                request(OPEN, method, rpc.open["params"].clone())
+            };
+            if !send(e, notification("initialized")) || !send(e, line) {
                 close(e, heard);
             }
+        }
+        crate::codex::snapshot::READ_ID => {
+            let Some(rpc) = rpc_of(e) else { return };
+            let ConfigExchange::Read { open: pending, requested } = &rpc.exchange else {
+                return broke(e, "unsolicited config/read response".into(), heard);
+            };
+            let luna_supplied = pending.luna_url.is_some();
+            let elapsed = received.saturating_duration_since(*requested);
+            let prepared = crate::codex::snapshot::Snapshot::response(v)
+                .and_then(|snapshot| Ok((pending.prepare(&snapshot, &e.spec)?, snapshot.compaction()?)));
+            let (PreparedOpen { open, applied }, compaction) = match prepared {
+                Ok(prepared) => prepared,
+                Err(why) => return broke(e, redacted(&why), heard),
+            };
+            if let Some(launch) = &e.compaction {
+                heard.compaction = Some((launch.account_path.clone(), launch.start, compaction));
+            }
+            let keys = applied.iter().map(|item| item.key).collect::<Vec<_>>().join(", ");
+            crate::log::info("codex-config", &format!("helper config/read replied in {} ms, applied [{keys}]", elapsed.as_millis()));
+            let line = request(OPEN, open["method"].as_str().expect("prepared open has a method"), open["params"].clone());
+            if let Some(rpc) = rpc_mut(e) {
+                rpc.exchange = ConfigExchange::Ready;
+                rpc.open = open;
+                rpc.luna_supplied = luna_supplied;
+            }
+            heard.config_validated = true;
+            if !send(e, line) {
+                close(e, heard);
+            }
+        }
+        OPEN if rpc_of(e).is_some_and(|rpc| !matches!(rpc.exchange, ConfigExchange::Ready)) => {
+            broke(e, "the thread answered before config/read".into(), heard);
+        }
+        _ if rpc_of(e).is_some_and(|rpc| !matches!(rpc.exchange, ConfigExchange::Ready)) => {
+            broke(e, "unexpected response during the app-server's configuration exchange".into(), heard);
         }
         OPEN if !ok => {
             let resuming = rpc_of(e).is_some_and(|rpc| rpc.open["method"] == "thread/resume");
@@ -376,6 +493,9 @@ fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
             let Some(thread) = r["thread"]["id"].as_str().map(str::to_owned) else {
                 return broke(e, "the thread opened with no id".into(), heard);
             };
+            if let Some(rpc) = rpc_mut(e) {
+                rpc.thread_opened = true;
+            }
             let resuming = open["method"] == "thread/resume";
             if resuming && open["params"]["threadId"].as_str() != Some(thread.as_str()) {
                 return start_fresh(e, &format!("thread {thread} came back for {}", open["params"]["threadId"]), heard);
@@ -485,6 +605,14 @@ fn item_label(item: &Value) -> String {
 /// A notification of the server's.
 fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
     match method {
+        "mcpServer/startupStatus/updated" if p["name"] == crate::codex::launch::LUNA_SERVER && p["status"] == "failed" => {
+            if let Some(rpc) = rpc_mut(e).filter(|rpc| rpc.luna_supplied && !rpc.done && !rpc.luna_startup_failed) {
+                rpc.luna_startup_failed = true;
+                let status = "MCP startup failed. This helper continues without Luna's tools.";
+                note(e, &format!("Luna tools: {status}"));
+                crate::log::info("codex-config", &format!("applied [{}] startup: {status}", crate::applied::Item::LunaTools.key()));
+            }
+        }
         "turn/started" => crate::activity::touch(),
         // The model this turn runs on, not the one asked for: what the
         // rollout says is not read for it (events.rs `turn_over`).
@@ -811,7 +939,7 @@ fn reply_to(method: &str, p: &Value, answer: Option<&Value>) -> Value {
 pub(super) fn reply_when_answered(id: String, serial: u64) {
     let of = crate::agents::label(&id);
     let spawned = std::thread::Builder::new().name(format!("luna-bg-ask-{id}")).spawn(move || {
-        let deadline = std::time::Instant::now() + ASK_TIMEOUT;
+        let deadline = Instant::now() + ASK_TIMEOUT;
         let (m, cv) = reg();
         let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
         let answer = loop {
@@ -825,7 +953,7 @@ pub(super) fn reply_when_answered(id: String, serial: u64) {
                 // Stopped, deleted, or its turn is over: nothing to answer.
                 None => return,
             }
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break None;
             }
@@ -895,8 +1023,11 @@ fn end_server(id: &str, pid: u32) {
 pub(super) fn stalled(e: &Entry, now: u64) -> Option<String> {
     let run = e.run.as_ref()?;
     let rpc = run.rpc.as_ref().filter(|rpc| !rpc.done)?;
-    (rpc.turn.is_none() && now.saturating_sub(run.started_ms) > HANDSHAKE_MS)
-        .then(|| format!("its app-server did not start the turn within {} minutes", HANDSHAKE_MS / 60_000))
+    (rpc.turn.is_none() && now.saturating_sub(run.started_ms) > HANDSHAKE_MS).then(start_timeout)
+}
+
+fn start_timeout() -> String {
+    format!("its app-server did not start the turn within {} minutes", HANDSHAKE_MS / 60_000)
 }
 
 /// Watches a Codex turn's process `pid` until its turn has started or it is
@@ -1033,6 +1164,29 @@ mod tests {
         heard
     }
 
+    #[test]
+    fn only_a_supplied_luna_servers_startup_failure_is_noted_once() {
+        let id = "as-luna-startup";
+        let failed = |server| {
+            json!({
+                "method": "mcpServer/startupStatus/updated",
+                "params": {"name": server, "status": "failed", "error": "a private value"},
+            })
+        };
+        for supplied in [false, true] {
+            let lines = running_with_luna(id, Value::Null, supplied);
+            hear(id, &failed("another-server"));
+            hear(id, &failed("luna"));
+            hear(id, &failed("luna"));
+            let e = lock().entries.remove(id).unwrap();
+            assert_eq!(e.log.len(), usize::from(supplied));
+            if supplied {
+                assert_eq!(e.log[0], "Luna tools: MCP startup failed. This helper continues without Luna's tools.");
+            }
+            assert!(lines.try_recv().is_err());
+        }
+    }
+
     /// Plays the server's side of a fixture into `id`, answering each of its
     /// requests with `answer` as a caller would; returns what Luna wrote.
     fn play(
@@ -1041,6 +1195,9 @@ mod tests {
         lines: &std::sync::mpsc::Receiver<String>,
         answer: impl Fn(&Ask) -> (Vec<String>, Option<bool>),
     ) -> Vec<Value> {
+        if messages.iter().find(|(to_luna, _)| *to_luna).is_some_and(|(_, msg)| msg["id"] == INIT) {
+            rpc_mut(lock().entries.get_mut(id).unwrap()).unwrap().fixture_initialize();
+        }
         let mut wrote = Vec::new();
         for (to_luna, msg) in messages.iter().filter(|(to_luna, _)| *to_luna) {
             let _ = to_luna;
@@ -1058,6 +1215,113 @@ mod tests {
             }
         }
         wrote
+    }
+
+    #[test]
+    fn a_turn_waits_for_config_before_start_resume_or_replacement() {
+        let fixture: Value = serde_json::from_str(include_str!("testdata/codex-0.171.0-config-read.json")).unwrap();
+        let cwd = if cfg!(windows) { r"C:\fixture\destination" } else { "/fixture/destination" };
+        for (suffix, thread) in [("start", None), ("resume", Some("beef"))] {
+            let id = format!("config-read-{suffix}");
+            let (feed, lines) = std::sync::mpsc::channel();
+            let mut e = entry(Provider::Codex);
+            e.spec.folder = cwd.to_owned();
+            e.spec.model = None;
+            e.spec.connectors = false;
+            e.compaction = Some(crate::to_compact::Launch {
+                provider: Provider::Codex,
+                account_path: e.spec.account_path.clone(),
+                folder: cwd.into(),
+                start: 7,
+                claude_window: None,
+                codex: None,
+            });
+            e.session = thread.map(|_| "abc21135-25c7-484f-8cb3-32c4cff0ab29".to_owned());
+            let (_, open) = build_command(&e, &id, &crate::library::role_texts(role_of(&e.spec)), None).unwrap();
+            let rpc = Rpc::starting(open.unwrap(), "task".into(), "low".into(), "client".into());
+            e.run = Some(Run { feed: Some(feed), rpc: Some(rpc), ..Run::claimed(Some(1), 0) });
+            lock().entries.insert(id.clone(), e);
+
+            hear(&id, &json!({"id": INIT, "result": {}}));
+            let wrote = || lines.try_iter().map(|line| serde_json::from_str::<Value>(&line).unwrap()).collect::<Vec<_>>();
+            let first = wrote();
+            assert_eq!(methods(&first), ["initialized", "config/read"]);
+            assert_eq!(first[1]["params"]["cwd"], cwd);
+            let heard = hear(&id, &json!({"id": crate::codex::snapshot::READ_ID, "result": fixture["loaded"]}));
+            let (_, start, inputs) = heard.compaction.unwrap();
+            assert_eq!(start, 7);
+            assert_eq!(inputs.token_limit, fixture["loaded"]["config"]["model_auto_compact_token_limit"].as_i64());
+            let opened = wrote();
+            assert_eq!(methods(&opened), [if thread.is_some() { "thread/resume" } else { "thread/start" }]);
+            let config = &opened[0]["params"]["config"];
+            assert_eq!(config["features.apps"], false);
+            assert_eq!(config["mcp_servers"]["team.docs"]["enabled"], false);
+            assert_eq!(config["plugins"]["_default"]["enabled"], false);
+
+            if thread.is_some() {
+                hear(&id, &json!({"id": OPEN, "error": {"message": "no rollout found"}}));
+                let retried = wrote();
+                assert_eq!(methods(&retried), ["thread/start"]);
+                assert_eq!(retried[0]["params"]["cwd"], cwd);
+                assert_eq!(&retried[0]["params"]["config"], config);
+            }
+            lock().entries.remove(&id);
+        }
+    }
+
+    #[test]
+    fn config_read_failure_closes_stdin_before_the_thread_is_requested() {
+        let id = "appserver-config-refusal";
+        let (feed, lines) = std::sync::mpsc::channel();
+        let mut e = entry(Provider::Codex);
+        let (_, open) = build_command(&e, id, &crate::library::role_texts(role_of(&e.spec)), None).unwrap();
+        let rpc = Rpc::starting(open.unwrap(), "task".into(), "low".into(), "client".into());
+        e.run = Some(Run { feed: Some(feed), rpc: Some(rpc), ..Run::claimed(Some(1), 0) });
+        lock().entries.insert(id.into(), e);
+        hear(id, &json!({"id": INIT, "result": {}}));
+        assert_eq!(lines.try_iter().count(), 2);
+        hear(id, &json!({"id": crate::codex::snapshot::READ_ID, "error": {"message": "settings unavailable\n  2 | PRIVATE CONFIG"}}));
+        assert!(matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+        let e = lock().entries.remove(id).unwrap();
+        assert_eq!(rpc_of(&e).unwrap().broken.as_deref(), Some("Codex could not read its launch configuration: settings unavailable"));
+    }
+
+    #[test]
+    fn configuration_replies_are_ordered_single_use_and_on_time() {
+        use crate::codex::snapshot::READ_ID;
+        let fixture: Value = serde_json::from_str(include_str!("testdata/codex-0.171.0-config-read.json")).unwrap();
+        let config = json!({"id": READ_ID, "result": fixture["loaded"]});
+        let init = json!({"id": INIT, "result": {}});
+        for (case, before, next, late, why) in [
+            ("repeat-init", vec![&init], init.clone(), false, "duplicate initialize"),
+            ("repeat-config", vec![&init, &config], config.clone(), false, "unsolicited config/read"),
+            ("early-open", vec![&init], json!({"id": OPEN, "result": {}}), false, "the thread answered before config/read"),
+            ("early-config", vec![], config.clone(), false, "unsolicited config/read"),
+            ("late-init", vec![], init.clone(), true, "configuration exchange timed out"),
+            ("late-config", vec![&init], config.clone(), true, "configuration exchange timed out"),
+            ("late-open", vec![&init, &config], json!({"id": OPEN, "result": {}}), true, "did not start the turn"),
+            ("bad-init", vec![], json!({"id": INIT, "result": []}), false, "unexpected message"),
+        ] {
+            let id = format!("appserver-config-{case}");
+            let (feed, lines) = std::sync::mpsc::channel();
+            let mut e = entry(Provider::Codex);
+            let (_, open) = build_command(&e, &id, &crate::library::role_texts(role_of(&e.spec)), None).unwrap();
+            let rpc = Rpc::starting(open.unwrap(), "task".into(), "low".into(), "client".into());
+            let deadline = rpc.start_deadline;
+            e.run = Some(Run { feed: Some(feed), rpc: Some(rpc), ..Run::claimed(Some(1), 0) });
+            lock().entries.insert(id.clone(), e);
+            for message in before {
+                let heard = hear(&id, message);
+                assert_eq!(heard.config_validated, message["id"] == READ_ID, "{case}");
+            }
+            lines.try_iter().for_each(drop);
+            let received = if late { deadline } else { deadline - std::time::Duration::from_secs(1) };
+            let heard = on_frame(&mut lock(), &id, Ok(&next), received);
+            assert!(!heard.config_validated && heard.ended, "{case}");
+            assert!(matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)), "{case}");
+            let e = lock().entries.remove(&id).unwrap();
+            assert!(rpc_of(&e).unwrap().broken.as_deref().is_some_and(|error| error.contains(why)), "{case}: {:?}", e.error);
+        }
     }
 
     fn methods(wrote: &[Value]) -> Vec<String> {
@@ -1160,7 +1424,7 @@ mod tests {
                 "config": { "skills.config": skills }
             } });
             if named_policy.is_none() {
-                open["params"]["config"][SPAWN_APPROVAL_KEY] = json!("approve");
+                open["params"]["config"]["mcp_servers"] = json!({"luna":{"tools":{"luna_session_spawn":{"approval_mode":"approve"}}}});
             }
             let lines = running(id, open);
             {
@@ -1176,7 +1440,11 @@ mod tests {
             assert_eq!(line["method"], "thread/start", "{answer}");
             assert!(line["params"].get("threadId").is_none() && line["params"]["developerInstructions"] == "role", "{line}");
             assert_eq!(line["params"]["approvalPolicy"].as_str(), named_policy);
-            assert_eq!(line["params"]["config"], json!({ "skills.config": skills }));
+            assert_eq!(line["params"]["config"]["skills.config"], skills);
+            assert_eq!(
+                line.pointer("/params/config/mcp_servers/luna/tools/luna_session_spawn/approval_mode").and_then(Value::as_str),
+                named_policy.is_none().then_some("prompt")
+            );
             hear(id, &json!({ "id": OPEN, "result": { "thread": { "id": "t-new" }, "approvalPolicy": "on-request" } }));
             let start: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
             assert_eq!(
@@ -1660,6 +1928,7 @@ mod tests {
         assert!(lock().entries[id].error.is_some(), "and the turn ended on it");
         lock().entries.remove(id);
         let _lines = running(id, Value::Null);
+        rpc_mut(lock().entries.get_mut(id).unwrap()).unwrap().fixture_initialize();
         hear(id, &json!({ "id": INIT, "error": { "code": -32600, "message": "unknown capability" } }));
         assert_eq!(went_wrong(id).as_deref(), Some("initialize: unknown capability"));
         lock().entries.remove(id);
@@ -1689,9 +1958,10 @@ mod tests {
                     0: /acc/config.toml:2:16: string values must be quoted, expected literal string\n    \
                     1: TOML parse error at line 2, column 16\n       \
                     string values must be quoted, expected literal string";
-        assert_eq!(without_excerpts(codex), kept);
+        assert_eq!(crate::codex::snapshot::without_excerpts(codex), kept);
         let id = "as-broken-config";
         let _lines = running(id, Value::Null);
+        rpc_mut(lock().entries.get_mut(id).unwrap()).unwrap().fixture_initialize();
         hear(id, &json!({ "id": INIT, "error": { "code": -32600, "message": codex } }));
         let error = lock().entries[id].error.clone().unwrap();
         assert!(error.contains("config.toml:2:16") && !error.contains("ghp_") && !error.contains("secret-token"), "{error}");
