@@ -28,11 +28,12 @@ Otherwise clone, one per provider the run needs:
   the copy in (`CLAUDE_CONFIG_DIR=... claude` then `/login`, or
   `CODEX_HOME=... codex login`). That login is a person's step: hand it to
   them and wait. Do not try to complete it yourself.
-- **`-WithCredentials` only when the person explicitly asks for it**, and say
-  why it is risky before running it: OAuth refresh tokens rotate, so whichever
-  of the two folders refreshes first leaves the other with a dead token; a live
-  run on the copy can sign the original out. If they still want it, go ahead
-  and note it in the report.
+- **Never `-WithCredentials` on a real, in-use account**, even if asked: OAuth
+  refresh tokens rotate, so a token refresh in the copy leaves the original
+  with a dead token and signs it out (it happened to the operator's `frontend`
+  account). A throwaway account gets its own fresh sign-in instead: a folder
+  under `test-build/accounts`, `claude` + `/login` with `CLAUDE_CONFIG_DIR`, or
+  `codex login` with `CODEX_HOME`. The person does the sign-in.
 - The source must be a real account folder the person named. Never pick one
   yourself, and never point anything at Luna's own install (`E:\Programs\Luna`)
   or its data folder.
@@ -67,8 +68,7 @@ which needs only the Codex CLI and `LUNA_LIVE=1`, no account, and
 runs on its own with `--ignored --exact`, `LUNA_LIVE_CODEX_CLI` set to the
 Codex executable's full path (the script sets it for its own runs): run it
 when the change touches the core's endpoint or its peer check. Claude's
-token-renewal test runs only with `-Renew`, and never on a clone made
-`-WithCredentials`: it signs that clone's source out. It takes minutes; run it
+token-renewal test runs only with `-Renew`. It takes minutes; run it
 in the background and wait for it rather than polling.
 
 ## 4. Compare after
@@ -76,9 +76,9 @@ in the background and wait for it rather than polling.
 Hash the same file again. Same hash: the file held the same bytes at both
 reads, no more; it does not prove nothing wrote into the source folder.
 Different: say so first in the report, because it means the source's login may
-have been rotated and the person should check that account still works. With
-`-WithCredentials` a rotation is the known risk; without it, any change points
-at something writing outside `test-build/accounts` and is a finding in itself.
+have been rotated and the person should check that account still works. With no
+credentials copied, any change points at something writing outside
+`test-build/accounts` and is a finding in itself.
 
 ## 5. Read failures before blaming code
 
@@ -92,8 +92,9 @@ run.
 
 A signed-in clone is worth keeping for the next run, since signing in again
 costs the person a step; delete it with `./scripts/test-accounts.ps1 clean
--Name live` when they asked for it gone or it was cloned with credentials (a
-second live copy of a login keeps the rotation risk alive). Say which you kept.
+-Name live` when they asked for it gone, or at once if a login was copied into
+it (a second live copy of a login keeps the rotation risk alive). Say which you
+kept.
 The tests delete their own helpers and work folders; stop anything else of
 yours you started.
 
