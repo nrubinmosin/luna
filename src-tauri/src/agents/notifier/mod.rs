@@ -270,8 +270,9 @@ fn riders_go(company: bool, otherwise_owed: bool, refusal_age: Option<u64>) -> b
 }
 
 fn can_take_refusal(pty: &crate::pty::PtyManager, caller: &str) -> bool {
+    // Power closes its own admission gate for the final recheck. Eligibility
+    // must still reflect whether the chat could take the line with it open.
     !notice_waits(caller)
-        && crate::starts::open(caller)
         && ready_for_notice(pty, caller)
         && (!pty.has_draft(caller)
             || (puts_draft_aside(pty.provider(caller)) && pty.composer(caller).is_some_and(|c| !c.text.is_empty() && !c.stashed)))

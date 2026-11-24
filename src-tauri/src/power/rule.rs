@@ -473,7 +473,13 @@ mod tests {
             || advance(&mut armed(Action::Shutdown, 0), false, &summary, now).iter().any(|e| matches!(e, Effect::Countdown { .. }));
         let terminal = crate::pty::notice_terminal(chat, Provider::Codex, false);
         assert!(countdown(), "unread answers are not active");
-        refusal_for_power_test(lead);
+        let (lock, gate, clock) = due();
+        let fresh = || {
+            refusal_for_power_test(lead);
+            summary.clone()
+        };
+        let (_, _, result) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || at(0), || clock);
+        assert_eq!(result, Effect::Canceled, "a refusal arrived during the final read");
         assert!(!countdown(), "a live top chat can still take the refusal");
         notifier_tick_for_test(chat);
         assert!(terminal.input.try_iter().collect::<String>().contains("No place was left"));
