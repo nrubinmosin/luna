@@ -603,8 +603,7 @@ fn notice_line_inner(
                 {
                     return None;
                 }
-                let said_since_hold = !quiet_since_held(pty, id, k, &o, &said);
-                if plain && status.is_none() && (!said_since_hold || !can_stall(o, &requests, plan_covers)) {
+                if plain && status.is_none() && !can_stall(o, &requests, plan_covers) {
                     evidence.read_to = Some(read_to);
                     return Some((None, silent_or_untaken(o, ended, &requests, !said.is_empty(), read_to)));
                 }
@@ -1674,7 +1673,8 @@ mod tests {
         crate::background::left_for_test(b, &[]);
         for (caller, id, known) in [(b, a, &ka), (a, b, &kb)] {
             assert!(matches!(look(caller, id, known), Some((None, Settled::Hold(2)))));
-            assert!(matches!(look(caller, id, known), Some((None, Settled::Silent(..)))));
+            assert!(matches!(look(caller, id, known), Some((Some(_), Settled::Answered))));
+            assert!(!reg().lock().unwrap().owed.contains_key(&(caller.into(), id.into())), "one notice closes the debt");
         }
         for (id, path) in [(a, pa), (b, pb)] {
             crate::background::gone_for_test(id);
@@ -1904,7 +1904,10 @@ mod tests {
         assert!(matches!(notice_line(pty, "nn-c", "Your helper", "nn-s", &known, stood), Some((Some(_), Settled::Answered))), "it wrote");
         let (known, o, path2) = job_over_helper("nn-q", "nn-c", "");
         let stood = Owed { held: Some((3, now_ms() - BACKGROUND_GRACE_MS)), ..o };
-        assert!(matches!(notice_line(pty, "nn-c", "Your helper", "nn-q", &known, stood), Some((None, Settled::Silent(..)))));
+        let Some((Some(text), Settled::Answered)) = notice_line(pty, "nn-c", "Your helper", "nn-q", &known, stood) else {
+            panic!("the unanswered job end is news")
+        };
+        assert!(text.contains("it has said nothing since your last notice"), "{text}");
         let went = Owed { job_went: true, ..stood };
         let Some((Some(text), Settled::Resumed)) = notice_line(pty, "nn-c", "Your helper", "nn-q", &known, went) else {
             panic!("a core took it")
@@ -2447,6 +2450,28 @@ mod tests {
     }
 
     #[test]
+    fn a_silent_job_end_reports_the_interim_reply_to_a_taken_request() {
+        use crate::agents::owed::{owe_asked, Asked};
+        let (id, caller) = ("silent-job-helper", "silent-job-caller");
+        let interim = [prompt_line("Run the job"), said_line("The job is running.")].concat();
+        let (known, pending, path) = job_over_helper(id, caller, &interim);
+        forget(caller);
+        owe_asked(caller, id, 2, pending.cursor, &Asked { text: "Run the job", key: None, reply: true });
+        crate::background::left_for_test(id, &[("build.exe", 4242)]);
+        assert!(matches!(look(caller, id, &known), Some((None, Settled::Hold(3)))));
+        assert!(matches!(look(caller, id, &known), Some((None, Settled::Skip(3, ..)))));
+
+        crate::background::left_for_test(id, &[]);
+        assert!(matches!(look(caller, id, &known), Some((None, Settled::Hold(3)))));
+        let Some((Some(text), Settled::Answered)) = look(caller, id, &known) else { panic!("the unanswered job end is news") };
+        assert!(text.contains("has nothing left running now") && text.contains("The job is running."), "{text}");
+        assert!(!reg().lock().unwrap().owed.contains_key(&(caller.into(), id.into())));
+        crate::background::gone_for_test(id);
+        forget(id);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn a_jobs_end_brings_what_was_said_on_notices_since() {
         let prompt = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"[Luna notice]\"}}\n";
         let result = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Here are the real results.\"}]}}\n";
@@ -2935,12 +2960,13 @@ mod tests {
         crate::background::idle_for_test(id, Provider::Claude, 1, false);
         let over = held(told, 1, BACKGROUND_GRACE_MS);
         let line = |o: Owed| notice_line(crate::pty::manager(), top, "Your helper", id, &known, o);
-        assert!(matches!(line(over), Some((None, Settled::Silent(..)))), "no word from the lead when the job ended");
+        let Some((Some(text), Settled::Answered)) = line(over) else { panic!("its parent hears when the breaker stops the wake") };
+        assert!(text.contains("Progress: the ping runs."), "{text}");
         assert_eq!(wakes(), 0);
         reg().lock().unwrap().stopped.remove(&(id.to_string(), id.to_string()));
         // A wake not taken up in WAKE_WAIT_MS: its parent hears.
         reg().lock().unwrap().woken.insert(id.into(), Woken { ended: 1, cursor: 0, at: now_ms() - WAKE_WAIT_MS });
-        assert!(matches!(line(over), Some((None, Settled::Silent(..)))));
+        assert!(matches!(line(over), Some((Some(_), Settled::Answered))));
         // A turn a wake started counts as the lead's own for every caller.
         assert!(real_turn_past(id, top, 1, 2, true, || false));
         reg().lock().unwrap().owed.remove(&(top.to_string(), id.to_string()));

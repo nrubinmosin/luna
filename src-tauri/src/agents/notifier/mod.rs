@@ -1841,7 +1841,7 @@ mod tests {
         crate::background::left_for_test("lj-s", &[]);
         let mut ended = told;
         ended.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
-        assert!(matches!(line(ended), Some((None, Settled::Silent(3, false)))), "job end with no word rides no notice");
+        assert!(matches!(line(ended), Some((Some(_), Settled::Answered))), "the unanswered job end goes");
         ended.wake.reported(Status::Done, 3);
         assert!(matches!(line(ended), Some((None, Settled::Silent(3, false)))), "a told status leaves no stall or unread text");
         crate::background::gone_for_test("lj-s");
@@ -1982,7 +1982,7 @@ mod tests {
         drop(out);
         let stood = debt();
         assert!(!held_for_wait(pty, "jw-c", "jw-s", &stood));
-        assert!(matches!(notice_line(pty, "jw-c", "Your helper", "jw-s", &known, stood), Some((None, Settled::Silent(..)))));
+        assert!(matches!(notice_line(pty, "jw-c", "Your helper", "jw-s", &known, stood), Some((Some(_), Settled::Answered))));
         // A job back at work starts it over.
         assert!(!job_end_stood(&key, 3, false));
         assert_eq!(debt().held, None);

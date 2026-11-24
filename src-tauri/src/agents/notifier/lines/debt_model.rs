@@ -375,6 +375,21 @@ fn peer_cycle(f: &mut Fixture, rng: &mut Seed) {
     f.checkpoint(&[]);
 }
 
+fn silent_job_end(f: &mut Fixture, _: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    f.send(TOP, WORKER, 0, "Run the job", true, false);
+    f.append(WORKER, "user", "Run the job", false);
+    f.append(WORKER, "assistant", "The job is running.", false);
+    f.idle(WORKER, 1, true);
+    f.checkpoint(&[]);
+    f.requests(TOP, WORKER, &[1]);
+    crate::background::left_for_test(WORKER, &[]);
+    f.checkpoint(&[(TOP, &["has nothing left running now", "The job is running."])]);
+    f.requests(TOP, WORKER, &[]);
+    f.checkpoint(&[]);
+}
+
 fn quiet_and_refusal(f: &mut Fixture, rng: &mut Seed) {
     f.session(TOP, None, true);
     f.session(WORKER, Some(TOP), true);
@@ -812,6 +827,7 @@ fn seeded_debt_interleavings() {
         peer_fyi,
         held_late_status,
         lifted_breaker,
+        silent_job_end,
     ];
     let mut failed = 0;
     for index in 0..sequences {

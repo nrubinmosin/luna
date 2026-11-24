@@ -602,7 +602,8 @@ turn, stopped on a prompt (once per stop) or exited.
   opening wakes an owed caller after the turn ends. A prompt, question,
   failure or exit can also wake it. A status or answer covers a numbered
   request after the CLI confirms delivery or its transcript shows the prompt. An untold request
-  that wants a reply gets one idle stall, carrying what the session said.
+  that wants a reply gets one idle stall, carrying what the session said,
+  including any interim reply when a background job ends silently.
   Work, queued inputs and due replies keep that stall back. A peer's due
   reply holds it even while the peer is idle, including an actionable status
   from an FYI. Callers inside the same idle
