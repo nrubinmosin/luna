@@ -545,6 +545,11 @@ pub(in crate::agents) fn notice_line(
             || !lost.is_empty()
             || !stopped.is_empty();
         let lead = is_lead(k);
+        // An ended turn may have been followed by a new prompt. Once that
+        // prompt has been told, the earlier plain end still cannot stall.
+        if !trouble && status.is_none() && turn == Some(crate::activity::Turn::Waiting) {
+            return None;
+        }
         if !trouble && (background || waits) {
             if lead {
                 note_delegates(pty, id, k.provider, left.as_deref().filter(|_| background));
@@ -1651,6 +1656,24 @@ mod tests {
         crate::background::gone_for_test(id);
         forget(id);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_open_prompt_keeps_an_earlier_plain_turn_from_stalling() {
+        let (id, caller) = ("open-prompt-helper", "open-prompt-caller");
+        let (known, owed, path) = job_over_helper(id, caller, &said_line("Some progress."));
+        let o = Owed { baseline: 2, told_pending: false, ..owed };
+        crate::background::set_running_for_test(id);
+        crate::background::hold_for_test(id);
+        let pty = crate::pty::manager();
+        let line = |o| notice_line(pty, caller, "Session", id, &known, o);
+        assert!(matches!(line(o), Some((Some(_), Settled::Waiting))));
+        assert!(line(Owed { told_waiting: true, ..o }).is_none(), "waiting is not idle");
+        crate::background::idle_for_test(id, Provider::Claude, 4, false);
+        assert!(matches!(line(o), Some((Some(_), Settled::Answered))), "the later idle can stall");
+        crate::background::gone_for_test(id);
+        forget(id);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
