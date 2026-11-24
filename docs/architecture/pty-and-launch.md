@@ -114,9 +114,8 @@ worktree, or its own folder outside Git. A chat can get a grant from
 Settings or from its saved choice (`codexTrust` in window state and
 `agents/persist.rs`'s `SavedChat`). At start and resume, Luna checks the
 current project against the approved path and filesystem identity when
-available. The same resolved key goes to Codex and to Luna's config readers,
-including the reserved MCP server name check. The core uses its saved copy
-for its own launch snapshot. Codex consults the account's trust when there
+available. The same resolved key goes to Codex and to Luna's config readers.
+The core uses its saved copy for the launch's compaction estimate. Codex consults the account's trust when there
 is no Luna grant.
 `never` + `danger-full-access` becomes
 `--dangerously-bypass-approvals-and-sandbox`; `auto-review` is

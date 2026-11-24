@@ -571,12 +571,11 @@ live registry.
 
 - Without `windows.sandbox` Codex rejects or sends for approval every command
   under `read-only`, `read-only-net` and `workspace-write`. Those modes, and
-  Codex's own (`codex`), get
-  `-c windows.sandbox="unelevated"` unless the account's `config.toml` names
-  a `windows.sandbox` of its own (`config.rs` `windows_sandbox_set`), which
-  then stands; a project's does not count (a restricted token per command: no
-  administrator, no sandbox accounts; under `workspace-write` Codex adds one ACL
-  entry for its sandbox to the folder) and a `PATH` without
+  Codex's own (`codex`), get `windows.sandbox="unelevated"` unless the
+  account sets `windows.sandbox`. Chats pass it with `-c` and helpers pass it
+  in the thread request. Unelevated mode uses a restricted token per command
+  without administrator rights or sandbox accounts. Under `workspace-write`,
+  Codex adds one ACL entry for its sandbox to the folder. Luna passes a `PATH` without
   `…\Microsoft\WindowsApps`: the Store PowerShell's app alias fails under the
   restricted token (`CreateProcessAsUserW failed: 5`), and without it Codex
   falls back to an installed PowerShell.

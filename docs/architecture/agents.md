@@ -53,10 +53,10 @@ launch environment (`background/events.rs`, `LISTEN_MS`). Codex gets
 turn, including on cold resume. Off omits the override. Luna records what it
 applied and keeps the launch inputs for the estimate in `background/rows.rs`,
 which reads token usage from the transcript or rollout. Claude Code's
-settings are reread when they change. Codex's
-snapshot layers the limit above account and project config and below managed
-config. A delegate restored after a core restart refreshes its snapshot on
-the next turn. PTY chats, including handed-over delegates, start with
+settings are reread when they change. Codex's `config/read` snapshot
+reports the effective limit with launch flags above account and project
+config and below legacy managed config. A delegate restored after a core
+restart refreshes its snapshot on the next turn. PTY chats, including handed-over delegates, start with
 their usual CLI settings.
 
 - **Claude Code:** `--mcp-config <data>/mcp/<chat>.json` with
@@ -130,20 +130,16 @@ their usual CLI settings.
   `autoMemoryEnabled: false`, the latter even with `connectors`, and
   `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its environment and that file's `env`,
   as an inherited `0` would turn auto-memory on ahead of the setting. Codex:
-  `-c features.apps=false`, then one `-c mcp_servers={…}` turning off every
-  server of the layers its run reads (Codex's system layer, the account's
-  `config.toml`, the project's `.codex/config.toml` from its root down, found
-  as Codex 0.169.0 finds them: `codex/config.rs` `helper_mcp`), one it calls
-  `luna` too unless Luna gives the run its own; then Codex merges the two key
-  by key, and a `luna` setting more than Luna's replaces stops the start. Then
-  one `-c plugins={…}` turning off each plugin on in those layers but the
-  library's (`plugins_on`), skills and all, and `_default` for the ones no
-  layer names (`codex/launch.rs` `connectors_off`). A table's keys are quoted,
-  so a name with a dot is turned off like any other; a table given whole
-  replaces what earlier `-c`s set under it, so these come before Luna's own
-  server and the library's plugins. A layer that will not read stops the
-  start, as only a server some layer defines may be named, and so does a
-  managed layer setting servers, plugins or apps, which no `-c` can turn off.
+  the helper's app-server supplies the active layers (`codex/snapshot.rs`
+  `helper_mcp`). Luna sends `features.apps=false` in the thread request
+  and disables each loaded server by name, keeping its own `luna` entry
+  when the helper has tools. Configured keys of the same name can merge
+  with Luna's; its `http_headers_helper = "echo {}"` replaces an inherited
+  header command, so none runs (F13). The request disables non-library plugins, their skills and
+  hooks, and sets `plugins._default` off for unlisted plugins. Server and
+  plugin names stay whole even if they contain dots. A failed config read
+  ends the turn before the thread opens. A managed layer that sets servers,
+  plugins or apps above the thread overrides requires `connectors: true`.
   A chat the window starts is never a helper
   (`ensure_*_session` registers it with no parent), so it keeps its account's
   servers, as one started by hand would.
