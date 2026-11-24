@@ -127,7 +127,7 @@ impl Context {
 }
 
 /// What a session's own events and files show beyond its state, as `luna_session_get`
-/// gives it: each row carries one of these whatever runs the session.
+/// gives it when diagnostics are requested.
 #[derive(Serialize, Default, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Signs {

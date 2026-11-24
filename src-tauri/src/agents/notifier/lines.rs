@@ -11,8 +11,8 @@ use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{failure_of, transcript_end, transcript_found, transcript_path};
 use crate::agents::registry::{is_descendant, label, reg, waits_on_helpers, Known, Registry};
 use crate::agents::said::{
-    answer_file, answer_text, answer_where, begins, inline_answer, note_file, replies_since, report_re, report_span, said_since,
-    says_status, written_since, Said, SHORT_MESSAGE,
+    answer_file, answer_text, answer_where, begins, inline_answer, note_file, replies_since, report_span, said_since, says_status,
+    written_since, Said, SHORT_MESSAGE,
 };
 use crate::agents::wait::REPLY_GRACE_MS;
 use crate::provider::Provider;
@@ -224,7 +224,7 @@ pub(in crate::agents) fn is_wake(line: &str) -> bool {
 fn wake_line(names: &[String]) -> String {
     let named = if names.is_empty() { String::new() } else { format!(": {}", names.join("; ")) };
     format!(
-        "{WAKE_HEAD}{named}. Their answers are in your conversation (your CLI's task notifications) or where they wrote them, and a helper's in luna_report_get. Nothing else wakes you for them: take them up and go on with what you were asked, or report where you stand."
+        "{WAKE_HEAD}{named}. Read their answers (task notifications, files or luna_report_get). This is your only wake; continue or report status."
     )
 }
 
@@ -435,7 +435,9 @@ pub(in crate::agents) fn notice_line(
                 let said = match (n, inline_answer(&said)) {
                     (0, _) if !stopped.is_empty() => "it has said nothing since your last notice".to_string(),
                     (0, _) => "it has said nothing since your last notice, and takes no turn on that by itself".to_string(),
-                    (_, Some(line)) if said.requests().is_empty() => format!("it wrote {messages} since your last notice: \"{line}\""),
+                    (_, Some(line)) if said.requests().len() <= 1 => {
+                        format!("it wrote {messages} since your last notice{}: \"{line}\"", answering(&said))
+                    }
                     (_, _) => format!("it wrote {messages} since your last notice{}; {}{quoted}", answering(&said), answer_file(id, &said)),
                 };
                 let failed = match (failed, halted) {
@@ -492,18 +494,20 @@ pub(in crate::agents) fn notice_line(
         // All it said, short enough for the notice itself: no file to read.
         // Not answers to several requests, which the file sets apart.
         let inline =
-            if lost.is_empty() && failed.is_none() && !cut && replies.requests().is_empty() { inline_answer(&replies) } else { None };
+            if lost.is_empty() && failed.is_none() && !cut && replies.requests().len() <= 1 { inline_answer(&replies) } else { None };
         let file = text.as_deref().filter(|_| inline.is_none()).and_then(|t| note_file(id, t));
-        let span = text.as_deref().and_then(|t| report_span(&replies, t));
+        let span = report_span(&replies);
         let reply = match replies.len() {
             0 if !transcript_found(pty, id) => ", but Luna cannot find its transcript, so whether it replied is unknown".to_string(),
             0 => " without a reply".to_string(),
             n if inline.is_some() => {
                 let messages = if n == 1 { "1 message".to_string() } else { format!("{n} messages") };
-                format!(" with {messages} since you asked: \"{}\"", inline.as_deref().unwrap_or_default())
+                format!(" with {messages} since you asked{}: \"{}\"", answering(&replies), inline.as_deref().unwrap_or_default())
             }
-            1 => format!(" with 1 message since you asked; {}", answer_where(file.as_deref(), span)),
-            n => format!(" with {n} messages since you asked{}; {}", answering(&replies), answer_where(file.as_deref(), span)),
+            n => {
+                let messages = if n == 1 { "1 message".to_string() } else { format!("{n} messages") };
+                format!(" with {messages} since you asked{}; {}", answering(&replies), answer_where(file.as_deref(), span))
+            }
         };
         if parent && crate::background::never_started(id) {
             let what = never_started_what(&lost, file.as_deref());
@@ -522,7 +526,7 @@ pub(in crate::agents) fn notice_line(
         };
         if cut {
             return Some((
-                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}.{stopped}{lost}{unsure} luna_session_send has it carry on.")),
+                Some(format!("{who} did NOT finish its turn: Luna's core restarted mid-turn. It ended{reply}.{stopped}{lost}{unsure} [send to resume]")),
                 Settled::Answered,
             ));
         }
@@ -530,14 +534,14 @@ pub(in crate::agents) fn notice_line(
         if let Some(why) = halted.filter(|_| failed.is_none()) {
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
             return Some((
-                Some(format!("{who} did not finish its turn: {}{said}{stopped}{lost} luna_session_send has it carry on.", sentence(&why))),
+                Some(format!("{who} did not finish its turn: {}{said}{stopped}{lost} [send to resume]", sentence(&why))),
                 Settled::Answered,
             ));
         }
         if let Some(why) = failed {
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
             return Some((
-                Some(format!("{who} stopped on an error: {}{said}{stopped}{lost} luna_session_send has it carry on.", sentence(&why))),
+                Some(format!("{who} stopped on an error: {}{said}{stopped}{lost} [send to resume]", sentence(&why))),
                 Settled::Answered,
             ));
         }
@@ -561,18 +565,18 @@ pub(in crate::agents) fn notice_line(
             // run for days, and each notice costs the caller a turn.
             let agents = crate::activity::subagents(id);
             let what = match &left {
-                Some(names) if background => format!("a job it started still runs in the background ({names})"),
-                _ if background && agents == 1 => "a subagent its CLI started still works in the background".to_string(),
-                _ if background && agents > 1 => format!("{agents} subagents its CLI started still work in the background"),
-                _ if background => "a job it started still runs in the background".to_string(),
-                _ => "helpers of its own have yet to answer it".to_string(),
+                Some(names) if background => format!("[job running: {names}]"),
+                _ if background && agents == 1 => "[1 subagent running]".to_string(),
+                _ if background && agents > 1 => format!("[{agents} subagents running]"),
+                _ if background => "[job running]".to_string(),
+                _ => "[helpers pending]".to_string(),
             };
             let line = if o.told_pending {
-                format!("{who} ended another turn{reply}, but {what}. The next notice comes when that is over, or with a turn of its own.")
+                format!("{who} ended another turn{reply}. {what}")
             } else if lead {
-                format!("{who} ended a turn{reply}, and {what}. The next notice comes when that is over, or with another status word.")
+                format!("{who} ended a turn{reply}. {what}")
             } else {
-                format!("{who} is NOT done yet: {what}. It ended a turn{reply}. The next notice comes when that is over, or with a turn of its own.")
+                format!("{who} is NOT done yet {what}. It ended a turn{reply}.")
             };
             return Some((Some(line), Settled::Pending(ended, transcript_end(id))));
         }
@@ -582,7 +586,7 @@ pub(in crate::agents) fn notice_line(
             if said_since(pty, id, k.provider, w.cursor).is_empty() {
                 let earlier = if replies.is_empty() { String::new() } else { format!(" Its turns since you asked ended{reply}.") };
                 return Some((
-                    Some(format!("{who} seems stuck: its delegates had finished and Luna told it so, but it ended its turn on that without a word.{earlier}{stopped}{lost}")),
+                    Some(format!("{who} seems stuck: no reply to Luna's delegates-finished notice.{earlier}{stopped}{lost}")),
                     Settled::Answered,
                 ));
             }
@@ -603,7 +607,7 @@ pub(in crate::agents) fn notice_line(
             return Some((None, Settled::Unasked));
         }
         // Too short a turn for a notice of its own in between.
-        let resumed = if o.resumed { " Luna's core stopped it on the way and it resumed automatically." } else { "" };
+        let resumed = if o.resumed { " [resumed after core restart]" } else { "" };
         // A cut-off line already says a send has it carry on.
         let idle = if parent && stopped.is_empty() && alive && runs_nothing(pty, id, caller, ts) { NOTHING_RUNNING } else { "" };
         return Some((Some(format!("{who} finished its turn{reply}.{idle}{stopped}{lost}{resumed}{unsure}")), Settled::Answered));
@@ -638,7 +642,7 @@ pub(in crate::agents) fn notice_line(
 /// nothing left to go on with (`runs_nothing`). A lead ended its turn on
 /// "Gate is running; waiting." with no gate started, and its parent, told only
 /// that it finished its turn, read that as work under way for ten hours.
-const NOTHING_RUNNING: &str = " Nothing of its own is running: it will not go on unless you send to it.";
+const NOTHING_RUNNING: &str = " [idle; send to resume]";
 
 /// Whether session `id`, its turn state `ts`, is between turns with nothing
 /// that would start its next turn or that it waits on, beside what `caller`
@@ -768,11 +772,11 @@ fn quiet_line(who: &str, quiet_ms: u64, past_due_ms: Option<u64>) -> String {
     let quiet = quiet_ms / 60_000;
     match past_due_ms {
         Some(past) => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang; luna_message_list with screen: true shows where it is. Said once per turn; the usual notice comes when it ends.",
+            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang; Check luna_message_list with screen: true.",
             past / 60_000
         ),
         None => format!(
-            "{who} is mid-turn and has written nothing for {quiet} min: a command it runs may hang, or simply take long; luna_message_list with screen: true shows where it is. Said once per turn; the usual notice comes when it ends."
+            "{who} is mid-turn and has written nothing for {quiet} min: a command it runs may hang, or simply take long; Check luna_message_list with screen: true."
         ),
     }
 }
@@ -792,12 +796,12 @@ fn background_wait_line(who: &str, quiet_ms: u64, calls: &[String], procs: &[Str
     let what = if what.is_empty() { "nothing Luna can name".to_string() } else { what.join("; ") };
     // A subagent may think for long between its steps: no sign of a hang.
     let stop = if calls.iter().any(|c| c.starts_with("subagent ")) {
-        "A subagent among them may still be at work, thinking between its steps, which shows nowhere; luna_message_list shows the answer, and luna_session_stop ends it all if it should not be running."
+        "A subagent may still be thinking. Read with luna_message_list or end with luna_session_stop."
     } else {
-        "luna_session_stop ends it now, luna_message_list shows the answer."
+        "Read with luna_message_list or end with luna_session_stop."
     };
     format!(
-        "{who} has written its answer, but its turn is not over: its CLI waits on what the turn left in the background, and nothing has come of it for {} min. It waits on: {what}. Messages to it wait until that ends, or until Claude Code stops it 3 h after the answer. {stop} Said once per turn; the usual notice comes when it ends.",
+        "{who} answered but its turn waits on background work ({} min quiet): {what}. Sends queue until it ends (Claude Code stops it 3 h after the answer). {stop}",
         quiet_ms / 60_000
     )
 }
@@ -823,23 +827,26 @@ fn background_calls(pty: &crate::pty::PtyManager, id: &str, provider: Provider) 
     }
 }
 
-/// What a notice adds where an answer covers several of the caller's
-/// requests (said.rs `Said::asked`): which, and that the file sets them apart.
+/// The number of requests covered and the latest request's identifier.
 fn answering(replies: &Said) -> String {
     let requests = replies.requests();
-    if requests.is_empty() {
-        return String::new();
+    let Some(latest) = requests.last() else { return String::new() };
+    let key = latest.key.as_deref().map(|key| format!(" ({})", key.escape_debug())).unwrap_or_default();
+    if requests.len() == 1 {
+        format!(", #{}{key}", latest.n)
+    } else {
+        format!(", {} requests, latest #{}{key}", requests.len(), latest.n)
     }
-    let names: Vec<String> = requests.iter().map(|q| q.name()).collect();
-    format!(", answering your {} (each its own section in the file, the latest first)", names.join(", "))
 }
 
-/// `begins`, saying which request the report it quotes answers where the
-/// answer covers several.
+/// Label the quote only if its report answers an earlier request.
 fn begins_re(replies: &Said) -> String {
     let quoted = begins(replies);
-    match report_re(replies).filter(|_| !replies.requests().is_empty() && !quoted.is_empty()) {
-        Some(q) => quoted.replacen(". It begins:", &format!(". Its report, re {}, begins:", q.name()), 1),
+    match replies
+        .re_of(replies.len().saturating_sub(1))
+        .filter(|q| !quoted.is_empty() && replies.requests().last().is_some_and(|latest| latest.n != q.n))
+    {
+        Some(q) => format!(" #{}{quoted}", q.n),
         None => quoted,
     }
 }
@@ -973,6 +980,16 @@ mod tests {
     use crate::agents::wait::{reply_text, REPLY_GRACE_MS};
 
     #[test]
+    fn request_headers_count_and_name_only_the_latest() {
+        use crate::agents::said::Request;
+        let request = |n| Request { n, key: Some(format!("key-{n}")), head: String::new() };
+        assert_eq!(answering(&Said::default()), "");
+        assert_eq!(answering(&Said::default().asked(vec![request(25)])), ", #25 (key-25)");
+        let requests = (5..=25).map(request).collect();
+        assert_eq!(answering(&Said::default().asked(requests)), ", 21 requests, latest #25 (key-25)");
+    }
+
+    #[test]
     fn a_failed_turn_quotes_nothing_as_its_verdict() {
         use crate::activity::{on_hook, HookEvent};
         let path = std::env::temp_dir().join(format!("luna-verdict-{}.jsonl", std::process::id()));
@@ -990,11 +1007,11 @@ mod tests {
         let fine = line_for("vd-fine");
         // A line that short is the notice's own: no file, nothing to begin.
         assert!(fine.contains("finished its turn") && fine.contains("since you asked: \"All done and fixed.\""), "{fine}");
-        assert!(!fine.contains("the answer is in") && !fine.contains("It begins"), "{fine}");
+        assert!(!fine.contains("Report "), "{fine}");
         let failed = line_for("vd-failed");
         assert!(failed.contains("stopped on an error: rate_limit"), "{failed}");
         assert!(failed.contains("It ended with 1 message"), "what it said before is still named: {failed}");
-        assert!(!failed.contains("It begins") && !failed.contains("All done"), "its words are no verdict on it: {failed}");
+        assert!(!failed.contains("All done"), "its words are no verdict on it: {failed}");
         for id in ["vd-fine", "vd-failed"] {
             forget(id);
             crate::activity::forget(id);
@@ -1205,10 +1222,10 @@ mod tests {
         let Some((Some(text), Settled::Pending(2, cursor))) = line("ir-top", &format!("{notice}{}", said(&report))) else {
             panic!("its parent hears")
         };
-        assert!(text.contains("ended another turn") && text.contains("helpers of its own have yet to answer it"), "{text}");
-        assert!(text.contains("It begins: \"BLOCKED: Phase 1 is in"), "{text}");
+        assert!(text.contains("ended another turn") && text.contains("[helpers pending]"), "{text}");
+        assert!(text.contains(" \"BLOCKED: Phase 1 is in"), "{text}");
         assert_eq!(cursor, std::fs::metadata(&path).unwrap().len(), "and what follows is what it hears next");
-        let file = text.split("the answer is in ").nth(1).and_then(|t| t.split(". It begins").next()).unwrap();
+        let file = text.split("Report ").nth(1).and_then(|t| t.split(":1–").next()).unwrap();
         assert!(std::fs::read_to_string(file).unwrap().starts_with("BLOCKED: Phase 1 is in"));
         let _ = std::fs::remove_file(file);
         // A line or two is no news worth a turn: it comes with the answer.
@@ -1360,7 +1377,7 @@ mod tests {
                 panic!("{id}: a finished command holds nothing back")
             };
             assert!(text.contains("written nothing for 31 min: a command it runs may hang"), "{text}");
-            assert!(text.contains("luna_message_list with screen: true shows where it is"), "{text}");
+            assert!(text.contains("Check luna_message_list with screen: true"), "{text}");
             crate::background::gone_for_test(&id);
             forget(&id);
         }
@@ -1515,8 +1532,8 @@ mod tests {
         let Some((Some(text), Settled::WaitsOnBackground(3))) = notice_line(pty, caller, "Your helper", id, &known, told) else {
             panic!("waiting on its background is news")
         };
-        assert!(text.contains("has written its answer, but its turn is not over"), "{text}");
-        assert!(text.contains("It waits on: Bash `npm run dev`."), "{text}");
+        assert!(text.contains("answered but its turn waits on background work"), "{text}");
+        assert!(text.contains("31 min quiet): Bash `npm run dev`."), "{text}");
         let both = Owed { told_background_wait: Some(3), ..told };
         assert!(matches!(notice_line(pty, caller, "Your helper", id, &known, both), None | Some((None, _))), "and that once too");
         // What its job holds is named, the CLI aside; nothing of it is
@@ -1525,8 +1542,8 @@ mod tests {
         let Some((Some(text), Settled::WaitsOnBackground(3))) = notice_line(pty, caller, "Your helper", id, &known, told) else {
             panic!("its stream quiet")
         };
-        assert!(text.contains("for 31 min. It waits on: Bash `npm run dev`; processes claude.exe, node.exe."), "{text}");
-        assert!(text.contains("luna_session_stop ends it now"), "{text}");
+        assert!(text.contains("31 min quiet): Bash `npm run dev`; processes claude.exe, node.exe."), "{text}");
+        assert!(text.contains("end with luna_session_stop"), "{text}");
         // A subagent among what it waits on: said without calling it a hang.
         let agent = json!({ "type": "assistant", "timestamp": at, "message": { "content": [{ "type": "tool_use", "id": "t2", "name": "Agent",
             "input": { "description": "port the parser", "prompt": "…", "run_in_background": true } }] } });
@@ -1534,8 +1551,7 @@ mod tests {
             "toolUseResult": { "isAsync": true, "status": "async_launched", "agentId": "a1" } });
         std::fs::write(&path, format!("{call}\n{started}\n{agent}\n{launched}\n")).unwrap();
         let Some((Some(text), _)) = notice_line(pty, caller, "Your helper", id, &known, told) else { panic!("still news") };
-        assert!(text.contains("subagent \"port the parser\"") && text.contains("may still be at work"), "{text}");
-        assert!(!text.contains("luna_session_stop ends it now"), "{text}");
+        assert!(text.contains("subagent \"port the parser\"") && text.contains("may still be thinking"), "{text}");
         crate::background::gone_for_test(id);
         forget(id);
         let _ = std::fs::remove_file(&path);
@@ -1890,7 +1906,7 @@ mod tests {
             std::fs::write(&path, said_line(&format!("{word}\nmore"))).unwrap();
             let Some((Some(text), Settled::Pending(1, _))) = line(first) else { panic!("{word} goes at once") };
             assert!(text.contains("ended a turn") && !text.contains("NOT done yet"), "{text}");
-            assert!(text.contains("a job it started still runs in the background"), "{text}");
+            assert!(text.contains("[job running"), "{text}");
         }
         for not_one in ["done: lowercase", "DONEZO", "Status: DONE"] {
             std::fs::write(&path, said_line(not_one)).unwrap();
@@ -2219,9 +2235,9 @@ mod tests {
         std::fs::write(&path, transcript).unwrap();
         transcripts().lock().unwrap().insert(id.into(), path.clone());
         let (Some(text), Settled::Answered) = notice_for(caller, id, 2) else { panic!("answered") };
-        assert!(text.contains("answering your request 1, request 2 (requestKey \"pr-7772\")"), "{text}");
-        assert!(text.contains("Its report, re request 2 (requestKey \"pr-7772\"), begins: \"VERDICT: GO"), "{text}");
-        let file = text.split("the answer is in ").nth(1).and_then(|t| t.split(", its report first").next()).unwrap();
+        assert!(text.contains("2 requests, latest #2 (pr-7772)"), "{text}");
+        assert!(text.contains(" \"VERDICT: GO"), "{text}");
+        let file = text.split("Report ").nth(1).and_then(|t| t.split(":1–").next()).unwrap();
         let whole = std::fs::read_to_string(file).unwrap();
         assert!(whole.starts_with("Re request 2 (requestKey \"pr-7772\"):\n\nVERDICT: GO"), "{whole}");
         assert!(whole.contains("===\n\nRe request 1:\n\nVERDICT: NO-GO"), "{whole}");

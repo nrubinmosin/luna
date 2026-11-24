@@ -1,44 +1,29 @@
 //! Where a spawn's caller works, and who else is there.
 
 use crate::agents::list::disk_meta;
-use crate::agents::registry::{chat_name, is_descendant, persons_chat_in, reg};
-use serde::Serialize;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Neighbor {
-    pub id: String,
-    pub name: String,
-    pub busy: bool,
-}
+use crate::agents::registry::{is_descendant, persons_chat_in, reg};
 
 /// Live sessions other than `skip` that run in `dir`, by what the CLI says
 /// its cwd is: the project folder for a chat in it, the worktree for one in
 /// a worktree. Only those in `caller`'s reach: any for a person's chat, its
 /// own subtree for a helper, which learns of no session past it (ADR-0025).
-pub(in crate::agents) fn neighbors_in(dir: &str, caller: &str, skip: &[&str]) -> Vec<Neighbor> {
+pub(in crate::agents) fn count_neighbors(dir: &str, caller: &str, skip: &[&str]) -> usize {
     let ids: Vec<String> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let all = persons_chat_in(&r, caller);
         r.known.keys().filter(|id| all || is_descendant(&r, caller, id)).cloned().collect()
     };
     let pty = crate::pty::manager();
-    let mut out = Vec::new();
-    for id in ids.into_iter().filter(|id| !skip.contains(&id.as_str())) {
-        let cwd = match (crate::background::working_dir(&id), pty.probe(&id)) {
-            (Some(dir), _) => dir,
-            (None, Some(probe)) => disk_meta(&probe).and_then(|m| m.cwd).unwrap_or_else(|| probe.cwd.clone()),
-            (None, None) => continue,
-        };
-        if crate::pty::same_dir(&cwd, dir) {
-            out.push(Neighbor {
-                busy: crate::activity::turn_state(&id).is_some_and(|t| t.busy),
-                name: chat_name(&id).unwrap_or_default(),
-                id,
+    ids.into_iter()
+        .filter(|id| !skip.contains(&id.as_str()))
+        .filter(|id| {
+            let cwd = crate::background::working_dir(id).or_else(|| {
+                let probe = pty.probe(id)?;
+                Some(disk_meta(&probe).and_then(|m| m.cwd).unwrap_or(probe.cwd))
             });
-        }
-    }
-    out
+            cwd.is_some_and(|cwd| crate::pty::same_dir(&cwd, dir))
+        })
+        .count()
 }
 
 /// The worktree a caller started with `--worktree` runs in. It registers
@@ -69,7 +54,7 @@ mod tests {
     use crate::agents::teardown::forget;
     use crate::provider::Provider;
 
-    /// `sameFolder` names, for a helper, only the sessions under it; a person's
+    /// `sameFolder` counts, for a helper, only the sessions under it; a person's
     /// chat hears of every session in the folder.
     #[test]
     fn a_helper_hears_of_no_neighbor_past_its_own_subtree() {
@@ -85,15 +70,10 @@ mod tests {
         for id in ids {
             crate::background::take_up_for_test(id, dir, 1, &[], None);
         }
-        let near = |caller: &str| {
-            let mut n: Vec<String> =
-                neighbors_in(dir, caller, &[caller]).into_iter().map(|n| n.id).filter(|i| i.starts_with("nb-")).collect();
-            n.sort();
-            n
-        };
-        assert_eq!(near("nb-lead"), ["nb-mine"], "its own only: not its parent's other helper, not another chat's");
-        assert_eq!(near("nb-mine"), Vec::<String>::new());
-        assert_eq!(near("nb-top"), ["nb-lead", "nb-mine", "nb-sib", "nb-theirs"], "a person's chat hears of every one");
+        let near = |caller: &str| count_neighbors(dir, caller, &[caller]);
+        assert_eq!(near("nb-lead"), 1, "its own only");
+        assert_eq!(near("nb-mine"), 0);
+        assert_eq!(near("nb-top"), 4, "a person's chat hears of every one");
         for id in ids {
             crate::background::remove(id);
         }

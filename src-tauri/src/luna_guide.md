@@ -21,21 +21,15 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   can open it as a chat between its turns. Opening hands it to the user for good: no longer yours
   to send to, wait on, read, stop or delete; nothing more is owed by it; text still queued for it
   is not delivered; one notice tells you so, and where that text is.
-- `luna_session_list` gives compact rows, yours by default (`scope: "all"`: every session;
-  `ids`: those): `id`, `name`, `provider`, `account`, `parent`, `state`, `askId`, `turnsEnded`,
-  `task` (its prompt's first line), `lastActivityAt`, `deletesInMin`, and `modeFrom` when the
-  session used a default mode. Filters: `state` (a list),
-  `provider`, `account`, `group` (a window group, I = 1, or `"mine"`), `q` (text in name, folder,
-  account or id). `limit` rows a page (50); a `nextCursor` goes in `cursor` for the next.
-- `luna_session_get` gives one session whole: `settings`, `folder`, `cwd` (where its CLI works,
-  when not the folder: a worktree), `transcript`, `sessionId` (the CLI's own), `turnStartedAt` (null between turns), `lastActivityAt` (a long command shows nothing
-  until it ends: quiet is not stuck), `resolvedModel` (the model that answered), `context`
-  (`tokens` used, `pct` of `window`, `basis`: `autoCompact` or `model`),
-  `contextToCompact` (estimated tokens left for a delegate). After a core restart a delegate's
-  basis is `model` until its next turn. `luna_session_get` also gives
-  `leftRunning`: what its turns left running between turns, by name and pid (`"tail.exe (pid 22104)"`) or as a
-  count (`"2 shells"`), which keeps the PC awake for as long as it is there.
-  Times are UTC ISO.
+- `luna_session_list` rows have `id`, `name`, `state`, `turnsEnded` and `askId` where available.
+  Yours by default; `scope: "all"` lists every session; `ids` selects sessions. Filter by
+  state, provider, account, group (I = 1, or `"mine"`) or q (name, folder, account, id).
+  Pass `nextCursor` as `cursor` for the next page (50 rows by default).
+- `luna_session_get` adds provider, account, parent, task and the full ask. Request extra
+  fields with `include` (a list): `settings` (effective flags and constraints), `paths`
+  (folder, cwd if different, transcript), `diagnostics` (group, CLI/session IDs, turn and
+  activity times in UTC, resolvedModel, context, leftRunning, deletesInMin), `places` (your line).
+  `contextToCompact` estimates tokens to compaction after a delegate's first turn in this core.
 - Another session's `task`, `askId` and `ask` come only with `scope: "all"`. Without it, you
   read, wait on, send to and answer only sessions you spawned and theirs; with it, you read and
   wait on any session but your own, and send to and answer the user's other chats, your text
@@ -56,7 +50,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - A line (a person's chat and every session under it) has a number of places the user sets
   (16 unless changed). Only a helper at work takes one (a turn running or waiting on a
   question), and a spawn under way; one between turns takes none, whatever it left running.
-  `places` in a spawn's result and in `luna_session_list`: `inUse` (helpers at work and spawns
+  Request `include: ["places"]` in `luna_session_get`: `inUse` (helpers at work and spawns
   under way on your line) of `of`, `underYou` of them, `waiting`: turns waiting for a place. A
   spawn past the limit is refused, naming yours at work: wait for a turn to end or stop one;
   below the top, the top chat is told, as only it can free the rest. Text for an idle helper
@@ -82,122 +76,48 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   or unknown, else the most room. `accountChoice` says which and why.
 - A usage window near 100% means a helper there may stop on its limit. When an account your live
   helpers run on reaches 90%, then 95%, of a window, a notice says so, once each until it resets.
-- A model the organization does not allow is swapped by the CLI: `resolvedModel` says what ran.
+- A model the organization does not allow is swapped by the CLI: `resolvedModel` (get diagnostics) says what ran.
 
 ## Spawning
 - Helpers and leads use Luna's delegate auto-compaction setting.
-- A safe spawn: a prompt that stands alone (the helper sees nothing of your conversation), the
-  least mode that does the job (`readOnly`, `plan`, a read-only sandbox), a worktree you made
-  for edits beside other work (see `folder`); then end your turn and let the notice come.
-- Implementers and reviewers that must outlive your turn are Luna helpers (`luna_session_spawn`),
-  never your CLI's native background subagents, which end with your turn's process: nothing of
-  theirs is left to send a notice.
-- A helper runs in the mode you name, spelled exactly. With no `permissionMode` for Claude,
-  or neither `approval` nor `sandbox` for Codex, a mode set in the CLI's config stands
-  (`settings.modeFrom: "cli"`). Managed files count. When the config names no mode, Luna passes Claude Auto or
-  Codex Auto-review in `workspace-write` (`modeFrom: "luna"`). An unreadable Codex layer or
-  an unsupported mode uses `on-request` with `read-only` (`modeFrom: "closed"`).
-  Unreadable Claude settings or a non-string `defaultMode` leave the mode to Claude Code.
-  `luna_account_get` reports the effective default for a folder. The CLI decides what each
-  mode lets through. No helper works in or above Luna's own folder.
-- Codex's `approval`: `never`, `on-request`, or `auto-review`, a reviewer model answering what
-  Codex would ask (workspace-write only). What it asks comes to you as
-  its ask, as a Claude helper's does. A Codex helper runs only the project hooks the account
-  already trusts (Luna bypasses no trust prompt) and skips the rest. It trusts the folder it is
-  sent to for its run, so the project's own `.codex/` config loads.
-- Codex's sandbox on Windows, as observed on 0.169.0 (Codex's, not Luna's): `read-only` writes
-  nothing, `workspace-write` only the folder and temp, never `.git`, the account's folder or the
-  registry, child processes included; reads reach whatever the user can. Its network: none in
-  `read-only` or, unless its config says so, `workspace-write`, but on Windows only by dead proxy
-  variables: raw sockets, ssh, plain http and TLS outside schannel (git with OpenSSL) still
-  connect: no wall against sending data out. `danger-full-access`: the machine's. `read-only-net` reads only, with
-  network; on Windows schannel TLS fails (built-in `curl`, `Invoke-WebRequest`), as does git's
-  own ssh; `gh`, Python, plain http work, and git https (Luna sets `http.sslBackend=openssl`).
-- Codex's `workspace-write` keeps `.git` read-only, its own rule: such a helper cannot commit,
-  in a worktree or not. One that must commit needs `danger-full-access`.
-- `readOnly`: Claude Code's **Bash can still write**; Codex's sandbox (`read-only`, or
-  `read-only-net` if given) holds. Refused with `acceptEdits`, `auto-review` or a sandbox that
-  writes.
-- `agent`: an unknown name stops the CLI. Codex refuses it: its roles are for subagents only.
-- `constraints`: text the helper and every session it starts are told, last among their
-  instructions, at every start and resume. A spawn adds to what you carry, word for word; none
-  is ever removed (4 KB a spawn, 16 KB in all). `settings.constraints` shows them. They are
-  instructions, not permissions: what a helper may do is its mode's.
-- `folder` (default: yours, or the worktree yours is in). Luna does not create or remove
-  worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`,
-  remove it when done. A `worktree` argument is refused. A worktree's files and branch are
-  apart from the main folder's, but the repository's objects, refs and config are shared, so a
-  branch a helper pushes or deletes is gone for all. `sameFolder` lists live sessions working in
-  the same directory (from a helper, only those under it).
-- `connectors: true` keeps the helper's MCP servers and connectors. By default, helpers get only
-  Luna's server if tools are enabled. Codex apps and non-library plugins (skills included) are off.
-  With connectors off, Luna refuses Codex starts if it cannot read the config or managed settings
-  set servers, plugins or apps. Claude Code auto-memory and Codex memories are off for helpers
-  regardless of `connectors`.
-- `requestKey` (spawn, send, delete): a retry with the same key and arguments within an hour gets
-  the first call's result, not a second helper or message; one that failed is made anew. A key
-  stands for one call: other arguments under it are refused. Keys are kept in the core's memory:
-  a core restart forgets them. A key is at most 128 characters; Luna keeps 64 of yours, the
-  oldest finished making way. A result too large to keep comes back as what it made (`id`).
-- `budgetPct` and `budgetTokens` are ignored.
+- Give a standalone prompt and the least mode needed. For edits use a worktree you create,
+  pass as `folder`, then remove; git refs/config are shared. Folder defaults to yours or your
+  worktree and must stay outside Luna's own tree. `sameFolder` counts peers in reach.
+- Use Luna helpers for work that must outlive your turn. End your turn for the notice or wait
+  on the returned `id` (first `afterTurn: 0`, also the default).
+- Mode names are exact. See `luna_account_get` for defaults. Codex commits need
+  `danger-full-access` (`workspace-write` protects .git); Windows proxy limits allow some
+  traffic. `readOnly` still allows Claude Bash writes; incompatible with write modes and
+  auto-review. `agent` is Claude-only and must exist.
+- Codex loads project config and runs trusted hooks only. `connectors: true` retains account
+  integrations. With them off, unreadable Codex config or managed integrations block spawn.
+  Helpers' provider memories are off.
+- `constraints` append down the tree (4 KB per spawn, 16 KB total).
+- Spawn/send/delete retries with identical `requestKey` and args replay success for an hour
+  in this core (128 characters, 64 keys; failures retry). Changed args are refused.
+- `budgetPct` adds context to notices past the threshold (0 disables); 85% alerts once.
+  `budgetTokens` is the deprecated equivalent expressed in tokens.
 
 ## Getting the answer
-- After a spawn or a send you can end your turn. Once the session answers, asks something,
-  stops on a prompt or exits, Luna types one line into your chat starting with
-  `[Luna notice, not typed by the user]`. A short answer (up to 300 characters) is quoted whole.
-  A longer one is in a file the notice names, its report first: the message its CLI marked as
-  the turn's final answer, else the longest of its last turn (`reportGuessed` in reads); then its last message, then the rest in order. The notice quotes the report's
-  first line (`It begins: "…"`), not of a turn that stopped on an error, which it says.
-- A notice comes when your chat is between turns and nobody types in it. A subagent of yours in
-  the background does not hold it back; another helper of yours ending within 20 s may, so that
-  near-simultaneous ends come as one notice. A question or a prompt is never held.
-- A CLI's native background subagents end with its turn: a notice names a helper's that did,
-  unfinished ("ended with its turn without finishing"). Work that must outlive a turn is a Luna helper's.
-- "NOT done yet": a job it started still runs (named), a subagent its CLI started works on, or
-  its own helpers have yet to answer it. Said once. The next notice comes when that is over, or
-  when it ends a turn on your words or on its own helper's last answer. A Claude helper that has
-  answered but whose turn still waits on what it left in the background (a watcher, a server):
-  30 min with nothing come of it, one notice says so and names what it waits on.
-- A lead (a helper with these tools) is not told of as "NOT done yet": while its helpers or its
-  CLI's background work run, what it writes waits for the next notice (its answer to your send
-  excepted), unless a message's first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or
-  `PLAN` (as written, then `:` or a space): that goes at once. As a lead, open a message you
-  need your parent to see now with one. Once all of it is done and you have said nothing, Luna
-  wakes you once ("Your delegates have finished: …"); say nothing then either, and your parent
-  hears you seem stuck.
-- A helper writing that it is waiting proves nothing: its row's `state` (`idle` or `background`)
-  and what it has running count. A turn-end notice says "Nothing of its own is running" when
-  nothing would wake it: it goes on only once you send to it.
-- Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
-  and jobs (the last says so; its prompts and questions still come) until a person types into
-  either chat; waits and reads still work.
-- `luna_session_wait` gets the answer within your turn. `outcome`: `turn_done`, `waiting`,
-  `exit`, `job_done` or `timeout`. `reply` is the report alone by default, with `rest` (how many
-  more messages) and `file` (all of them, report first); `reply: "all"` puts them all in, `"none"`
-  none. `failed` names the error a turn stopped on (API error, usage limit, crash); `stopped`,
-  that Luna stopped it (`luna_session_stop`, the window's Stop, a send with `interrupt`);
-  `transcriptMissing`: no transcript, so no reply says nothing. `screen: true` adds the
-  terminal. A helper does not exit between turns: `until: "exit"` returns once it is deleted.
-- With `ids` (16 at most) it returns `outcome` (`finished` or `timeout`), `finished` and `results`, one per id
-  as a single wait gives it, with `id`. Under `mode: "any"` the others come back `pending` or
-  `timeout`, still owed. A wait running when the answer comes hands it over instead of the
-  notice; one canceled hands nothing over, and the notice comes.
-- `luna_report_get` gives the report alone of what it said since your question (or `since` a
-  cursor), with `rest` and `file`, and starts its autoDelete count over. With `ack: true`, a
-  report of all of an owed answer, its turn over, collects it: no notice follows (`acked`).
-- `luna_message_list` gives messages from its transcript: `since` a cursor, `last` the newest N
-  (default 1; with `since`, all after it). Past 60,000 characters, `rest` counts what was left
-  out and `cursor` goes on from there. `toolCalls: true` marks tool calls (Claude Code);
-  `screen: true` gives a helper's last log lines. A whole read of all it said since you asked,
-  after it finished, collects the answer too.
-- Asked again before an answer reached you, the next reply, read or notice covers all since the
-  first question. Your requests to a session are numbered (the spawn 1, each send one more;
-  its `requestKey` named): covering several, the notice says so and which one its quote
-  answers, and the file, report and wait reply open each part with "Re request N".
-- A turn that has written nothing for 30 min is told of once, and not before 5 min past the
-  timeout of a command it waits on: hung, or long. `screen: true` on a read tells which.
-- Claude Code hands a background wait's result over HTML-escaped (`&lt;`, `&gt;`): take code
-  from `luna_message_list`, not from that.
+- End your turn for a `[Luna notice, not typed by the user]`, or wait for the reply in this turn.
+  Short replies are quoted. For a long reply, `Report <path>:1–N` locates the report at the top
+  of the full file. Its quoted first line is a preview, omitted on error. A request header
+  gives the count and latest number/key (#N alone for one); an extra #N labels an earlier
+  quoted report. Files group matched replies under `Re request N`, newest first.
+- `[idle; send to resume]` requires a new send. `[send to resume]` follows an interrupted or
+  failed turn. `[resumed after core restart]` means it restarted automatically.
+  `[helpers pending]`, `[job running]` (optionally named), and `[N subagents running]`
+  mean work continues. Pending news returns at completion or a fresh turn. Leads also wake
+  parents with `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` first, followed by a colon
+  or space. A silent lead gets one wake after its delegates finish.
+- Quiet and background-wait notices are once per turn. Read the screen for progress and
+  stop only if needed. Interrupted native work may need recovery. After 12 turn/job notices
+  per pair in 15 min, use waits or reads until a person types; asks still arrive.
+- `luna_session_wait` accepts up to 16 ids. `afterTurn` uses `turnsEnded`; exit means deletion
+  for a helper. A completed wait collects the answer; cancellation leaves it owed.
+  Read HTML-escaped Claude wait code via `luna_message_list`.
+- `luna_report_get` with `ack: true` or a full uncut read collects a finished owed reply.
+  Follow cursors for cut messages. Requests sent before collection share the next answer.
 
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their options, or
@@ -229,7 +149,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   report for you.
 - `autoDelete` (on by default): Luna deletes the helper 30 minutes after its answer reached you,
   not while a job or helper of its runs, however long idle; a read, a report or a send starts
-  that over (`deletesInMin` counts down). A worktree you made for it stays. One whose turn you
+  that over (`deletesInMin` in get diagnostics). A worktree you made for it stays. One whose turn you
   stopped is never deleted.
 - A deleted session's transcript stays in its account's folder (`luna_run_list` names it). If a
   helper printed what it should not have, tell the user that path.

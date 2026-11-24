@@ -342,7 +342,9 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|q| agents::session_list(caller, &q))
             .map(|p| json!(p)),
-        "luna_session_get" => agents::scope_all(caller, scope).and_then(|all| agents::session_get(caller, &id, all)).map(|s| json!(s)),
+        "luna_session_get" => agents::scope_all(caller, scope)
+            .and_then(|all| agents::session_get(caller, &id, all, &strings(&a["include"])))
+            .map(|s| json!(s)),
         "luna_session_spawn" => folder_arg(a)
             .and_then(|_| serde_json::from_value::<agents::SpawnParams>(a.clone()).map_err(|e| format!("bad arguments: {e}")))
             .and_then(|p| crate::power::admitted(|| agents::spawn(caller, p)))
@@ -947,7 +949,7 @@ mod tests {
         assert!(matches!(keyed(&slot("kb-busy", "one-more"), "p".into()), Keyed::Full));
         // A result too large to keep whole: what it made is kept, and a retry
         // gets that, never a second making.
-        let made = json!({ "id": "big-helper", "sameFolder": vec!["x".repeat(100); 200] });
+        let made = json!({ "id": "big-helper", "large": "x".repeat(20_000) });
         let big = json!({ "content": [{ "type": "text", "text": made.to_string() }] });
         assert!(matches!(keyed(&slot("kb-big", "k"), "p".into()), Keyed::New));
         settle_key(slot("kb-big", "k"), &big);

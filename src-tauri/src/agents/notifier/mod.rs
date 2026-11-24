@@ -1102,7 +1102,7 @@ mod tests {
         let mut first = Owed { rev: o.rev, ..Owed::from(2, o.cursor) };
         first.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
         let Some((Some(text), Settled::Pending(3, _))) = line(first) else { panic!("not done yet") };
-        assert!(text.contains("NOT done yet: a job it started still runs in the background (tail.exe (pid 22104))"), "{text}");
+        assert!(text.contains("NOT done yet [job running: tail.exe (pid 22104)]"), "{text}");
         // Told: still a job, nothing more to say, and no end for a wait either.
         let told = Owed { told_pending: true, ..o };
         assert!(matches!(line(told), None | Some((None, _))));

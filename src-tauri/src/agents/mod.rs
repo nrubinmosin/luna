@@ -48,9 +48,6 @@ pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion, AskSource};
 pub use delivery::{notes_dir, send};
 pub use handover::{carried_into, opening_lapsed, started_in, take_over};
 pub use held::held_count;
-/// The sessions under a caller, for the live suite to find a lead's helpers.
-#[cfg(test)]
-pub(crate) use list::list as list_for_test;
 /// The worktree a spawn naming no folder would take from where the caller's
 /// shell is, for the MCP edge's tests.
 #[cfg(test)]

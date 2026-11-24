@@ -1026,7 +1026,7 @@ mod tests {
         let w = wait_many(&caller, std::slice::from_ref(&done), false, "turn_done", 20, None, &call).unwrap();
         let reply = w.results[0].waited.reply.as_ref().unwrap();
         assert_eq!(reply.matches("[cut at").count(), 1, "once");
-        let file = reply.rsplit("the answer is in ").next().unwrap().split(", its report first").next().unwrap().trim_end_matches(']');
+        let file = reply.rsplit("; Report ").next().unwrap().rsplit_once(":1–").unwrap().0;
         assert_eq!(std::fs::read_to_string(file).unwrap(), long, "the whole of it");
         let _ = std::fs::remove_file(file);
         leave(&[&caller, &done, &busy], &dir);
@@ -1069,7 +1069,7 @@ mod tests {
         report_reply("rl-one", &mut w);
         let reply = w.reply.unwrap();
         assert!(reply.chars().count() < MAX_TEXT + 300 && reply.contains("[cut at"), "{}", reply.len());
-        let file = reply.rsplit("the answer is in ").next().unwrap().trim_end_matches(']');
+        let file = reply.rsplit("; Report ").next().unwrap().rsplit_once(":1–").unwrap().0;
         assert_eq!(std::fs::read_to_string(file).unwrap(), long);
         let _ = std::fs::remove_file(file);
         // A short one is itself; no reply stays none.
@@ -1088,7 +1088,7 @@ mod tests {
         for r in &results {
             let text = r.waited.reply.as_ref().unwrap();
             assert!(text.contains("several sessions sharing this result"), "{}", &text[text.len() - 80..]);
-            let file = text.rsplit("the answer is in ").next().unwrap().split(", its report first").next().unwrap().trim_end_matches(']');
+            let file = text.rsplit("; Report ").next().unwrap().rsplit_once(":1–").unwrap().0;
             assert_eq!(std::fs::read_to_string(file).unwrap().chars().count(), MAX_TEXT / 2, "the whole report");
             let _ = std::fs::remove_file(file);
         }
@@ -1127,7 +1127,7 @@ mod tests {
         for r in &results[2..] {
             let text = r.waited.reply.as_ref().unwrap();
             assert!(text.contains("several sessions sharing this result"), "{}", &text[text.len() - 80..]);
-            let file = text.rsplit("the answer is in ").next().unwrap().split(", its report first").next().unwrap().trim_end_matches(']');
+            let file = text.rsplit("; Report ").next().unwrap().rsplit_once(":1–").unwrap().0;
             assert_eq!(std::fs::read_to_string(file).unwrap().chars().count(), MAX_TEXT, "the whole of it");
             let _ = std::fs::remove_file(file);
         }

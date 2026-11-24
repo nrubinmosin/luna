@@ -40,7 +40,7 @@ ranks none of the CLIs' modes.
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `folder.rs` (where the caller works, who else is there), `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and context news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
-| `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics; every session with tools reads it |
+| `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic the offered topic names |
 
 ## How a session gets Luna
 
@@ -289,9 +289,11 @@ Every helper runs in the core (`spawn/background.rs`, [background
 helpers](background-helpers.md)); the window takes no part. `spawn` settles the
 account, folder and role (`settle_role`; `reaches_luna`), records the
 spawn on disk (`SpawnUnderWay`), registers the helper with its parent
-(`spawn_is` notes its task), starts its first turn and answers with `id`,
-`settings`, `turnsEnded`, `sameFolder` (other live sessions in its folder) and
-`places`. Luna makes, inspects and removes no worktree
+(`spawn_is` notes its task), starts its first turn and returns its `id` and
+`sameFolder` (a count of other live sessions in reach working in the same
+directory). Wait uses turn 0 as the initial baseline, which spawn records
+on the debt. An account list also returns `accountChoice`. Luna makes,
+inspects and removes no worktree
 ([ADR-0030](../adr/0030-scope-of-0-20.md)): a caller that wants isolation
 makes one with `git worktree add` and passes it as `folder`, and `luna_session_spawn`
 refuses a `worktree` argument saying so (`mcp/args.rs` `worktree_instead`).
@@ -335,8 +337,8 @@ its own helpers would otherwise never hear them.
 A spawn is refused early, before folders and logins are read (`room_now`),
 and again where its place is promised (`SpawnUnderWay::begin`); the agents'
 layer reads the lines off its own lock (`background::lines`), as the helpers'
-lock is never taken under the registry's. `places` (`Places`, in the spawn's
-result and in `luna_session_list`) is `inUse` (helpers at work and spawns
+lock is never taken under the registry's. `places` (`Places`, from
+`luna_session_get` with `include: ["places"]`) is `inUse` (helpers at work and spawns
 under way on the caller's line) of `of`, `underYou` (those under the caller
 itself, and its spawns) and `waiting` (turns waiting for a place). A refusal
 says what takes a place, the spawns under way and turns waiting, and names
@@ -529,6 +531,19 @@ Invariants:
   (`reserved`) until the response; a cancel undoes them together except an
   answer a later call delivered (`receipts`).
 
+## Session tool results
+
+`luna_session_list` returns `me` and rows with `id`, `name`, `state`, `turnsEnded`
+and `askId` when available, plus `nextCursor` and unknown IDs when applicable.
+Filters still read the registry fields before checking state and paging.
+
+`luna_session_get` returns identity, state, `turnsEnded`, and the caller-visible
+task and full ask. `include` requests extra fields by group. `settings` adds
+effective settings, `paths` adds folder, cwd and transcript, `diagnostics` adds
+session IDs and version, window group, activity, context, background work and
+the auto-delete countdown, and `places` shows the caller's line capacity.
+All groups use the same session reach checks.
+
 ## The notifier
 
 A thread looks at debts every 2 s. When the caller is between turns on two
@@ -542,8 +557,11 @@ turn, stopped on a prompt (once per stop) or exited.
   one under 400 characters the last; when that short turn is one the CLI started
   by itself (`Said::by_cli`, a background job's end), the longest message of the
   latest turn before it that wrote one of 400 or more (`Said::starts`)), then the last, then the rest. The notice quotes about
-  150 characters of the report's first line (`opening_line`), not for a failed
-  turn, and the report's lines in the file (`report_span`: `lines 1-N of M`).
+  150 characters of the report's first line (`opening_line`) on successful
+  turns. `Report <path>:1–N` locates the report (`report_span`). Short replies
+  are quoted whole. A notice gives one request's number and key or the count
+  and latest number and key for several. Matched replies still have separate
+  `Re request N` sections in the file, newest first.
   `luna_report_get` (`read::report_get`) gives that report alone, from `since`,
   else the debt's offset, else the transcript's start, with `rest` and a file of
   the whole; it starts the autoDelete count over (`looked`), and with `ack` a
@@ -556,7 +574,8 @@ turn, stopped on a prompt (once per stop) or exited.
   not within 10 s the notice goes (Claude Code moves an MCP call past 120 s to
   the background and may drop it).
 - A turn after which the helper still runs processes waits up to 20 s, then
-  says "NOT done yet" once per debt (`Owed::told_pending`), naming what is left.
+  says "NOT done yet" once per debt (`Owed::told_pending`), with a short tag
+  naming the pending work (`[helpers pending]`, `[job running]` or a subagent count).
   After that the caller hears only of a turn no notice started (`notice_turn`,
   `real_turn_past`) or the job's end (`Verdict::JobOver`), however long the
   job does nothing: what it does is not measured, and idle is no proof of an
@@ -626,8 +645,8 @@ turn, stopped on a prompt (once per stop) or exited.
   within `WAKE_WAIT_MS` (10 min), or one the breaker stops, leaves the parent
   told as before.
 - **Nothing running.** A helper's or lead's turn end told to its parent as
-  "finished its turn" adds "Nothing of its own is running: it will not go on
-  unless you send to it." (`NOTHING_RUNNING`) when nothing would start its
+  "finished its turn" adds `[idle; send to resume]` (`NOTHING_RUNNING`) when
+  nothing would start its
   next turn (`runs_nothing`): idle with nothing its turns left
   (`children_busy`: what its job holds, both CLIs; a Claude Code `-p` turn
   stays open while its background subagents work, and a Codex turn's server

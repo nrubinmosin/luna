@@ -3,7 +3,7 @@
 
 use crate::agents::owed::{owe_asked, shown, Asked};
 use crate::agents::registry::{chat_name, reg, register, set_name};
-use crate::agents::spawn::folder::neighbors_in;
+use crate::agents::spawn::folder::count_neighbors;
 use crate::agents::spawn::{spawn_is, SpawnParams, Spawned};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
@@ -326,10 +326,10 @@ pub(in crate::agents) fn spawn_background(
         auto_delete,
         background: true,
     });
-    let same_folder = neighbors_in(&run_in, caller, &[caller, &id]);
+    let same_folder = count_neighbors(&run_in, caller, &[caller, &id]);
     shown(caller, &id, 0);
     owe_asked(caller, &id, 0, 0, &Asked { text: &params.prompt, key: params.request_key.as_deref(), reply: true });
-    Ok(Spawned { id, turns_ended: 0, settings, same_folder, account_choice: None, places: Default::default() })
+    Ok(Spawned { id, same_folder, account_choice: None })
 }
 
 #[cfg(test)]

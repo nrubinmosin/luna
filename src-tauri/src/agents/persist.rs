@@ -1514,9 +1514,8 @@ mod tests {
         register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, from_window);
         register(other, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         for caller in [id, other] {
-            let rows = super::super::list::list(caller, Some(&[id.to_string()]), true).sessions;
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].settings, serde_json::json!({ "model": "opus" }), "{caller}");
+            let detail = super::super::list::session_get(caller, id, true, &["settings".into()]).unwrap();
+            assert_eq!(detail["settings"], serde_json::json!({ "model": "opus" }), "{caller}");
         }
         for s in [id, other] {
             forget(s);

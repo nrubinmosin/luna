@@ -263,7 +263,7 @@ fn content(mut v: Value) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::dispatch::{as_asked, lineage_of, runs_in_scope};
-    use super::guide::{guide_text, sections, FIRST_READ, GUIDE, TOPICS};
+    use super::guide::{guide_text, sections, GUIDE, TOPICS};
     use super::tools::{tools, REMOVED};
     use super::*;
 
@@ -513,7 +513,14 @@ mod tests {
                 refused(call("lr-lead", "luna_session_wait", json!({ "ids": ["lr-mine", target], "timeoutSec": 1, "scope": scope })), past);
                 refused(call("lr-lead", "luna_session_send", json!({ "id": target, "text": "hi", "scope": scope })), past);
                 refused(call("lr-lead", "luna_session_answer", json!({ "id": target, "answers": ["1"], "scope": scope })), past);
-                refused(call("lr-lead", "luna_session_get", json!({ "id": target, "scope": scope })), past);
+                refused(
+                    call(
+                        "lr-lead",
+                        "luna_session_get",
+                        json!({ "id": target, "scope": scope, "include": ["places", "settings", "paths", "diagnostics"] }),
+                    ),
+                    past,
+                );
                 refused(call("lr-lead", "luna_session_list", json!({ "ids": [target], "scope": scope })), past);
             }
             refused(call("lr-lead", "luna_session_stop", json!({ "id": target })), "not one you spawned");
@@ -582,6 +589,35 @@ mod tests {
         for id in ["ms-kid", "ms-theirs", "ms-chat", "ms-me"] {
             agents::forget(id);
         }
+    }
+
+    #[test]
+    fn get_include_is_checked_and_forwarded() {
+        tooled("include-me");
+        let call = |args: Value| {
+            handle(
+                "include-me",
+                &json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": "luna_session_get", "arguments": args }
+                })
+                .to_string(),
+            )
+            .unwrap()["result"]
+                .clone()
+        };
+        let get = |args| {
+            let r = call(args);
+            assert!(r.get("isError").is_none(), "{r}");
+            serde_json::from_str::<Value>(r["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        let core = get(json!({ "id": "include-me" }));
+        let full = get(json!({ "id": "include-me", "include": ["paths", "places", "settings", "diagnostics"] }));
+        for field in ["folder", "places", "settings", "turnStartedAt"] {
+            assert!(core.get(field).is_none() && full.get(field).is_some(), "{field}: {full}");
+        }
+        assert_eq!(call(json!({ "id": "include-me", "include": ["unknown"] }))["isError"], true);
+        agents::forget("include-me");
     }
 
     /// Another chat's helper is read and waited on with scope "all", but neither
@@ -809,19 +845,17 @@ mod tests {
         for (title, _) in &sections {
             assert!(TOPICS.iter().any(|(_, t)| t == title), "nothing leads to {title}");
         }
-        // Every tool is a topic, and what the index suggests first is too; the
+        // Every tool is a topic; the
         // instructions point to the guide and name no topic to read.
         for t in tools().as_array().unwrap() {
             let name = t["name"].as_str().unwrap();
             assert!(TOPICS.iter().any(|(topic, _)| *topic == name), "{name} has no topic");
         }
-        for topic in FIRST_READ {
-            assert!(TOPICS.iter().any(|(t, _)| *t == topic), "{topic}");
-        }
         assert!(INSTRUCTIONS.contains("luna_guide_get") && !INSTRUCTIONS.contains("topics "));
-        // No topic: the opening and what to ask for, never the whole.
+        // With no topic the index is just the topic names.
         let index = guide_text(None).unwrap();
-        assert!(index.starts_with("# Luna: sessions, accounts and the luna_* tools") && index.contains("Restart: restart"), "{index}");
+        let topics: Vec<&str> = TOPICS.iter().map(|(topic, _)| *topic).collect();
+        assert_eq!(index, format!("Pick a topic: {}", topics.join(", ")));
         assert!(index.len() < GUIDE.len() / 4);
         assert!(guide_text(Some("weather")).unwrap_err().contains("luna_session_spawn"));
         // Nothing a caller is told names a tool there is not.

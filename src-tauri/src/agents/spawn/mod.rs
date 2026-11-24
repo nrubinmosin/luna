@@ -15,7 +15,7 @@ use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_fr
 #[cfg(test)]
 pub(crate) use crate::agents::spawn::background::background_spec_for_test;
 use crate::agents::spawn::background::spawn_background;
-use crate::agents::spawn::folder::{caller_worktree, Neighbor};
+use crate::agents::spawn::folder::caller_worktree;
 use crate::agents::spawn::role::settle_role;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -350,7 +350,7 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-pub(in crate::agents) fn places_in(lines: &crate::background::Lines, caller: &str, most: usize) -> Places {
+fn places_in(lines: &crate::background::Lines, caller: &str, most: usize) -> Places {
     let taken = lines.taken(&lines.top(caller));
     Places {
         in_use: taken.in_use(),
@@ -379,20 +379,11 @@ impl Drop for SpawnUnderWay {
 #[serde(rename_all = "camelCase")]
 pub struct Spawned {
     pub id: String,
-    /// Pass to `wait` as `afterTurn`: the reply to the prompt ends turn 1.
-    pub turns_ended: u32,
-    /// The flags the session runs with, as resolved from the request and the
-    /// account's defaults.
-    pub settings: serde_json::Value,
-    /// Other live sessions working in the same directory, the caller aside:
-    /// they share its files and its git index, commits and all.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub same_folder: Vec<Neighbor>,
+    /// Other live sessions in reach working in the same directory, the caller aside.
+    pub same_folder: usize,
     /// With `account` as a list: the one taken, and why not the ones before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_choice: Option<AccountChoice>,
-    /// Where the caller's line stands against its cap, this helper counted.
-    pub places: Places,
 }
 
 /// Starts a helper in the background on what was asked; returns once its first
@@ -523,12 +514,7 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
 
     let account_choice = picked.map(|(_, choice)| choice);
     let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces)?;
-    // Counted with its helper in, as `spawn_is` has it by now.
-    spawn_background(caller, params, account.path, in_worktree, taken.0, constraints).map(|s| Spawned {
-        account_choice,
-        places: places(caller),
-        ..s
-    })
+    spawn_background(caller, params, account.path, in_worktree, taken.0, constraints).map(|s| Spawned { account_choice, ..s })
 }
 
 /// The helper a spawn came to, as soon as it is registered and before its CLI is
@@ -642,6 +628,12 @@ mod tests {
         let back: SpawnTaken = serde_json::from_value(old).expect("an older chat-ties.json still reads");
         assert_eq!(back.params.prompt, "go");
         forget("uw-helper");
+    }
+
+    #[test]
+    fn a_spawn_result_is_an_id_and_count_for_one_account() {
+        let spawned = Spawned { id: "helper".into(), same_folder: 0, account_choice: None };
+        assert_eq!(serde_json::json!(spawned), serde_json::json!({ "id": "helper", "sameFolder": 0 }));
     }
 
     #[test]

@@ -35,10 +35,6 @@ pub(super) const TOPICS: [(&str, &str); 19] = [
     ("luna_guide_get", "Working with helpers"),
 ];
 
-/// The topics the index suggests before a first spawn. The instructions only
-/// point to the guide: a caller reads what it needs, when it needs it.
-pub(super) const FIRST_READ: [&str; 2] = ["luna_session_spawn", "notices"];
-
 /// The guide's sections, by title, each with its text (its `## ` line included).
 pub(super) fn sections() -> Vec<(&'static str, &'static str)> {
     let mut out = Vec::new();
@@ -59,29 +55,14 @@ pub(super) fn guide_text(topic: Option<&str>) -> Result<String, String> {
     guide_text_as(topic, true)
 }
 
-/// What `luna_guide_get` says of `topic`: its section; with none, the guide's
-/// opening and which topic each section answers. To a lead (not `persons`),
-/// what it is offered: no topic of a tool only a person's chat may call, and
-/// no line of a section that names one.
+/// The topic's section, or the offered topics with none. Leads only see
+/// topics and guidance for tools they may call.
 pub(super) fn guide_text_as(topic: Option<&str>, persons: bool) -> Result<String, String> {
-    let sections = sections();
     let offered: Vec<&str> = TOPICS.iter().map(|(topic, _)| *topic).filter(|t| persons || !PERSONS_ONLY.contains(t)).collect();
     let Some(topic) = topic.map(str::trim).filter(|t| !t.is_empty()) else {
-        let opening = GUIDE.split("\n## ").next().unwrap_or_default().trim_end();
-        let index: Vec<String> = sections
-            .iter()
-            .map(|(title, _)| {
-                let topics: Vec<&str> =
-                    TOPICS.iter().filter(|(topic, t)| t == title && offered.contains(topic)).map(|(topic, _)| *topic).collect();
-                format!("{title}: {}", topics.join(", "))
-            })
-            .collect();
-        return Ok(format!(
-            "{opening}\n\nTopics, by section: {}. Before your first spawn: {}.",
-            index.join("; "),
-            FIRST_READ.join(" and ")
-        ));
+        return Ok(format!("Pick a topic: {}", offered.join(", ")));
     };
+    let sections = sections();
     let title = TOPICS.iter().find(|(t, _)| *t == topic && offered.contains(t)).map(|(_, title)| *title);
     let text = title.and_then(|title| sections.iter().find(|(t, _)| *t == title).map(|(_, text)| *text));
     let text = text.ok_or_else(|| format!("no topic {topic:?}; the topics: {}", offered.join(", ")))?;
