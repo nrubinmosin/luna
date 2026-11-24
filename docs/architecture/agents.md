@@ -615,7 +615,8 @@ turn, stopped on a prompt (once per stop) or exited.
   joined FYI stays part of the original turn. A turn seen before its prompt
   is written is reconsidered if its transcript grows. For eight seconds
   after a silent or skipped end, a status appended past the last complete
-  line the notifier read can reopen the debt. Once found, the status stays
+  line the notifier read can reopen the debt, including at the next idle
+  look if a new turn started in the meantime. Once found, the status stays
   owed across batching, a busy caller, and a core restart. Permission prompts,
   failures, exits and restart
   interruptions still go to the caller. A tripped breaker allows the first

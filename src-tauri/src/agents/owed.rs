@@ -269,13 +269,12 @@ impl Owed {
         self.wake.late_check = Some((ended, to, at));
     }
 
-    pub(super) fn late_transcript_cursor(self, ended: u32) -> Option<u64> {
+    pub(super) fn late_transcript_cursor(self) -> Option<(u32, u64)> {
         let (turn, to, at) = self.wake.late_check?;
         (self.wake.delivery_expired.is_none()
-            && turn == ended
             && (self.wake.silent == Some(turn) || self.wake.skipped == Some(turn))
             && now_ms().saturating_sub(at) < LATE_TRANSCRIPT_MS)
-            .then(|| to.max(self.notice_cursor()))
+            .then(|| (turn, to.max(self.notice_cursor())))
     }
 
     pub(super) fn notice_cursor(self) -> u64 {

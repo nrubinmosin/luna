@@ -150,6 +150,14 @@ impl Request {
 }
 
 impl Said {
+    /// The words before the first new turn in a read that starts mid-turn.
+    pub(super) fn before_next_turn(&self) -> &[String] {
+        let prompt = self.turn_prompts.iter().flatten().next().map(|&p| self.prompts[p].0);
+        let next_answer = self.starts.get(1).copied();
+        let end = prompt.into_iter().chain(next_answer).min().unwrap_or(self.len());
+        &self[..end]
+    }
+
     /// Messages of one turn, or of turns that cannot be told apart.
     pub(super) fn one_turn(texts: Vec<String>) -> Said {
         Said { texts, last_turn: 0, starts: vec![0], ..Said::default() }

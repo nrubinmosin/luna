@@ -648,6 +648,12 @@ fn late_transcript(f: &mut Fixture, rng: &mut Seed) {
     let expires = rng.coin();
     f.advance(if expires { 7_000 } else { 2_000 });
     f.append(WORKER, "assistant", "DONE: late final status", false);
+    if !expires && rng.coin() {
+        crate::background::in_turn_for_test(WORKER);
+        f.append(WORKER, "user", "An unrelated turn", false);
+        expect(&f.tick(WriteResult::Started), &[]);
+        f.idle(WORKER, 2, false);
+    }
     let expected: &[(&str, &[&str])] = if expires { &[] } else { &[(TOP, &["DONE: late final status"])] };
     expect(&f.tick(WriteResult::Started), expected);
     f.checkpoint(&[]);

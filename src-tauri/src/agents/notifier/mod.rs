@@ -742,7 +742,7 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
                     && o.wake.silent.is_none()
                     && o.wake.unread_since.is_none()
                     && o.wake.unread_to.is_none();
-                let checks_growth = o.wake.silent.is_some_and(|turn| o.late_transcript_cursor(turn).is_some());
+                let checks_growth = o.late_transcript_cursor().is_some();
                 (caller_in_scope(caller) && (o.active() || o.watches_later_turns() || awaiting_unread || checks_growth))
                     .then(|| ((caller.clone(), id.clone()), *o, k.provider))
             })
@@ -759,9 +759,10 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
             continue;
         }
         let late_status = (turn.turn == crate::activity::Turn::Idle)
-            .then(|| o.late_transcript_cursor(turn.turns_ended))
+            .then(|| o.late_transcript_cursor())
             .flatten()
-            .and_then(|from| lines::status_after(pty, id, provider, from));
+            .filter(|(checked, _)| *checked <= turn.turns_ended)
+            .and_then(|(checked, from)| lines::status_after(pty, id, provider, from, checked < turn.turns_ended));
         let end = if let Some(end) = late_status {
             end
         } else {

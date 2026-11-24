@@ -889,12 +889,13 @@ fn notice_line_inner(
     standing_line(pty, who, id, k, o)
 }
 
-pub(super) fn status_after(pty: &crate::pty::PtyManager, id: &str, provider: Provider, from: u64) -> Option<u64> {
+pub(super) fn status_after(pty: &crate::pty::PtyManager, id: &str, provider: Provider, from: u64, crossed_turn: bool) -> Option<u64> {
     if transcript_end(id) <= from {
         return None;
     }
     let (said, end) = written_range(pty, id, provider, from);
-    fresh_status(&said).map(|_| end)
+    let words = if crossed_turn { said.before_next_turn() } else { &said };
+    words.iter().any(|text| says_status(text)).then_some(end)
 }
 
 fn notice_replies(pty: &crate::pty::PtyManager, caller: &str, id: &str, provider: Provider, o: Owed, ended: u32) -> (Said, u64) {
