@@ -273,7 +273,8 @@ fn can_take_refusal(pty: &crate::pty::PtyManager, caller: &str) -> bool {
     !notice_waits(caller)
         && crate::starts::open(caller)
         && ready_for_notice(pty, caller)
-        && (!pty.has_draft(caller) || puts_draft_aside(pty.provider(caller)))
+        && (!pty.has_draft(caller)
+            || (puts_draft_aside(pty.provider(caller)) && pty.composer(caller).is_some_and(|c| !c.text.is_empty() && !c.stashed)))
 }
 
 pub(crate) fn places_pending(sessions: &[crate::activity::SessionLife]) -> bool {

@@ -42,8 +42,6 @@ pub(super) struct Owed {
     /// Asked by text Luna held (`Held`) and typed in later: the `turnsEnded`
     /// the caller got with `held` is older than the question.
     pub(super) late: bool,
-    /// The session exited with the caller's text still held, never typed in.
-    pub(super) lost: bool,
     /// A core's going stopped its turn and it has gone on by itself
     /// (`resumeOnRestart`); the caller has yet to hear.
     pub(super) resumed: bool,
@@ -175,7 +173,6 @@ impl Owed {
             request_match: None,
             queued: false,
             late: false,
-            lost: false,
             resumed: false,
             cut_short: false,
             job_went: false,

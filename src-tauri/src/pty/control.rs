@@ -1078,11 +1078,12 @@ pub(super) mod tests {
             for input in reader {
                 pending.release(input.len());
                 if let Input::Bytes(bytes) = input {
-                    if bytes == b"\r" {
+                    let submitted = bytes == b"\r";
+                    let _ = tx.send(String::from_utf8_lossy(&bytes).into_owned());
+                    if submitted {
                         let count = crate::activity::turn_state(&chat).unwrap().turns_ended;
                         crate::activity::count_at_least(&chat, count + 1);
                     }
-                    let _ = tx.send(String::from_utf8_lossy(&bytes).into_owned());
                 }
             }
         });

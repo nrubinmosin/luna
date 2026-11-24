@@ -878,9 +878,6 @@ pub(super) fn runs_nothing(id: &str, ts: Option<crate::activity::TurnState>) -> 
     if crate::background::has_work(id) {
         return false;
     }
-    if super::notice_waits(id) {
-        return false;
-    }
     let (edges, pending) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let pending: HashSet<String> = r
@@ -1175,12 +1172,6 @@ pub(in crate::agents) fn standing_line(
         if o.cut_short {
             return Some((
                 Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked, and it has not started again. It runs again once the user opens it.")),
-                Settled::Exited,
-            ));
-        }
-        if o.lost {
-            return Some((
-                Some(format!("{who} has exited before Luna could type your message in: the user's draft held it until then.")),
                 Settled::Exited,
             ));
         }
