@@ -94,13 +94,14 @@ pub(crate) fn observe_transcript(id: &str) {
 /// transcript. Remember the offset, and use it only if the registry later
 /// confirms that same file. The hook supplies an ID, never a path to read.
 pub(crate) fn observe_claude_switch(id: &str, session: &str) {
-    if session.len() != 36 || uuid::Uuid::parse_str(session).is_err() {
+    if session.len() != 36 {
         return;
     }
     let pty = crate::pty::manager();
     let Some(chat) = pty.probe(id).filter(|chat| chat.provider == Provider::Claude) else { return };
-    let path = crate::claude::session::transcript_file(&chat.account_path, &chat.cwd, session);
-    remember_destination(id, path);
+    if let Some(path) = crate::claude::session::find_transcript(&chat.account_path, session) {
+        remember_destination(id, path);
+    }
     observe_transcript(id);
 }
 
