@@ -37,12 +37,7 @@ pub(super) struct Undelivered {
     pub(super) queued: Vec<crate::background::Queued>,
 }
 
-/// Takes off what `undelivered_for` gives, `caller` having been told.
-#[cfg(test)]
-pub(super) fn take_undelivered(id: &str, caller: &str, parent: bool) -> Undelivered {
-    take_undelivered_ids(id, caller, parent, None)
-}
-
+/// Takes off the queued losses the caller was told.
 pub(super) fn take_undelivered_ids(id: &str, caller: &str, parent: bool, ids: Option<&[String]>) -> Undelivered {
     Undelivered { queued: crate::background::take_undelivered_for(id, caller, parent, ids) }
 }

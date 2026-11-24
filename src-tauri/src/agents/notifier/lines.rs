@@ -2005,8 +2005,7 @@ mod tests {
             &Asked { text: "waiting for a place", reply: true, key: None },
             (true, Some("queued-id".into()), false),
         );
-        crate::background::set_session_for_test(id, "failure-queue-thread");
-        crate::background::cut_for_test(id);
+        reg().lock().unwrap().owed.get_mut(&key).unwrap().cut_short = true;
         let pty = crate::pty::manager();
         let o = held(reg().lock().unwrap().owed[&key], 1, QUEUED_GRACE_MS.max(REPLY_GRACE_MS));
         let Some((Some(text), how)) = notice_line(pty, caller, "Session", id, &known, o) else { panic!("the first failure wakes") };
