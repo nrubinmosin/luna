@@ -63,11 +63,11 @@ impl SystemNews {
     fn line(&self, r: &Registry) -> Option<String> {
         match &self.kind {
             SystemNewsKind::Skills { helper, cause, told: false } => {
-                Some(format!("Delegate {} started a turn without its folder skills: {cause}", named(r, helper)))
+                Some(format!("Delegate {} [folder skills unavailable]: {cause}", named(r, helper)))
             }
             SystemNewsKind::Skills { told: true, .. } => None,
             SystemNewsKind::Breaker { caller, helper, .. } => Some(format!(
-                "Luna paused turn and job notices to {} about {} after a notice loop. Prompts and questions still come. Typing into either session resumes notices.",
+                "Notices to {} about {} [turn notices stopped; type in either session to resume].",
                 named(r, caller),
                 named(r, helper),
             )),

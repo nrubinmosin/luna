@@ -157,8 +157,7 @@ pub(in crate::agents) fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<Str
             let told = QuotaTold { level, resets_at: resets_at.clone() };
             if say {
                 let resets = resets_at.as_deref().map(|t| format!(" (resets {t})")).unwrap_or_default();
-                let line =
-                    format!("Account {account}, used by delegates on your line, has used {pct:.0}% of its \"{label}\" window{resets}.");
+                let line = format!("Delegate account {account}: {pct:.0}% of \"{label}\" window used{resets}.");
                 news.entry(caller.clone()).or_default().push(QuotaNews { key, told, line });
             } else if level == 0 {
                 r.quota_told.remove(&key);
@@ -256,7 +255,7 @@ mod tests {
         let lines = &news["qn-top"];
         assert_eq!(lines.len(), 1, "one shared delegate account, excluding the chat's own and the dead delegate's");
         assert_eq!(lines[0].key.1, "claude/qn-hot");
-        assert!(lines[0].line.contains("has used 92% of its \"week\" window"), "{}", lines[0].line);
+        assert!(lines[0].line.contains("92% of \"week\" window used"), "{}", lines[0].line);
         assert!(!reg().lock().unwrap().quota_told.keys().any(|(c, _, _)| c == "qn-mid"));
 
         // Not told until the notice has gone in: asked again until it has.

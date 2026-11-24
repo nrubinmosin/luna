@@ -463,7 +463,7 @@ fn notify_once(
             match said {
                 Some((Some(mut line), how)) => {
                     if let Some(suffix) = breaker_suffix(&caller, id, &how, now_ms()) {
-                        line.push_str(&suffix);
+                        line.push_str(suffix);
                     }
                     if rides_since(&how).is_some() {
                         riders.push((line, id.clone(), how, *o));
@@ -969,17 +969,14 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
     }
 }
 
-fn breaker_suffix(caller: &str, id: &str, how: &Settled, now: u64) -> Option<String> {
+fn breaker_suffix(caller: &str, id: &str, how: &Settled, now: u64) -> Option<&'static str> {
     if !counts_for_breaker(how) || !last_notice(caller, id, now) {
         return None;
     }
     if is_persons_chat(caller) {
-        return Some(format!(
-            " Luna stops telling you of its turns and jobs now ({BREAKER_NOTICES} notices in {} minutes); its prompts and questions still come, and a person typing into either chat lifts this.",
-            BREAKER_WINDOW_MS / 60_000
-        ));
+        return Some(" [turn notices stopped; asks still arrive; type in either session to resume]");
     }
-    Some(" No more turn notices about it. Read it with luna_session_wait or luna_report_get.".into())
+    Some(" [turn notices stopped; luna_report_get]")
 }
 
 /// Logs the breaker trip and shows the desktop toast.
@@ -1351,13 +1348,13 @@ mod tests {
         }
         assert!(breaker_suffix(lead, id, &Settled::Waiting, now).is_none());
         let suffix = breaker_suffix(lead, id, &Settled::Answered, now).unwrap();
-        assert!(suffix.contains("No more turn notices") && suffix.contains("luna_report_get"));
+        assert_eq!(suffix, " [turn notices stopped; luna_report_get]");
         owe_from(lead, id, 0, 0);
         let owed = reg().lock().unwrap().owed[&(lead.to_string(), id.to_string())];
         let text = format!("{NOTICE_TAG} {id} answered.{suffix}");
         let pty = crate::pty::manager();
         deliver_notice(pty, lead, &text, Notice { settled: vec![(id.into(), Settled::Answered, owed)], ..Notice::default() });
-        assert!(lines.try_recv().unwrap().contains("No more turn notices"));
+        assert!(lines.try_recv().unwrap().contains("turn notices stopped"));
         assert!(breaker_suffix(lead, id, &Settled::Answered, now).is_none(), "the trip has happened");
         let saved = crate::agents::persist::chats_now();
         assert!(!saved.system_news.iter().any(|n| n.about(id)), "the breaker resets on restart");

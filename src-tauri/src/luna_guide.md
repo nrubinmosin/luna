@@ -110,8 +110,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   with `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` first (then colon or space).
   A silent lead gets one wake when delegates finish; silence again is reported as stuck.
 - A helper saying it is waiting proves nothing; check its `state`.
-- Quiet and background-wait notices come once per turn. After 12 turn/job notices per pair
-  in 15 min, use waits or reads until a person types.
+- Quiet and background-wait notices come once per turn. The last says `[turn notices stopped]`
+  after 12 turn/job notices per pair in 15 min. Use waits or reads until a person types.
   Asks still arrive. Recover interrupted native work before relying on it.
 - Wait takes up to 16 ids. Use `turnsEnded` for `afterTurn`. For a helper, exit means deletion.
   `outcome` is `turn_done`, `waiting`, `exit`, `job_done` (background ended), or `timeout`.
