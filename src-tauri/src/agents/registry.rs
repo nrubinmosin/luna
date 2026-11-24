@@ -170,6 +170,7 @@ pub(super) struct Registry {
     pub(super) system_news: Vec<SystemNews>,
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
+    pub(super) failures_told: std::collections::HashSet<(String, String)>,
     pub(super) places_refused: HashMap<String, PlacesRefused>,
 }
 
@@ -213,6 +214,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             quota_told: HashMap::new(),
             news: Vec::new(),
             system_news: Vec::new(),
+            failures_told: Default::default(),
             places_refused: HashMap::new(),
         })
     });

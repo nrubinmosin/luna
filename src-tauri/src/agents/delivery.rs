@@ -7,7 +7,7 @@ use crate::agents::admission::{command_reach_now, plain_text};
 use crate::agents::ask::{live, state_of};
 use crate::agents::handover::handovers_of;
 use crate::agents::held::{hold, words};
-use crate::agents::owed::{owe_from, owe_from_at, seen, Asked};
+use crate::agents::owed::{owe_asked, owe_from_at, seen, Asked};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{authorize_send, is_mine, label, reg};
 use crate::provider::Provider;
@@ -373,8 +373,7 @@ pub(super) fn as_sent(caller: &str, id: &str, text: &str) -> String {
 /// work and dismisses a question that is someone else's to answer.
 /// `key`: the `requestKey` it came with, which notices name its answer by;
 /// `reply`: whether it asks for one, as one that does not wakes the caller only
-/// for a status word, ask, or failure. Both are
-/// a helper's debt's; a chat's has neither.
+/// for a status word, ask, or failure.
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&str>, reply: bool) -> Result<Sent, String> {
     authorize_send(caller, id)?;
     let mine = is_mine(caller, id);
@@ -490,14 +489,14 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     let typed = if going.is_none() || !crate::starts::open(id) {
         None
     } else {
-        match put_in(caller, id, &spill_sent(caller, id, text), before, baseline) {
+        match put_in(caller, id, &spill_sent(caller, id, text), before, baseline, key, reply) {
             Err(e) if crate::starts::refused(&e) => None,
             typed => typed?,
         }
     };
     drop(going);
     let Some(sent) = typed else {
-        hold(caller, id, text)?;
+        hold(caller, id, text, key, reply)?;
         return Ok(Sent {
             ok: true,
             state_before,
@@ -522,6 +521,8 @@ pub(super) fn put_in(
     text: &str,
     before: Option<crate::activity::TurnState>,
     baseline: u32,
+    key: Option<&str>,
+    reply: bool,
 ) -> Result<Option<Sent>, String> {
     // Held text too comes through here, typed long after it was taken.
     command_reach_now(caller, id, text)?;
@@ -542,7 +543,7 @@ pub(super) fn put_in(
     // mid-turn, that is the turn running now or the one the CLI starts on
     // the text after it, whichever the CLI makes of it (QUEUED_GRACE_MS).
     seen(caller, id, baseline);
-    owe_from(caller, id, baseline, cursor);
+    owe_asked(caller, id, baseline, cursor, &Asked { text, key, reply });
     if queued {
         if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&(caller.to_string(), id.to_string())) {
             o.queued = true;
@@ -911,9 +912,9 @@ mod tests {
         register("cr-kid", Provider::Codex, "C:\\p", "C:\\acc\\one", Some("cr-full"), false, none);
         // `put_in` types what `send` took and what was held: refused there
         // before anything reaches the terminal.
-        let e = put_in("cr-asks", "cr-chat", "/permissions :workspace", None, 0).err().unwrap();
+        let e = put_in("cr-asks", "cr-chat", "/permissions :workspace", None, 0, None, true).err().unwrap();
         assert!(e.contains("not a prompt"), "{e}");
-        assert!(put_in("cr-full", "cr-chat", " !whoami", None, 0).err().unwrap().contains("not a prompt"), "not its helper");
+        assert!(put_in("cr-full", "cr-chat", " !whoami", None, 0, None, true).err().unwrap().contains("not a prompt"), "not its helper");
         assert_eq!(command_reach_now("cr-full", "cr-kid", "/permissions :workspace"), Ok(()));
         assert_eq!(command_reach_now("cr-asks", "cr-chat", "permissions, please"), Ok(()));
         for id in ["cr-kid", "cr-chat", "cr-asks", "cr-full"] {

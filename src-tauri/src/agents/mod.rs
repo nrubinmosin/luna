@@ -39,7 +39,7 @@ mod said;
 pub(crate) mod spawn;
 mod teardown;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 pub(crate) use test_support::sweep_includes;
 mod wait;
@@ -58,8 +58,7 @@ pub(crate) fn caller_worktree_for_test(caller: &str) -> Option<String> {
 }
 pub use list::{account_get, account_list, session_get, session_list, SessionQuery};
 pub use lost::undelivered_left;
-#[cfg(test)]
-pub(crate) use notifier::riders_go;
+pub(crate) use notifier::places_pending;
 pub use notifier::{notify, NOTICE_TAG};
 pub use owed::{callers_owed, moved_onto_stdin, resumed, retried};
 pub use persist::{

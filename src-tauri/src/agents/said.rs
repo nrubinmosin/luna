@@ -85,6 +85,8 @@ pub(super) struct Said {
     /// `texts` the one each message answers, by index into them (`asked`).
     requests: Vec<Request>,
     re: Vec<usize>,
+    matches: Vec<Option<usize>>,
+    prior: Option<u32>,
 }
 
 /// A request of a caller's that a debt covers: its number among the caller's
@@ -95,6 +97,12 @@ pub(super) struct Request {
     pub(super) n: u32,
     pub(super) key: Option<String>,
     pub(super) head: String,
+    #[serde(default = "reply_by_default")]
+    pub(super) reply: bool,
+    #[serde(default)]
+    pub(super) taken: bool,
+    #[serde(default)]
+    pub(super) told: bool,
 }
 
 /// How much of a request's text is kept to find it again among the prompts:
@@ -111,7 +119,15 @@ fn flat(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+pub(super) fn reply_by_default() -> bool {
+    true
+}
+
 impl Request {
+    pub(super) fn new(n: u32, key: Option<String>, head: String, reply: bool) -> Self {
+        Self { n, key, head, reply, taken: false, told: false }
+    }
+
     /// The heading used in answer files and tool replies.
     pub(super) fn name(&self) -> String {
         match &self.key {
@@ -138,15 +154,27 @@ impl Said {
     /// previous notice or wait, if that request is still open.
     pub(super) fn asked_after(mut self, requests: Vec<Request>, previous: Option<u32>) -> Said {
         self.re.clear();
+        self.prior = previous;
         if !requests.is_empty() {
             let mut from = 0;
+            let mut last_head = "";
+
             let found: Vec<Option<usize>> = requests
                 .iter()
                 .map(|q| {
-                    let at = self.prompts.iter().skip(from).position(|(_, text)| !q.head.is_empty() && flat(text).contains(&q.head));
-                    let at = at.map(|i| i + from);
+                    if q.taken || previous == Some(q.n) {
+                        return None;
+                    }
+                    // One prompt can batch distinct sends. Repeating the
+                    // same request text needs a second occurrence.
+                    let start = from + usize::from(last_head == q.head && !last_head.is_empty());
+                    let at = self.prompts.iter().skip(start).position(|(_, text)| {
+                        !q.head.is_empty() && !text.trim_start().starts_with(super::notifier::NOTICE_TAG) && flat(text).contains(&q.head)
+                    });
+                    let at = at.map(|i| i + start);
                     if let Some(i) = at {
                         from = i;
+                        last_head = &q.head;
                     }
                     at.map(|i| self.prompts[i].0)
                 })
@@ -158,9 +186,53 @@ impl Said {
                     .map(|i| (0..requests.len()).rev().find(|&k| found[k].is_some_and(|at| at <= i)).unwrap_or(before_first))
                     .collect();
             }
+            self.matches = found;
         }
         self.requests = requests;
         self
+    }
+
+    /// The prompt match used for notices excludes the display fallback for
+    /// words before an unmatched request. In particular, queueing a request
+    /// gives the preceding turn no authority to report status for it.
+    pub(super) fn notice_requests(&self) -> (Vec<Request>, bool, bool) {
+        let mut requests = self.requests.clone();
+        let mut current = self.prior.and_then(|n| requests.iter().position(|q| q.n == n));
+        if let Some(k) = current {
+            requests[k].taken = true;
+        } else {
+            current = requests.iter().rposition(|q| q.taken);
+        }
+        let mut plan = false;
+        let mut lasting_in_last_turn = false;
+        let mut last_prompt = None;
+        let mut matches = self.matches.iter().enumerate().filter_map(|(k, at)| Some((k, (*at)?))).peekable();
+        for i in 0..=self.texts.len() {
+            while let Some((k, _)) = matches.next_if(|(_, at)| *at == i) {
+                requests[k].taken = true;
+                current = Some(k);
+                if i >= self.last_turn {
+                    last_prompt = Some(k);
+                }
+            }
+            let Some(status) = self.texts.get(i).and_then(|text| status_word(text)) else { continue };
+            if let Some(k) = current {
+                requests[k].told |= status.lasting();
+            }
+            if i >= self.last_turn {
+                lasting_in_last_turn |= status.lasting();
+                plan |= status == Status::Plan && (requests.is_empty() || current.is_some_and(|k| requests[k].reply));
+            }
+        }
+        // An FYI can follow an independent turn before the next look. It
+        // leaves a plan asleep only if every observed turn was an FYI.
+        let fyi = last_prompt.is_some_and(|k| !requests[k].reply)
+            && self.starts.iter().copied().chain(self.prompts.last().map(|(at, _)| *at)).all(|start| {
+                self.prompts.iter().any(|(at, text)| {
+                    *at == start && requests.iter().any(|q| !q.reply && !q.head.is_empty() && flat(text).contains(&q.head))
+                })
+            });
+        (requests, plan && !lasting_in_last_turn, fyi)
     }
 
     /// The requests these answer, in the order they were asked.
@@ -247,6 +319,7 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
         said.finals.push(m.final_answer);
         said.texts.push(m.text);
     }
+    said.prompts.extend(prompts.into_iter().map(|text| (said.texts.len(), text)));
     said
 }
 
@@ -334,7 +407,7 @@ pub(super) fn says_status(text: &str) -> bool {
 
 fn status_word(text: &str) -> Option<Status> {
     let first = text.trim_start().lines().next().unwrap_or("");
-    let bare = first.trim_start_matches(|c: char| matches!(c, '#' | '*' | '_' | '>') || c.is_whitespace());
+    let bare = first.trim_start_matches(|c: char| matches!(c, '#' | '*' | '_') || c.is_whitespace());
     STATUS_WORDS.iter().find_map(|(word, status)| {
         let rest = bare.strip_prefix(word)?.trim_start_matches(['*', '_']);
         (rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ')).then_some(*status)
@@ -541,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_last_request_in_a_batch_owns_the_reply() {
-        let request = |n, head: &str| Request { n, key: None, head: head.into() };
+        let request = |n, head: &str| Request::new(n, None, head.into(), true);
         let queued =
             ["check the warnings", "check the tests"].map(|text| crate::background::Queued::new(Some("caller".into()), text.into()));
         let message = |role: &str, text: String| Message { role: role.into(), text, after_cli: false, final_answer: false };
@@ -572,9 +645,39 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_in_a_later_turn_is_independent_of_a_status_in_an_earlier_turn() {
+        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let read = |last| {
+            said_of(vec![
+                m("user", "First task"),
+                m("assistant", "DONE: first task"),
+                m("user", &format!("{} says Next task is queued", super::super::notifier::NOTICE_TAG)),
+                m("assistant", "BLOCKED: another session is blocked"),
+                m("user", "Next task"),
+                m("assistant", last),
+            ])
+            .asked(vec![Request::new(1, None, "First task".into(), true), Request::new(2, None, "Next task".into(), true)])
+        };
+        let (requests, plan, _) = read("PLAN: check the logs").notice_requests();
+        assert!(plan && requests[0].told && !requests[1].told);
+        let (requests, plan, _) = read("> DONE: status from another session").notice_requests();
+        assert!(!plan && !requests[1].told);
+    }
+
+    #[test]
+    fn an_fyi_after_an_independent_turn_is_not_the_only_work() {
+        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
+        let fyi = [m("user", "Heads up"), m("assistant", "Noted.")];
+        let match_fyi = |messages| said_of(messages).asked(vec![Request::new(1, None, "Heads up".into(), false)]).notice_requests().2;
+        assert!(match_fyi(fyi.to_vec()));
+        let independent = [m("user", "Go ahead"), m("assistant", "I reviewed the change.")];
+        assert!(!match_fyi([independent, fyi].concat()));
+    }
+
+    #[test]
     fn answers_to_several_requests_are_put_down_to_the_turn_each_started() {
         let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
-        let q = |n: u32, head: &str| Request { n, key: None, head: request_head(head) };
+        let q = |n: u32, head: &str| Request::new(n, None, request_head(head), true);
         let said = || {
             said_of(vec![
                 m("assistant", "Looking at it."),
@@ -606,7 +709,7 @@ mod tests {
     #[test]
     fn answers_in_a_fresh_conversation_keep_the_numbers_of_requests_before_it() {
         let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false, final_answer: false };
-        let q = |n: u32, head: &str| Request { n, key: None, head: request_head(head) };
+        let q = |n: u32, head: &str| Request::new(n, None, request_head(head), true);
         let said = said_of(vec![
             m("user", "This is a new conversation of session x, a lead."),
             m("assistant", "Picked up where it stood."),

@@ -75,6 +75,8 @@ pub(super) struct Owed {
     /// moved since, a new one has the same baseline and cursor as the old, and
     /// what was decided about the old is not to touch it.
     pub(super) rev: u64,
+    /// Generation of the transcript these offsets belong to.
+    pub(super) transcript_rev: u64,
     /// Where a lead's transcript ended at its last turn held back from the
     /// caller while its delegates worked (notifier `Settled::Skip`): what it
     /// wrote up to there waits in its report, and is no word on their end
@@ -97,22 +99,22 @@ pub(super) struct Owed {
 #[serde(default, rename_all = "camelCase")]
 pub(super) struct WakeState {
     pub(super) status: Option<Status>,
-    /// The newest reply-requesting send can start inside the unread range.
-    pub(super) task_from: Option<u64>,
-    /// What a mid-turn notice has already told, with its last prompt match.
-    /// A wait or read of the ended turn still starts at the answer cursor.
-    pub(super) reported_to: Option<(u64, Option<u32>)>,
     pub(super) plan_through: Option<u32>,
-    pub(super) stalled: bool,
+    /// The last task (request number, or zero for a legacy debt) told
+    /// about the 30-minute quiet condition.
+    pub(super) quiet_task: Option<u32>,
+    pub(super) task: Option<u32>,
     /// The latest turn skipped while work was still running.
     pub(super) skipped: Option<u32>,
+    /// Latest ended turn before an open request's prompt was taken.
+    pub(super) unused_turn: Option<u32>,
+    /// The older turn a merged send must still let the notifier consider.
+    pub(super) after: Option<u32>,
     /// A settled idle answer, left readable from its original cursor.
     pub(super) silent: Option<u32>,
     pub(super) unread_since: Option<u64>,
     /// Work of the session itself that a core restart would cut off.
     pub(super) job_running: bool,
-    /// The last send asked for no reply, even if an older ask still did.
-    pub(super) quiet_send: bool,
 }
 
 impl WakeState {
@@ -157,6 +159,7 @@ impl Owed {
     pub(super) fn from(baseline: u32, cursor: u64) -> Owed {
         Owed {
             rev: next_rev(),
+            transcript_rev: 0,
             baseline,
             told_waiting: false,
             told_ask: 0,
@@ -185,10 +188,7 @@ impl Owed {
     /// The session went on in another transcript (read.rs `moved_to`): what
     /// came after each debt taken in is read there from `from`.
     pub(super) fn rebase_since(&mut self, from: u64) {
-        self.wake.task_from = self.wake.task_from.map(|_| from);
-        if let Some((at, _)) = &mut self.wake.reported_to {
-            *at = from;
-        }
+        self.transcript_rev = next_rev();
         for s in self.since.iter_mut().flatten() {
             s.cursor = from;
         }
@@ -198,26 +198,29 @@ impl Owed {
         self.wake.silent.is_none()
     }
 
-    pub(super) fn notice_read(self) -> (u64, Option<u32>) {
-        self.wake.reported_to.filter(|(at, _)| *at > self.cursor).unwrap_or((self.cursor, self.request_match))
-    }
-
     pub(super) fn watches_later_turns(self) -> bool {
-        self.wake.status == Some(Status::Plan) || (self.wake.quiet_send && !self.no_reply)
+        self.wake.plan_through.is_some() || self.resumed || self.job_went
     }
 
     pub(super) fn notice_baseline(self) -> u32 {
-        self.baseline.max(self.wake.skipped.unwrap_or(0)).max(self.wake.silent.unwrap_or(0))
+        self.wake
+            .after
+            .unwrap_or(self.baseline)
+            .max(self.wake.skipped.unwrap_or(0))
+            .max(self.wake.silent.unwrap_or(0))
+            .max(self.wake.unused_turn.unwrap_or(0))
     }
 
-    /// Whether asks which merged in after a given revision all asked for no
-    /// reply. None means this debt never included that revision.
-    pub(super) fn no_task_since(self, rev: u64) -> Option<bool> {
-        self.since.iter().flatten().find(|s| s.rev == rev).map(|s| s.no_reply)
+    pub(super) fn legacy_can_stall(self) -> bool {
+        !self.no_reply && self.wake.status.is_none()
     }
 
-    pub(super) fn can_stall(self) -> bool {
-        !self.no_reply && !self.wake.quiet_send && !self.wake.stalled && self.wake.status.is_none()
+    pub(super) fn quiet_target(self) -> Option<u32> {
+        (!self.no_reply).then_some(self.wake.task.unwrap_or(0))
+    }
+
+    pub(super) fn cursor_after(self, rev: u64) -> Option<u64> {
+        self.since.iter().flatten().find(|s| s.rev == rev).map(|s| s.cursor)
     }
 
     /// What is left of a debt once the caller has heard it is not done yet.
@@ -242,20 +245,21 @@ pub(super) fn shown(caller: &str, id: &str, turns_ended: u32) {
 /// moment later is a debt that stands. Returns whether what the session goes on
 /// to say is owed on (`owed_on`), with the old debt and whether the caller
 /// is above the session now, as it must still be when that debt is put in.
-fn take_debt(r: &mut Registry, key: &(String, String), turns_ended: u32, job_debt: Option<u64>) -> Option<(bool, Owed)> {
+fn take_debt(r: &mut Registry, key: &(String, String), turns_ended: u32, job_debt: Option<u64>) -> Option<(bool, Owed, bool)> {
     let o = *r.owed.get(key)?;
     if turns_ended <= o.baseline && o.wake.silent != Some(turns_ended) && job_debt != Some(o.rev) {
         return None;
     }
     r.owed.remove(key);
-    waits_on_helpers_in(r, &key.1, &key.0).then(|| (is_descendant(r, &key.0, &key.1), o))
+    let waits = waits_on_helpers_in(r, &key.1, &key.0);
+    (waits || o.resumed || o.job_went).then(|| (is_descendant(r, &key.0, &key.1), o, waits))
 }
 
 /// What a session says once its own helpers have answered it is what it was
 /// asked for: still owed, past what the caller has now, as a notice's "not
 /// done" leaves it. Off the lock, as this reads the transcript's length, and so
 /// behind a question asked meanwhile, whose debt covers that too.
-fn owed_on(key: (String, String), turns_ended: u32, goes_on: Option<(bool, Owed)>) {
+fn owed_on(key: (String, String), turns_ended: u32, goes_on: Option<(bool, Owed, bool)>) {
     owed_on_for(key, turns_ended, goes_on, None);
 }
 
@@ -264,8 +268,8 @@ fn owed_on(key: (String, String), turns_ended: u32, goes_on: Option<(bool, Owed)
 /// so a hand-over coming in next finds them tied. Returns the one put in, by
 /// `rev`: none when a question since stands there already, or when the caller
 /// was above the session as its debt was taken and is not now.
-fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<(bool, Owed)>, taken: Option<u64>) -> Option<u64> {
-    let (above, before) = goes_on?;
+fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<(bool, Owed, bool)>, taken: Option<u64>) -> Option<u64> {
+    let (above, before, waits) = goes_on?;
     #[cfg(test)]
     super::test_support::reached("owed on", &key.0);
     let (provider, requests) = {
@@ -294,9 +298,12 @@ fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<(bool, O
         std::collections::hash_map::Entry::Vacant(v) => {
             v.insert(Owed {
                 request_match,
-                wake: WakeState { skipped: None, silent: None, unread_since: None, ..before.wake },
+                wake: WakeState { after: None, skipped: None, silent: (!waits).then_some(turns_ended), unread_since: None, ..before.wake },
                 no_reply: before.no_reply,
-                ..Owed::pending(turns_ended, cursor)
+                resumed: before.resumed,
+                job_went: before.job_went,
+                transcript_rev: before.transcript_rev,
+                ..if waits { Owed::pending(turns_ended, cursor) } else { Owed::from(turns_ended, cursor) }
             })
             .rev
         }
@@ -422,7 +429,9 @@ fn hand_over_of(
             match r.owed.get_mut(&key) {
                 // What was put in the place of the debt it stands for
                 // (`owed_on`) goes, and that debt is back as it was.
-                Some(now) if Some(now.rev) == put_in => *now = o,
+                Some(now) if Some(now.rev) == put_in => {
+                    *now = Owed { resumed: now.resumed, job_went: now.job_went, ..o };
+                }
                 Some(now) => now.cursor = now.cursor.min(o.cursor),
                 None => {
                     r.owed.insert(key.clone(), o);
@@ -440,7 +449,7 @@ fn hand_over_of(
 
 /// The callers `id` owes an answer, whatever turn each is owed.
 pub(super) fn callers_on(r: &Registry, id: &str) -> Vec<String> {
-    r.owed.keys().filter(|(_, s)| s == id).map(|(c, _)| c.clone()).collect()
+    r.owed.iter().filter(|((_, s), o)| s == id && o.active()).map(|((c, _), _)| c.clone()).collect()
 }
 
 /// `callers_on`, for the moment helper `id`'s CLI says it stopped its
@@ -584,20 +593,24 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
     let no_reply = own_no_reply && before.is_none_or(|o| o.no_reply);
     // Text can miss its turn before the send that placed it gets here (`retried`).
     let floor = r.delivery_floors.get(&key).copied().unwrap_or(0);
-    let mut wake = before.filter(|_| own_no_reply).map_or_else(WakeState::default, |o| o.wake);
+    let mut wake = before.map_or_else(WakeState::default, |o| o.wake);
+    if !own_no_reply {
+        wake.status = None;
+        wake.plan_through = None;
+        wake.quiet_task = None;
+    }
+    wake.after = before.filter(|o| o.active()).map(|o| o.notice_baseline().min(baseline.max(floor)));
     wake.skipped = None;
     wake.silent = None;
-    wake.quiet_send = own_no_reply;
-    if !own_no_reply {
-        wake.task_from = Some(asked_from);
-        wake.reported_to = before.and_then(|o| o.wake.reported_to);
-    }
     // The debt before may be told this very moment, by a notice that settles
     // it only as it was (notifier `settle_told`): what this ask owes of its own
     // is kept, to be all that is left once that one is told.
     // Whichever of the debts before that notice is of: the one standing now,
     // or one it took in.
     let made = r.requests.get(&key).map_or(0, |q| q.made);
+    if !own_no_reply {
+        wake.task = asked.map(|_| made + 1);
+    }
     let mut since = [None; SINCE_KEPT];
     if let Some(o) = before {
         let mine = Since { rev: o.rev, cursor: asked_from, no_reply: own_no_reply, upto: made };
@@ -609,7 +622,19 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
         }
     }
     let request_match = before.and_then(|o| o.request_match);
-    r.owed.insert(key.clone(), Owed { resumed, no_reply, wake, since, request_match, ..Owed::from(baseline.max(floor), cursor) });
+    r.owed.insert(
+        key.clone(),
+        Owed {
+            resumed,
+            no_reply,
+            wake,
+            since,
+            request_match,
+            transcript_rev: before.map_or(0, |o| o.transcript_rev),
+            job_went: before.is_some_and(|o| o.job_went),
+            ..Owed::from(baseline.max(floor), cursor)
+        },
+    );
     let requests = if before.is_none() {
         // What earlier debts covered has been answered.
         let requests = r.requests.entry(key).or_default();
@@ -622,7 +647,7 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
     };
     if let (Some(a), Some(requests)) = (asked, requests) {
         requests.made += 1;
-        requests.open.push(Request { n: requests.made, key: a.key.map(str::to_owned), head: request_head(a.text) });
+        requests.open.push(Request::new(requests.made, a.key.map(str::to_owned), request_head(a.text), a.reply));
     }
     true
 }
@@ -640,7 +665,15 @@ pub(super) fn told_before(r: &mut Registry, key: &(String, String), told: u64) {
     let Some(now) = r.owed.get(key).copied() else { return };
     let Some(s) = now.since.iter().flatten().find(|s| s.rev == told).copied() else { return };
     let request_match = now.request_match.filter(|n| *n > s.upto);
-    let left = Owed { cursor: s.cursor, no_reply: s.no_reply, since: [None; SINCE_KEPT], held: None, request_match, ..now };
+    let left = Owed {
+        cursor: s.cursor,
+        no_reply: s.no_reply,
+        wake: WakeState { after: None, ..now.wake },
+        since: [None; SINCE_KEPT],
+        held: None,
+        request_match,
+        ..now
+    };
     r.owed.insert(key.clone(), left);
     if let Some(q) = r.requests.get_mut(key) {
         q.open.retain(|q| q.n > s.upto);
@@ -664,6 +697,7 @@ pub fn resumed(id: &str, turns_ended: u32) {
 pub(super) fn resumed_in(r: &mut Registry, id: &str, turns_ended: u32) {
     for (_, o) in r.owed.iter_mut().filter(|((_, s), o)| s == id && o.active()) {
         o.baseline = o.baseline.max(turns_ended);
+        o.wake.after = None;
         o.resumed = true;
         o.cut_short = false;
     }
@@ -682,6 +716,7 @@ pub fn retried(id: &str, callers: &[String], turns_ended: u32) {
         let key = (caller.clone(), id.to_string());
         if let Some(o) = r.owed.get_mut(&key) {
             o.baseline = o.baseline.max(turns_ended);
+            o.wake.after = None;
             o.held = None;
             o.rev = next_rev();
         }
@@ -1089,6 +1124,20 @@ mod tests {
         for id in ["uo-low", "uo-mid", "uo-top"] {
             forget(id);
         }
+    }
+
+    #[test]
+    fn reading_a_turn_does_not_acknowledge_a_separate_restart_interruption() {
+        let key = ("read-restart-caller".to_string(), "read-restart-helper".to_string());
+        owe_from(&key.0, &key.1, 1, 0);
+        reg().lock().unwrap().owed.get_mut(&key).unwrap().resumed = true;
+        shown(&key.0, &key.1, 2);
+        let o = reg().lock().unwrap().owed[&key];
+        assert!(!o.active() && o.resumed && o.watches_later_turns());
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Resumed, &o);
+        assert!(!reg().lock().unwrap().owed[&key].watches_later_turns());
+        forget(&key.1);
+        forget(&key.0);
     }
 
     #[test]

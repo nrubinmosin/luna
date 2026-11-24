@@ -97,9 +97,10 @@ pub(super) fn transcript_seen(pty: &crate::pty::PtyManager, id: &str) -> (Option
     let mut known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
     match found {
         Some(path) => {
-            let was = known.insert(id.to_string(), path.clone()).filter(|was| *was != path);
-            drop(known);
-            let moved = was.map(|was| moved_to(id, &was, &path));
+            // Publish the path only once every debt was rebased. Another
+            // reader must not see the new path with the old offsets.
+            let moved = known.get(id).filter(|was| **was != path).map(|was| moved_to(id, was, &path));
+            known.insert(id.to_string(), path.clone());
             (Some(path), moved)
         }
         None => (known.get(id).cloned(), None),
@@ -517,6 +518,20 @@ mod tests {
     /// is into the last one, the hold of a lead's words and what an ask took
     /// in after a notice's debt as much as the cursor. Left as they were, a
     /// lead that answered in the fresh one reads as quiet since its hold.
+    #[test]
+    fn a_notice_cannot_settle_offsets_from_a_transcript_the_session_left() {
+        use crate::agents::notifier::{settle_told, Settled};
+        use crate::agents::owed::Owed;
+        let key = ("moved-notice-caller".to_string(), "moved-notice-chat".to_string());
+        let told = Owed::from(1, 50);
+        reg().lock().unwrap().owed.insert(key.clone(), told);
+        moved_to(&key.1, std::path::Path::new("old.jsonl"), std::path::Path::new("new.jsonl"));
+        let mut r = reg().lock().unwrap();
+        settle_told(&mut r, key.clone(), Settled::Pending(2, 90, None, None, true), &told);
+        assert_eq!((r.owed[&key].cursor, r.owed[&key].baseline), (0, 1), "the old transcript's offset is stale");
+        r.owed.remove(&key);
+    }
+
     #[test]
     fn a_move_to_another_transcript_rebases_every_offset_a_debt_keeps() {
         use crate::agents::owed::{owe_asked, told_before, Asked};

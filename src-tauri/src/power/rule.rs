@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// Whether a rule is held up: by an active session (`Life::active`, not known
 /// included), or by an agent's call that may yet start one.
 fn held_up(st: &State, summary: &Summary) -> bool {
-    summary.busy > 0 || st.admitted > 0
+    summary.busy > 0 || st.admitted > 0 || crate::agents::places_pending(&summary.sessions)
 }
 
 /// The last activity a board says, a board made before any read being no
@@ -456,13 +456,26 @@ mod tests {
     const END: u64 = 60_000 + COUNTDOWN_MS;
 
     #[test]
-    fn suppressed_news_neither_wakes_nor_delays_power_off() {
-        let mut st = armed(Action::Shutdown, 0);
-        let now = 1_000_000;
-        assert!(!crate::agents::riders_go(false, false, false));
-        assert!(!advance(&mut st, false, &board(1, None), at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
-        assert!(!crate::agents::riders_go(false, true, false));
-        assert!(advance(&mut st, false, &board(0, Some(now - 1000)), at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+    fn an_unread_answer_allows_countdown_but_a_place_refusal_holds_it() {
+        use crate::activity::{Life, Phase, SessionLife};
+        use crate::agents::{
+            forget, register,
+            test_support::{refusal_for_power_test, silent_answer_for_power_test},
+        };
+        use crate::provider::Provider;
+        let (chat, lead) = ("power-refusal-chat", "power-refusal-lead");
+        register(chat, Provider::Claude, "C:/p", "C:/acc/one", None, true, serde_json::json!({}));
+        register(lead, Provider::Claude, "C:/p", "C:/acc/one", Some(chat), true, serde_json::json!({"background": true}));
+        silent_answer_for_power_test(chat, lead);
+        let summary = Summary::of(vec![SessionLife::of(chat, Life { phase: Phase::Ended, ..Life::default() })], at(0));
+        let now = at(1_000);
+        let mut quiet = armed(Action::Shutdown, 0);
+        assert!(advance(&mut quiet, false, &summary, now).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+        refusal_for_power_test(lead);
+        let mut with_refusal = armed(Action::Shutdown, 0);
+        assert!(!advance(&mut with_refusal, false, &summary, now).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+        forget(lead);
+        forget(chat);
     }
 
     #[test]

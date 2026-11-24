@@ -104,10 +104,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   and latest `#N (key)`. An extra #N labels an older preview; `[unmatched]` means no ordinary prompt matched.
   `Re request N` sections are newest first.
 - `[idle; send to resume]` means only a send wakes it. `[send to resume]` follows interruption
-  or error. `[resumed after core restart]` means it resumed automatically.
-- Fresh `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` openings, asks, and failures wake
-  you. One idle or 30-minute stall without a status also wakes per task. A `PLAN` covers
-  its turn. Other text stays in the report. Luna still wakes silent leads when delegates finish.
+  or error. Restart notices say if the helper resumed automatically.
+- Fresh `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN` openings wake you after the turn ends.
+  Asks and failures also wake. Each task gets one idle stall and a separate 30-minute quiet wake.
+  A `PLAN` covers its turn. Other text stays readable. Luna wakes silent leads when delegates finish.
 - After 12 turn/job notices per pair in 15 min, `[turn notices stopped]` says to use waits or reads.
 - Wait takes up to 16 ids. Use `turnsEnded` for `afterTurn`. For a helper, exit means deletion.
   `outcome` is `turn_done`, `waiting`, `exit`, `job_done` (background ended), or `timeout`.

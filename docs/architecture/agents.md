@@ -590,18 +590,22 @@ turn, stopped on a prompt (once per stop) or exited.
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
   `chat-ties.json` until told.
 - **Wake policy.** A fresh `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`
-  opening, an ask, a failure or an exit wakes an owed caller. Plain turn ends
-  while work continues are skipped, retaining the answer cursor. Idle with
-  no status wakes once per task, along with what the session said. A 30-minute
-  quiet turn can use that stall early. After a status or stall, a quiet idle
-  end settles silently. A plan covers its own turn. A later independent turn
-  can stall. Mid-turn reports advance a separate notice cursor so waits and
-  reads still see the turn's full answer. Ties save both cursors and
-  `WakeState` per caller.
-- **Riders.** Resume and later quiet lines accompany another notice. A place
-  refusal can go alone once the top chat has no active debt to bring a wake,
-  since only it can free the places. Suppressed news holds no power-off
-  countdown. Quota and system notices keep their own policy.
+  opening wakes an owed caller after the turn ends. A prompt, question,
+  failure or exit can also wake it. A status or answer covers a numbered
+  request only after the transcript shows its prompt. An untold request
+  that wants a reply gets one idle stall, carrying what the session said.
+  Work, queued inputs and pending replies keep that stall back. An idle
+  cycle can resolve at its first session by ID. Interim and suppressed text
+  stays readable. An idle plan watches for a later independent turn without
+  creating a job debt. A separate allowance per task covers the 30-minute
+  quiet check, including when a turn waits for its own background work.
+  Ties save request intent and coverage, idle plan state, quiet allowance,
+  and untold restart interruptions. A move to another transcript invalidates
+  settlements made with the old transcript's byte offsets.
+- **Riders.** Later quiet lines accompany another notice. A place refusal
+  can go alone after ten minutes or when the top chat has no active debt.
+  An untold refusal keeps the power-off countdown back. Suppressed answers
+  hold no countdown. Quota and system notices keep their own policy.
 - **Company.** A notice ready for an idle caller that is owed an answer by
   another session still mid-turn (`Turn::Busy`) waits for it up to
   `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
@@ -701,8 +705,9 @@ turn, stopped on a prompt (once per stop) or exited.
   that notice and its top chat gets the details while the breaker is active.
   A core restart clears the breaker and any pending trip details. The log
   warns, the desktop is told once, and a person
-  typing into either chat lifts it. Prompts, questions, failures and exits still come
-  (`standing_line`).
+  typing into either chat lifts it. Prompts, questions, exits and a pair's
+  first failure still come. Other failures count toward the breaker and
+  are held when it trips.
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
   window (`<data>/quota-told.json`). Breaker lines, folder-skills failures and places notices

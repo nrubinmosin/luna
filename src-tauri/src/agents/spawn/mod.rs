@@ -306,7 +306,7 @@ fn free_first(caller: &str, lines: &crate::background::Lines, at_work: &[String]
 /// one line; one after it was told starts another.
 pub(in crate::agents) fn refused_a_place(r: &mut Registry, caller: &str) {
     let Some(top) = top_chat(r, caller).filter(|top| top != caller) else { return };
-    let p = r.places_refused.entry(top).or_default();
+    let p = r.places_refused.entry(top).or_insert_with(|| PlacesRefused { since: now_ms(), ..PlacesRefused::default() });
     if !p.who.iter().any(|w| w == caller) {
         p.who.push(caller.to_string());
     }
@@ -316,6 +316,7 @@ pub(in crate::agents) fn refused_a_place(r: &mut Registry, caller: &str) {
 #[derive(Clone, Debug, Default)]
 pub(in crate::agents) struct PlacesRefused {
     pub(in crate::agents) who: Vec<String>,
+    pub(in crate::agents) since: u64,
 }
 
 impl PlacesRefused {

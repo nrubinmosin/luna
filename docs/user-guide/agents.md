@@ -424,11 +424,11 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
 - A fresh report opening on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or
   `PLAN`, an ask, a failure or an exit wakes the caller. Interim turn ends and
   plain replies to `expectReply: false` stay in the report.
-- Each task also gets one stall notice. It comes when the session is idle
-  with no work running and has given no status, or when its turn goes quiet
-  for 30 minutes before it gives a status. An idle stall carries what it said.
-  A `PLAN` covers its turn. A later independent turn can stall, and a new send
-  that wants a reply starts a new task.
+- Each task gets one stall notice when the session is idle and an unanswered
+  request that wanted a reply has run. It carries what the session said. Queued
+  input and outstanding work keep it back. A `PLAN` covers the turn that
+  ended with it. A later independent turn can stall. The 30-minute quiet
+  check has its own allowance and leaves the idle stall available.
 - Work a turn left running appears as `leftRunning` in get diagnostics. It
   keeps the helper and the PC active. The 30-minute quiet check respects a
   command's deadline plus five minutes. Luna still wakes a lead that has
@@ -436,8 +436,8 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
 - **Breaker:** past 12 turn-end notices about one session in 15 minutes, Luna
   stops telling the caller of that session's turns and jobs until you type
   into either chat. Luna tells the person's chat at the top of the line,
-  logs the trip and shows a desktop notification. Prompts, questions and
-  failures still come.
+  logs the trip and shows a desktop notification. Prompts, questions, exits
+  and a pair's first failure still come.
 - Your chat hears when an account used by live delegates under it reaches 90%
   and then 95% of a usage window, once each per window. It also hears when
   a delegate turn starts without its folder skills or a delegate's spawn is
