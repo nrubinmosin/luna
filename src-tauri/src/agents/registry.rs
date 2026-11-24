@@ -39,6 +39,12 @@ pub(super) struct Known {
     pub(super) orphan: bool,
 }
 
+impl Known {
+    pub(super) fn is_persons_chat(&self) -> bool {
+        self.parent.is_none() && !self.orphan && self.settings["background"] != true
+    }
+}
+
 /// The chat at the top of `id`'s lineage, whose sessions the cap counts.
 pub(super) fn top_of(r: &Registry, id: &str) -> String {
     let mut cur = id.to_string();
@@ -49,6 +55,13 @@ pub(super) fn top_of(r: &Registry, id: &str) -> String {
         }
     }
     cur
+}
+
+/// The real chat on this line, if it has one. An orphan or a missing link can
+/// end a lineage without a chat to receive system news.
+pub(super) fn top_chat(r: &Registry, id: &str) -> Option<String> {
+    let top = top_of(r, id);
+    (!is_dev(&top) && persons_chat_in(r, &top)).then_some(top)
 }
 
 pub(super) struct Registry {
@@ -624,7 +637,7 @@ pub(super) fn persons_chat_in(r: &Registry, id: &str) -> bool {
     if !stands(r, id) {
         return false;
     }
-    is_dev(id) || r.known.get(id).is_some_and(|k| k.parent.is_none() && !k.orphan && k.settings["background"] != true)
+    is_dev(id) || r.known.get(id).is_some_and(Known::is_persons_chat)
 }
 
 /// `persons_chat_in`, for the tools.

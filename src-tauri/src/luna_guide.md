@@ -74,8 +74,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   efforts).
 - `account` as a list, of one provider: the first signed in with every usage window under 95%
   or unknown, else the most room. `accountChoice` says which and why.
-- A usage window near 100% means a helper there may stop on its limit. When an account your live
-  helpers run on reaches 90%, then 95%, of a window, a notice says so, once each until it resets.
+- The person's top chat gets quota (90%, 95%), breaker, folder-skills and places news.
+  A delegate's own usage-limit stop is a failure reported to its parent.
 - A model the organization does not allow is swapped by the CLI: `resolvedModel` (get diagnostics) says what ran.
 
 ## Spawning

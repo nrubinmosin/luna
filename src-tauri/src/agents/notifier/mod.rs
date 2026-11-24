@@ -15,10 +15,10 @@ use crate::agents::notifier::lines::{
 use crate::agents::notifier::usage::{quota_file, quota_from, quota_news, save_quota_told, your_helper, QuotaNews};
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
-use crate::agents::registry::{chat_name, is_dev, label, parent_of, reg, waits_on_helpers, Known, Registry};
+use crate::agents::registry::{chat_name, is_dev, is_persons_chat, label, parent_of, reg, top_chat, waits_on_helpers, Known, Registry};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::spawn::PlacesRefused;
-use crate::agents::teardown::reap;
+use crate::agents::teardown::{reap, SKILLS_OFF_LINE};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
@@ -385,7 +385,7 @@ pub(super) fn notifier() {
                 if is_dev(caller) {
                     crate::log::warn("agents", &format!("{caller} is not there to be told: {line}"));
                 }
-                !is_dev(caller) && (known.contains_key(caller) || up_ms < CALLER_RETURN_MS)
+                !is_dev(caller) && keep_queued_news(known.get(caller), line, up_ms)
             });
             for (caller, line) in queued.iter().filter(|(caller, _)| known.get(caller).is_some_and(|k| !k.waiting)) {
                 news.entry(caller.clone()).or_default().push(line.clone());
@@ -441,7 +441,7 @@ pub(super) fn notifier() {
                 };
                 match said {
                     Some((Some(mut line), how)) => {
-                        if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) {
+                        if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) && is_persons_chat(&caller) {
                             line.push_str(&format!(
                                 " Luna stops telling you of its turns and jobs now ({BREAKER_NOTICES} notices in {} minutes); its prompts and questions still come, and a person typing into either chat lifts this.",
                                 BREAKER_WINDOW_MS / 60_000
@@ -552,6 +552,14 @@ pub(super) fn notifier() {
 /// still going in, and starts a turn of its own.
 pub(in crate::agents) fn notice_waits(caller: &str) -> bool {
     TypingInto::under_way(caller)
+}
+
+fn keep_queued_news(known: Option<&Known>, line: &str, up_ms: u64) -> bool {
+    let Some(known) = known else { return up_ms < CALLER_RETURN_MS };
+    // Old cores could queue a folder-skills line for a lead. Drop it once
+    // the recipient is known, since a top chat may register after restore.
+    let skills_off = line.strip_prefix("Your helper ").and_then(|s| s.split_once(SKILLS_OFF_LINE));
+    known.is_persons_chat() || skills_off.is_none_or(|(id, _)| id.contains(' '))
 }
 
 /// A debt a notice was put together on has become another since (`Owed::rev`), or
@@ -814,8 +822,10 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
                 let wake = news_lines.iter().any(|line| is_wake(line));
                 notice_turn(&mut r, caller, turn, &told_of, wake);
             }
+            let mut breaker_news = false;
             for (id, how, told) in settled {
                 if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now_ms()) {
+                    breaker_news |= queue_breaker_news(&mut r, caller, &id);
                     stopped.push(id.clone());
                 }
                 let now_ended = ended.get(&id).copied();
@@ -840,7 +850,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
             }
-            if !told_lost.is_empty() || told_news || told_spawns {
+            if !told_lost.is_empty() || told_news || told_spawns || breaker_news {
                 crate::background::save();
             }
             for id in stopped {
@@ -948,8 +958,19 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
     }
 }
 
-/// Says that the breaker has stopped a pair: in the log, and once on the
-/// desktop, as nothing else will tell the person why these chats went quiet.
+/// A lead's top chat hears when a pair on its line trips. If the caller is
+/// that chat, its last turn-end notice already says so.
+fn queue_breaker_news(r: &mut Registry, caller: &str, id: &str) -> bool {
+    let Some(chat) = top_chat(r, caller).filter(|chat| chat != caller) else { return false };
+    let line = format!(
+        "Luna stopped telling {caller} of the turns and jobs of {id} ({BREAKER_NOTICES} notices in {} minutes). Prompts and questions still come. A person typing into either chat lifts this.",
+        BREAKER_WINDOW_MS / 60_000
+    );
+    r.news.push((chat, line));
+    true
+}
+
+/// Logs the breaker trip and shows the desktop toast.
 fn breaker_tripped(caller: &str, id: &str) {
     crate::log::warn(
         "agents",
@@ -1259,7 +1280,7 @@ mod tests {
         let bg = serde_json::json!({ "background": true });
         register("pt-top", Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
         register("pt-lead", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("pt-top"), true, bg.clone());
-        register("pt-other", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("pt-top"), true, bg);
+        register("pt-other", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("pt-lead"), true, bg);
         let refuse = |id: &str| crate::agents::spawn::refused_a_place(&mut reg().lock().unwrap(), id);
         let line = || reg().lock().unwrap().places_refused.get("pt-top").map(|p| p.line());
         refuse("pt-lead");
@@ -1270,6 +1291,7 @@ mod tests {
         places_told(&mut reg().lock().unwrap(), "pt-top", std::slice::from_ref(&told));
         let next = line().expect("told next");
         assert!(next.contains("pt-lead, pt-other"), "{next}");
+        assert!(!reg().lock().unwrap().places_refused.contains_key("pt-lead"));
         places_told(&mut reg().lock().unwrap(), "pt-other", std::slice::from_ref(&next));
         assert!(line().is_some(), "another chat's notice tells this one nothing");
         places_told(&mut reg().lock().unwrap(), "pt-top", &[next]);
@@ -1277,7 +1299,10 @@ mod tests {
         // A refusal after that is a new one.
         refuse("pt-lead");
         assert!(line().is_some());
-        for id in ["pt-lead", "pt-other", "pt-top"] {
+        forget("pt-top");
+        refuse("pt-other");
+        assert!(!reg().lock().unwrap().places_refused.contains_key("pt-lead"), "the orphaned line has no chat");
+        for id in ["pt-other", "pt-lead"] {
             forget(id);
         }
         assert_eq!(line(), None, "nothing left of a chat gone");
@@ -1290,6 +1315,46 @@ mod tests {
         assert!(!counts_for_breaker(&Settled::Waiting), "a busy helper asks often, and holds until answered");
         assert!(!counts_for_breaker(&Settled::Asked(1)));
         assert!(!counts_for_breaker(&Settled::Exited));
+    }
+
+    #[test]
+    fn a_breaker_trip_under_a_lead_is_queued_only_for_its_top_chat() {
+        let bg = serde_json::json!({ "background": true });
+        let account = "C:/acc/anthropic/one";
+        register("bt-top", Provider::Claude, "C:/p", account, None, true, serde_json::json!({}));
+        register("bt-lead", Provider::Claude, "C:/p", account, Some("bt-top"), true, bg.clone());
+        register("bt-inner", Provider::Claude, "C:/p", account, Some("bt-lead"), true, bg);
+        {
+            let mut r = reg().lock().unwrap();
+            assert!(queue_breaker_news(&mut r, "bt-inner", "bt-helper"));
+            assert!(!queue_breaker_news(&mut r, "bt-top", "bt-lead"), "the chat already has its own breaker suffix");
+            let news: Vec<_> = r.news.iter().filter(|(_, line)| line.contains("bt-helper")).collect();
+            assert_eq!(news.len(), 1);
+            assert_eq!(news[0].0, "bt-top");
+            assert!(news[0].1.contains("bt-inner"));
+            r.news.retain(|(to, _)| to != "bt-top");
+        }
+        forget("bt-top");
+        assert!(!queue_breaker_news(&mut reg().lock().unwrap(), "bt-inner", "bt-helper"));
+        forget("bt-inner");
+        forget("bt-lead");
+    }
+
+    #[test]
+    fn restored_folder_skills_news_waits_for_a_chat_but_is_dropped_for_a_lead() {
+        let skills = format!("Your helper rn-helper{SKILLS_OFF_LINE}disk full");
+        let account = "C:/acc/openai/one";
+        register("rn-chat", Provider::Codex, "C:/p", account, None, true, serde_json::json!({}));
+        register("rn-lead", Provider::Codex, "C:/p", account, Some("rn-chat"), true, serde_json::json!({ "background": true }));
+        let r = reg().lock().unwrap();
+        assert!(keep_queued_news(None, &skills, 0));
+        assert!(!keep_queued_news(None, &skills, CALLER_RETURN_MS));
+        assert!(keep_queued_news(r.known.get("rn-chat"), &skills, 0));
+        assert!(!keep_queued_news(r.known.get("rn-lead"), &skills, 0));
+        assert!(keep_queued_news(r.known.get("rn-lead"), "Your helper rn-helper stopped on a usage limit.", 0));
+        drop(r);
+        forget("rn-lead");
+        forget("rn-chat");
     }
 
     #[test]

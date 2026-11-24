@@ -9,7 +9,7 @@ mod role;
 pub(super) mod settle;
 
 use crate::agents::admission::{plain_text, refuse_luna};
-use crate::agents::registry::{depth_of, is_dev, reg, stands, top_of, Registry, TOKEN_GONE};
+use crate::agents::registry::{depth_of, reg, stands, top_chat, Registry, TOKEN_GONE};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
 #[cfg(test)]
@@ -293,7 +293,11 @@ fn free_first(caller: &str, lines: &crate::background::Lines, at_work: &[String]
     if top == caller {
         return format!("{free} ({own})");
     }
-    format!("{free} ({own}). The rest are not yours to free; {top}, at the top of your line, is told")
+    let chat = top_chat(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller);
+    if chat.as_deref() == Some(top.as_str()) {
+        return format!("{free} ({own}). The rest are not yours to free; {top}, at the top of your line, is told");
+    }
+    format!("{free} ({own}). The rest are not yours to free")
 }
 
 /// A session below the top of its line refused a place: its top chat, the only
@@ -301,10 +305,7 @@ fn free_first(caller: &str, lines: &crate::background::Lines, at_work: &[String]
 /// alone within a while (notifier `riders_go`). Refusals until then join the
 /// one line; one after it was told starts another.
 pub(in crate::agents) fn refused_a_place(r: &mut Registry, caller: &str) {
-    let top = top_of(r, caller);
-    if top == caller || is_dev(&top) {
-        return;
-    }
+    let Some(top) = top_chat(r, caller).filter(|top| top != caller) else { return };
     let p = r.places_refused.entry(top).or_insert_with(|| PlacesRefused { since: now_ms(), who: Vec::new() });
     if !p.who.iter().any(|w| w == caller) {
         p.who.push(caller.to_string());

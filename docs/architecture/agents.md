@@ -38,7 +38,7 @@ ranks none of the CLIs' modes.
 | `agents/teardown.rs` | kill, delete, the person's guarded delete (`delete_by_user`, `at_stake`), `reap` (autoDelete), `forget` |
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `folder.rs` (where the caller works, who else is there), `settle.rs` (spawns that never completed) |
-| `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and context news |
+| `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
 | `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic the offered topics by section |
 
@@ -592,7 +592,8 @@ turn, stopped on a prompt (once per stop) or exited.
   starts may ask again meanwhile, so the notifier changes the debt only if it is
   still the one it announced.
 - Lines no debt brings (`Registry::news`: a helper taken over, an auto-delete, a
-  queued text refused) wait for a caller a restart has yet to bring back for as
+  queued text refused, a breaker trip under a lead, or a turn missing folder
+  skills) wait for a caller a restart has yet to bring back for as
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
   `chat-ties.json` until told.
 - **Riders.** A job's end with nothing said (`Settled::NoNews`), the idle line,
@@ -601,7 +602,7 @@ turn, stopped on a prompt (once per stop) or exited.
   only once they are all it is owed, nothing in Luna is busy, or after
   `RIDE_MAX_MS`. Quota news does not ride: its lines go into the notice's lines
   as they are put together (mod.rs, before `riders_go` is asked), like a turn's
-  end, so a window at 90% wakes the caller and brings the riders with it.
+  end, so a window at 90% wakes the top chat and brings the riders with it.
 - **Company.** A notice ready for an idle caller that is owed an answer by
   another session still mid-turn (`Turn::Busy`) waits for it up to
   `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
@@ -654,13 +655,9 @@ turn, stopped on a prompt (once per stop) or exited.
   stays open while its background subagents work, and a Codex turn's server
   goes, its subagents with it, as the turn ends), no answer owed to it by anyone
   but that parent, no `wait` of its out, nothing queued, held or reserved for
-  it (background `work_and_count`), and no line waiting to go in: one queued
-  for it (a wake), or one the notifier types in unasked (an account's usage
-  window past a level, `quota_due`; a spawn a core's going cut off; a
-  refused place), as each starts a turn of its own. Each is read as it
-  stands when the notice is put together, not as the notifier's last look
-  saw it, so a usage figure published since can only hold the sentence
-  back.
+  it (background `work_and_count`), and no line waiting to go in, such as
+  a wake or a spawn a core's going cut off. Each is read when the notice is
+  put together.
   What it wrote does not count: a lead ended a turn on "Gate is running;
   waiting." with no gate started, and its parent read that as work under way
   (issue #77). Not with a cut-off line, which already says a send has it
@@ -713,14 +710,18 @@ turn, stopped on a prompt (once per stop) or exited.
   in another transcript has every offset its debts keep moved there
   (read.rs `moved_to`: the cursor, `held_to` and each `since`'s).
 - **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller,
-  session) pair (`BREAKER_NOTICES`), that pair's turn and job news stops: the
-  last notice says so, the log warns, the desktop is told once, and a person
-  typing into either chat lifts it. Prompts, questions and exits are never
-  silenced (`standing_line`). This ended a night of 460 notices an hour, in
-  which every notice started a turn whose end re-owed the answer.
-- **Quota news.** An account a caller's live helpers run on reaching 90%, then
-  95%, of a window, once per level per window, kept in
-  `<data>/quota-told.json`.
+  session) pair (`BREAKER_NOTICES`), that pair's turn and job news stops. A
+  chat caller hears in the last notice. For a lead caller, the line goes
+  to its top chat. The log warns, the desktop is told once, and a person
+  typing into either chat lifts it. Prompts, questions and exits still come
+  (`standing_line`).
+- **System news.** The person's top chat hears when an account used by live
+  delegates at any depth reaches 90%, then 95%, once per account, level and
+  window (`<data>/quota-told.json`). `quota_due` uses the same lineage as
+  `quota_news`. Breaker lines, folder-skills failures and places notices
+  also go to the top chat. News waits for a known chat until it can take a
+  notice. With no chat above the delegates there is no recipient. Leads
+  still hear their delegates' outcomes, including failures on a usage limit.
 - **Context.** The pane meter and on-demand `luna_session_get` are the two
   places Luna shows context use (`background::Context`). Its basis is the CLI's estimated
   auto-compaction point where resolved, and otherwise the model window.

@@ -66,7 +66,7 @@ can type into it and answer its model's questions with `scope: "all"`
   its next turn.
 - When a helper or lead ends a turn with nothing of its own running (no job,
   subagent or helper of its own still at it,
-  nothing waiting to go into it, a quota notice included),
+  nothing waiting to go into it),
   its agent's notice adds `[idle; send to resume]`, whatever its last words said it was waiting for.
 - A send may ask for no reply (`expectReply: false`): the helper's answer then
   wakes the agent only for a status word or a report.
@@ -440,11 +440,15 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   minutes gets one notice too (a command may hang); a command with its own
   timeout holds that until 5 minutes past it.
 - **Breaker:** past 12 turn-end notices about one session in 15 minutes, Luna
-  stops telling that chat of that session's turns and jobs, says so in the log
-  and once on the desktop, and resumes when you type into either chat. Prompts
-  and questions still come.
-- An agent also gets a notice when an account its helpers run on reaches 90%
-  and then 95% of a usage window, once each per window.
+  stops telling the caller of that session's turns and jobs until you type
+  into either chat. Luna tells the person's chat at the top of the line,
+  logs the trip and shows a desktop notification. Prompts and questions
+  still come.
+- Your chat hears when an account used by live delegates under it reaches 90%
+  and then 95% of a usage window, once each per window. It also hears when
+  a delegate turn starts without its folder skills or a delegate's spawn is
+  refused for want of places. The caller still gets the spawn error. A
+  delegate that stops on a usage limit is reported to its parent as usual.
 
 `luna_session_list` shows each helper's ID, name, state, turn count and any ask ID.
 It includes the parent's ID when the parent differs from the caller.

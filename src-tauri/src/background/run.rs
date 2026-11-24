@@ -611,7 +611,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         )
     };
     // A turn that starts without the folder skills its folder gives it: its
-    // parent hears so with its next notice, off the helpers' lock (the
+    // top chat hears so with its next notice, off the helpers' lock (the
     // registry's is never taken under it).
     if let Some(off) = applied.iter().find(|a| a.key == crate::applied::Item::LibrarySkillsOff.key()) {
         crate::agents::turn_without_skills(id, &off.value);

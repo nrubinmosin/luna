@@ -6,7 +6,7 @@
 use crate::agents::ask::live;
 use crate::agents::notifier::usage::save_quota_told;
 use crate::agents::read::{transcript_path, transcripts};
-use crate::agents::registry::{authorize, descendants, label, named, persons_chat_in, reg, top_of, Known, Registry};
+use crate::agents::registry::{authorize, descendants, label, named, persons_chat_in, reg, top_chat, top_of, Known, Registry};
 use crate::agents::said::replies_since;
 use crate::throttle::now_ms;
 use serde::Serialize;
@@ -253,17 +253,19 @@ pub fn queued_refused(id: &str, refused: &[(String, String)]) {
 
 /// A turn of helper `id` started without the folder skills the library gives
 /// its folder, because the plugin it reads them from would not write (`why`,
-/// library/session_plugin.rs): the helper does not know, so its parent hears
-/// so in its next notice, as `library.skills-off` is said in what the turn
-/// applied. A helper with no parent (an orphan) has none to tell.
+/// library/session_plugin.rs): its top chat hears in its next notice, as
+/// `library.skills-off` is said in what the turn applied.
 pub fn turn_without_skills(id: &str, why: &str) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let Some(parent) = r.known.get(id).and_then(|k| k.parent.clone()) else { return };
-    let line = format!("Your helper {id} started a turn without the folder skills the library gives its folder: {why}");
-    if !r.news.iter().any(|(to, l)| *to == parent && *l == line) {
-        r.news.push((parent, line));
+    let Some(chat) = top_chat(&r, &parent) else { return };
+    let line = format!("Your helper {id}{SKILLS_OFF_LINE}{why}");
+    if !r.news.iter().any(|(to, l)| *to == chat && *l == line) {
+        r.news.push((chat, line));
     }
 }
+
+pub(super) const SKILLS_OFF_LINE: &str = " started a turn without the folder skills the library gives its folder: ";
 
 /// The lines waiting for a caller's next notice.
 #[cfg(test)]
@@ -360,20 +362,27 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
-    fn a_helper_turn_without_its_folder_skills_is_told_to_its_parent() {
-        let (chat, helper) = ("rpw-a", "rpw-h");
+    fn a_helper_turn_without_its_folder_skills_is_told_to_its_top_chat() {
+        let (chat, lead, helper) = ("rpw-a", "rpw-l", "rpw-h");
         let account = "C:/acc/anthropic/one";
+        let bg = serde_json::json!({ "background": true });
         register(chat, Provider::Claude, "C:/p", account, None, true, serde_json::json!({}));
-        register(helper, Provider::Claude, "C:/p", account, Some(chat), false, serde_json::json!({ "background": true }));
+        register(lead, Provider::Claude, "C:/p", account, Some(chat), true, bg.clone());
+        register(helper, Provider::Codex, "C:/p", account, Some(lead), false, bg);
         turn_without_skills(helper, "disk full");
         turn_without_skills(helper, "disk full");
         let told = news_for(chat);
         assert_eq!(told.len(), 1, "{told:?}");
         assert!(told[0].contains(helper) && told[0].contains("disk full"), "{}", told[0]);
+        assert!(news_for(lead).is_empty());
         turn_without_skills("rpw-nobody", "disk full");
         reg().lock().unwrap().news.retain(|(c, _)| c != chat);
-        forget(helper);
         forget(chat);
+        turn_without_skills(helper, "disk full");
+        assert!(news_for(lead).is_empty());
+        assert!(news_for(chat).is_empty());
+        forget(helper);
+        forget(lead);
     }
 
     #[test]
