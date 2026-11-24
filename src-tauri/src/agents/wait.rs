@@ -908,8 +908,8 @@ mod tests {
         use crate::agents::owed::{owe_asked, owe_sent, requests_of, Asked};
         let (caller, id) = ("wait-sampled-parent", "wait-sampled-helper");
         let settings = serde_json::json!({});
-        crate::agents::register(caller, Provider::Claude, ".", "acc", None, true, settings.clone());
-        crate::agents::register(id, Provider::Claude, ".", "acc", Some(caller), true, settings);
+        register(caller, Provider::Claude, ".", "acc", None, true, settings.clone());
+        register(id, Provider::Claude, ".", "acc", Some(caller), true, settings);
         crate::background::idle_for_test(caller, Provider::Claude, 0, false);
         crate::background::idle_for_test(id, Provider::Claude, 1, false);
         let line = |role, text| {
@@ -944,8 +944,8 @@ mod tests {
         assert_eq!(requests_of(caller, id).into_iter().map(|q| q.n).collect::<Vec<_>>(), [2]);
         crate::background::gone_for_test(caller);
         crate::background::gone_for_test(id);
-        crate::agents::forget(id);
-        crate::agents::forget(caller);
+        forget(id);
+        forget(caller);
         std::fs::remove_file(path).unwrap();
     }
 

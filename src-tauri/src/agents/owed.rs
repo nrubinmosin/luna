@@ -831,6 +831,7 @@ pub(super) fn settle_requests(r: &mut Registry, key: &(String, String), told: Ow
         if !taken.is_empty() {
             left.cursor = if now.wake.unread_since.is_some() { now.cursor.min(first.cursor) } else { first.cursor };
             left.baseline = qs.open.iter().map(|q| q.baseline).max().unwrap_or(first.baseline);
+            left.wake.after = qs.open.iter().map(|q| q.baseline).min();
             left.queued = qs.open.iter().any(|q| q.queued);
             left.no_reply = qs.open.iter().all(|q| !q.reply);
             left.request_match = left.request_match.filter(|n| qs.open.iter().any(|q| q.n == *n));

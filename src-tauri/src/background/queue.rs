@@ -356,12 +356,12 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
     Ok((placed, kept_open))
 }
 
-/// What never reached it that `caller` is to hear of (`Entry::undelivered`):
-/// what it sent, and for its parent what no session did.
 pub fn delivery_lost(id: &str, qid: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.undelivered.iter().any(|q| q.id == qid))
 }
 
+/// What never reached it that `caller` is to hear of (`Entry::undelivered`):
+/// what it sent, and for its parent what no session did.
 pub fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
     let mine = |q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller);
     let told = |q: &Queued| {
@@ -374,12 +374,25 @@ pub fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
     lock().entries.get(id).map(|e| e.undelivered.iter().filter(|q| mine(q)).map(told).collect()).unwrap_or_default()
 }
 
+/// Snapshot the identities of losses of which this caller can be told.
+pub fn undelivered_ids(id: &str, caller: &str, parent: bool) -> Vec<String> {
+    lock()
+        .entries
+        .get(id)
+        .into_iter()
+        .flat_map(|e| &e.undelivered)
+        .filter(|q| q.from.as_deref().map_or(parent, |f| f == caller))
+        .map(|q| q.id.clone())
+        .collect()
+}
+
 /// Takes it off, `caller` having been told: `put_back` undoes that.
-pub fn take_undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<Queued> {
+pub fn take_undelivered_for(id: &str, caller: &str, parent: bool, ids: Option<&[String]>) -> Vec<Queued> {
     let mut r = lock();
     let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
-    let (taken, left) =
-        std::mem::take(&mut e.undelivered).into_iter().partition(|q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller));
+    let (taken, left) = std::mem::take(&mut e.undelivered)
+        .into_iter()
+        .partition(|q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller) && ids.is_none_or(|ids| ids.contains(&q.id)));
     e.undelivered = left;
     taken
 }

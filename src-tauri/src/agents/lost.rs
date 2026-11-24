@@ -39,7 +39,11 @@ pub(super) struct Undelivered {
 
 /// Takes off what `undelivered_for` gives, `caller` having been told.
 pub(super) fn take_undelivered(id: &str, caller: &str, parent: bool) -> Undelivered {
-    Undelivered { queued: crate::background::take_undelivered_for(id, caller, parent) }
+    take_undelivered_ids(id, caller, parent, None)
+}
+
+pub(super) fn take_undelivered_ids(id: &str, caller: &str, parent: bool, ids: Option<&[String]>) -> Undelivered {
+    Undelivered { queued: crate::background::take_undelivered_for(id, caller, parent, ids) }
 }
 
 pub(super) fn put_undelivered_back(id: &str, taken: Undelivered) {

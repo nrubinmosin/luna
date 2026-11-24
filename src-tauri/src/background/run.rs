@@ -879,7 +879,7 @@ fn args_for_log(id: &str, args: &[String]) -> String {
 pub(super) fn stdin_took(e: &mut Entry) -> bool {
     let batch = std::mem::take(&mut e.in_flight);
     for q in &batch {
-        super::events::received(e, q);
+        received(e, q);
     }
     !batch.is_empty()
 }

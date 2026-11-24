@@ -2908,7 +2908,7 @@ mod tests {
                 owe_from(id, &ids[(i + 1) % size], 0, 0);
             }
             let idle = |id| runs_nothing(id, crate::activity::turn_state(id));
-            assert!(ids.iter().all(idle), "every idle member can make progress");
+            assert!(ids.iter().all(|id| idle(id)), "every idle member can make progress");
             crate::background::set_running_for_test(&ids[1]);
             assert_eq!(crate::activity::turn_state(&ids[1]).unwrap().turn, Turn::Busy);
             assert!(!idle(&ids[0]), "a turn in the cycle can still answer");

@@ -114,7 +114,7 @@ struct Entry {
     /// answered, and the process gone, still finds what it is owed by there
     /// (`moved_onto_stdin_at`). Not saved: a core gone takes the send with it.
     drained: Vec<Drained>,
-    received: std::collections::VecDeque<(String, u32)>,
+    received: VecDeque<(String, u32)>,
     log: VecDeque<String>,
     /// What it is held on, oldest first: parallel subagents and tool calls ask
     /// at once, and the first still unanswered is the one shown.
