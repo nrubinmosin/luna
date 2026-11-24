@@ -74,6 +74,10 @@ get it onto `master` the way `master` takes changes: a pull request when it is
 protected (`docs/releasing.md`, "One-time setup"), else a push. Wait for CI on
 that commit before tagging.
 
+While the release is being cut, other sessions hold their merges into
+`master`: a merge between the bump PR and the tag conflicts the CHANGELOG
+section and moves the commit the tag must sit on.
+
 ## 3. Tag
 
 ```powershell
@@ -81,6 +85,10 @@ that commit before tagging.
 ./scripts/release.ps1                           # annotated tag v1.2.3
 git push origin v1.2.3                          # starts release.yml
 ```
+
+The tag is made from `master` as merged. In a worktree that is a detached
+checkout, `git switch --detach origin/master`, and `./scripts/ci-wait.ps1`
+then needs `-Branch master` (on a detached HEAD it exits 3: "pass -Branch").
 
 The notes come from the CHANGELOG section, not the tag. Fix whatever
 `-DryRun` refuses rather than working around it.
