@@ -3235,8 +3235,14 @@ mod tests {
             matches!(notice_line(crate::pty::manager(), c, "Session B", b, &known, c_debt), Some((Some(_), Settled::Answered))),
             "C can get B's plain reply within the cycle"
         );
+        let pty = crate::pty::manager();
+        let idle_for_c = |work: &mut WorkLook| work.runs_nothing(pty, c, b, crate::activity::turn_state(b));
+        let mut work = WorkLook::default();
+        assert!(idle_for_c(&mut work));
         // An explicit answer is also independent of B's reply if both are due.
         std::fs::write(&c_path, said_line("DONE: C has the result.")).unwrap();
+        assert!(idle_for_c(&mut work), "the same tick reuses its peer's transcript check");
+        assert!(!idle_for_c(&mut WorkLook::default()), "the next tick sees C's status");
         assert!(matches!(line(), Some((None, Settled::Skip(1, ..)))));
         reg().lock().unwrap().owed.remove(&(b.into(), c.into()));
         assert!(runs_nothing(b, crate::activity::turn_state(b)), "C's answer has been delivered");
