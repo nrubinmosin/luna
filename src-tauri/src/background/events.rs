@@ -709,9 +709,8 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     // power-off's quiet window starts over.
     crate::activity::touch();
     // Ahead of anything that could be read as the answer: the helper reads as
-    // busy from the claim above until this has moved what its senders wait on.
-    let senders: Vec<String> = retried.iter().filter_map(|q| q.from.clone()).collect();
-    crate::agents::retried(id, &senders, count);
+    // busy from the claim above until this has moved the retried requests.
+    crate::agents::retry_deliveries(id, &retried, count);
     reg().1.notify_all();
     crate::log::info("background", &format!("{} turn over, code {code:?}", crate::agents::label(id)));
     // A Codex server names no model but a reroute's, which stands for its turn;

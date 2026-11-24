@@ -60,7 +60,7 @@ pub use list::{account_get, account_list, session_get, session_list, SessionQuer
 pub use lost::undelivered_left;
 pub(crate) use notifier::places_pending;
 pub use notifier::{notify, NOTICE_TAG};
-pub use owed::{callers_owed, moved_onto_stdin, resumed, retried};
+pub use owed::{callers_owed, moved_onto_stdin, resumed, retry_deliveries};
 pub use persist::{
     admit_shutdown, call_off_update, freeze_chats, freeze_for_update, newer_build, restore_chats, restore_update_stop, save_chats,
     stopped_for_update, take_up_spawns, thaw_chats, tie_back, ties_of_each, update_call_offs, window_came, Stop, Ties, Window,

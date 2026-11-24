@@ -196,7 +196,7 @@ pub fn wait(
 }
 
 /// A session's turn state and the delivery floor that goes with it, on every look:
-/// text may miss its turn during a wait. In this order: `retried` has set the floor
+/// text may miss its turn during a wait. In this order: `retry_deliveries` has set the floor
 /// before a helper can read as anything but busy (`background::turn_over`), so a
 /// state past that turn is never paired with a floor from before it.
 fn state_then_floor(

@@ -93,7 +93,7 @@ pub(super) struct Registry {
     /// again keeps its keys and a hand-over drops them.
     pub(super) hands_changed: HashMap<String, u64>,
     /// Past which turn count a helper's answer to a caller's text lies, the text
-    /// having missed the turn it joined (`retried`): above any count the caller holds.
+    /// having missed the turn it joined (`retry_deliveries`): above any count the caller holds.
     pub(super) delivery_floors: HashMap<(String, String), u32>,
     /// The `turnsEnded` each caller was last shown for each session, by
     /// (caller, session). `wait(turn_done)` without `afterTurn` waits for a

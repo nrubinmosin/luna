@@ -162,8 +162,8 @@ fn remove(id: &str, known: Known, _held: &crate::background::DeleteClaim) -> Res
     Ok(Removed { ok: true })
 }
 
-/// How long a silently settled, unread answer delays auto-delete.
-const UNREAD_ANSWER_MS: u64 = 24 * 60 * 60 * 1000;
+/// How long an unread answer delays auto-delete.
+pub(super) const UNREAD_ANSWER_MS: u64 = 24 * 60 * 60 * 1000;
 
 pub(super) fn unread_holds(o: &crate::agents::owed::Owed, now: u64) -> bool {
     unread_until(o).is_some_and(|until| now < until)
@@ -183,6 +183,13 @@ pub(super) fn reap(pty: &crate::pty::PtyManager) {
     #[cfg(test)]
     let ids = ids.into_iter().filter(|id| crate::agents::sweep_includes(id)).collect();
     reap_these(pty, ids);
+}
+
+/// Tests share the registry, and a notifier tick can reap any test's helper.
+#[cfg(test)]
+pub(super) fn reaps_to_myself() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
@@ -396,6 +403,7 @@ mod tests {
 
     #[test]
     fn unread_silent_answers_hold_auto_delete_until_read_or_expired() {
+        let _reaping = reaps_to_myself();
         for read in [true, false] {
             let id = if read { "silent-auto-read" } else { "silent-auto-expired" };
             let parent = "silent-auto-parent";

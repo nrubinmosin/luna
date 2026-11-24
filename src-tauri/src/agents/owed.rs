@@ -46,6 +46,8 @@ pub(super) struct Owed {
     /// A core's going stopped its turn and it has gone on by itself
     /// (`resumeOnRestart`); the caller has yet to hear.
     pub(super) resumed: bool,
+    /// Identifies the interruption notice when another resume races delivery.
+    pub(super) restart_rev: u64,
     /// A chat's turn asked about went with a core (`restore_chats`): it did
     /// not finish, and the caller hears so.
     pub(super) cut_short: bool,
@@ -117,6 +119,9 @@ pub(super) struct WakeState {
     /// A settled idle answer, left readable from its original cursor.
     pub(super) silent: Option<u32>,
     pub(super) unread_since: Option<u64>,
+    /// Transcript end of the unread text, when observed before delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) unread_to: Option<u64>,
     /// Delivery expired while the caller was away. Keep the report's record
     /// through its unread deadline, including while a read can be canceled.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,6 +180,7 @@ impl Owed {
             queued: false,
             late: false,
             resumed: false,
+            restart_rev: 0,
             cut_short: false,
             job_went: false,
             unsure: false,
@@ -193,6 +199,7 @@ impl Owed {
     /// came after each debt taken in is read there from `from`.
     pub(super) fn rebase_since(&mut self, from: u64, generation: u64) {
         self.transcript_rev = generation;
+        self.wake.unread_to = None;
         for s in self.since.iter_mut().flatten() {
             s.cursor = from;
         }
@@ -302,9 +309,17 @@ fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<(bool, O
         std::collections::hash_map::Entry::Vacant(v) => {
             v.insert(Owed {
                 request_match,
-                wake: WakeState { after: None, skipped: None, silent: (!waits).then_some(turns_ended), unread_since: None, ..before.wake },
+                wake: WakeState {
+                    after: None,
+                    skipped: None,
+                    silent: (!waits).then_some(turns_ended),
+                    unread_since: None,
+                    unread_to: None,
+                    ..before.wake
+                },
                 no_reply: before.no_reply,
                 resumed: before.resumed,
+                restart_rev: before.restart_rev,
                 job_went: before.job_went,
                 transcript_rev: before.transcript_rev,
                 upto: before.upto,
@@ -382,7 +397,7 @@ pub(super) struct Receipt {
     /// (`owed_on`), by `rev`: what an undo takes back out.
     put_in: Option<u64>,
     /// Partial responses each own the request IDs they collected.
-    partials: HashMap<u64, std::time::Instant>,
+    partials: HashMap<u64, (std::time::Instant, Vec<Request>)>,
 }
 
 /// `shown`, for a tool response the client may yet drop unread (a cancel
@@ -473,9 +488,9 @@ fn hand_over_of(
                 }
                 let n = next_rev();
                 let receipt = r.receipts.entry(key.clone()).or_default();
-                receipt.partials.retain(|_, at| at.elapsed() < crate::mcp::LATE_CANCEL);
-                receipt.partials.insert(n, std::time::Instant::now());
-                (n, None, None, Some((before, removed)))
+                receipt.partials.retain(|_, (at, _)| at.elapsed() < crate::mcp::LATE_CANCEL);
+                receipt.partials.insert(n, (std::time::Instant::now(), removed));
+                (n, None, None, Some(before))
             }
             None => {
                 let requests = r.requests.get(&key).map(|qs| qs.open.clone()).unwrap_or_default();
@@ -516,21 +531,20 @@ fn hand_over_of(
         let r = &mut *registry;
         let transcript_rev = r.transcript_generations.get(&key.1).map_or(0, |(rev, _)| *rev);
         let Some(record) = r.receipts.get_mut(&key) else { return };
-        if let Some((before, mut removed)) = partial {
-            if record.partials.remove(&receipt).is_none() {
-                return;
-            }
+        if let Some(before) = partial {
+            let Some((_, mut removed)) = record.partials.remove(&receipt) else { return };
             let current = r.owed.get(&key).copied();
             if transcript_rev == before.transcript_rev
-                && current.is_none_or(|o| o.transcript_rev == before.transcript_rev && o.delivery_rev == before.delivery_rev)
+                && current.is_none_or(|o| o.transcript_rev == before.transcript_rev)
+                && !removed.is_empty()
             {
                 let qs = r.requests.entry(key.clone()).or_default();
                 if current.is_none() {
                     qs.open.clear();
                 }
                 removed.retain(|q| !qs.open.iter().any(|open| open.n == q.n));
-                let cursor = removed.iter().map(|q| q.cursor).min().unwrap_or(before.cursor);
-                let baseline = removed.iter().map(|q| q.baseline).min().unwrap_or(before.baseline);
+                let Some(cursor) = removed.iter().map(|q| q.cursor).min() else { return };
+                let baseline = removed.iter().map(|q| q.baseline).min().unwrap();
                 qs.open.extend(removed);
                 qs.open.sort_by_key(|q| q.n);
                 let no_reply = qs.open.iter().all(|q| !q.reply);
@@ -549,10 +563,14 @@ fn hand_over_of(
             let put_in = record.put_in;
             let restored = std::mem::take(&mut record.requests);
             let current = r.owed.get(&key).copied();
-            if !restored.is_empty()
-                && current.is_none_or(|now| now.transcript_rev == o.transcript_rev && now.delivery_rev == o.delivery_rev)
-            {
+            if current.is_some_and(|now| now.transcript_rev != o.transcript_rev) || o.upto != 0 && restored.is_empty() {
+                return;
+            }
+            if !restored.is_empty() {
                 let qs = r.requests.entry(key.clone()).or_default();
+                if current.is_none() {
+                    qs.open.clear();
+                }
                 let missing: Vec<_> = restored.into_iter().filter(|q| !qs.open.iter().any(|open| open.n == q.n)).collect();
                 qs.open.extend(missing);
                 qs.open.sort_by_key(|q| q.n);
@@ -560,8 +578,8 @@ fn hand_over_of(
             match r.owed.get_mut(&key) {
                 // What was put in the place of the debt it stands for
                 // (`owed_on`) goes, and that debt is back as it was.
-                Some(now) if Some(now.rev) == put_in && now.transcript_rev == o.transcript_rev => {
-                    *now = Owed { resumed: now.resumed, job_went: now.job_went, ..o };
+                Some(now) if Some(now.rev) == put_in && now.delivery_rev == o.delivery_rev => {
+                    *now = Owed { resumed: now.resumed, restart_rev: now.restart_rev, job_went: now.job_went, ..o };
                 }
                 Some(now) if now.transcript_rev == o.transcript_rev => now.cursor = now.cursor.min(o.cursor),
                 Some(_) => {}
@@ -779,7 +797,7 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
     // Asked for a reply once, a debt wants one.
     let own_no_reply = asked.is_some_and(|a| !a.reply);
     let no_reply = own_no_reply && before.is_none_or(|o| o.no_reply);
-    // Text can miss its turn before the send that placed it gets here (`retried`).
+    // Text can miss its turn before the send that placed it gets here (`retry_deliveries`).
     let floor = r.delivery_floors.get(&key).copied().unwrap_or(0);
     let mut wake = before.map_or_else(WakeState::default, |o| o.wake);
     if wake.delivery_expired.take().is_some() {
@@ -816,6 +834,7 @@ fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, 
         key.clone(),
         Owed {
             resumed,
+            restart_rev: before.map_or(0, |o| o.restart_rev),
             no_reply,
             wake,
             since,
@@ -865,6 +884,10 @@ pub(super) fn settle_requests(r: &mut Registry, key: &(String, String), told: Ow
     else {
         return Vec::new();
     };
+    take_requests(r, key, now, told, covered, ended)
+}
+
+pub(super) fn take_requests(r: &mut Registry, key: &(String, String), now: Owed, told: Owed, covered: &[u32], ended: u32) -> Vec<Request> {
     let Some(qs) = r.requests.get_mut(key) else { return Vec::new() };
     let mut taken = Vec::new();
     qs.open.retain(|q| {
@@ -895,7 +918,14 @@ pub(super) fn settle_requests(r: &mut Registry, key: &(String, String), told: Ow
             left.wake.skipped = None;
         }
     } else if !taken.is_empty() {
-        r.owed.remove(key);
+        let left = r.owed.get_mut(key).unwrap();
+        if left.wake.unread_since.is_some() && left.wake.unread_to.is_some() {
+            left.wake.silent = Some(ended);
+            left.wake.plan_through = None;
+            left.cut_short = false;
+        } else {
+            r.owed.remove(key);
+        }
     }
     taken
 }
@@ -934,10 +964,12 @@ pub fn resumed(id: &str, turns_ended: u32) {
 }
 
 pub(super) fn resumed_in(r: &mut Registry, id: &str, turns_ended: u32) {
+    let restart = next_rev();
     for (_, o) in r.owed.iter_mut().filter(|((_, s), o)| s == id && (o.active() || o.watches_later_turns())) {
         o.baseline = o.baseline.max(turns_ended);
         o.wake.after = None;
         o.resumed = true;
+        o.restart_rev = restart;
         o.cut_short = false;
     }
 }
@@ -949,20 +981,48 @@ pub(super) fn resumed_in(r: &mut Registry, id: &str, turns_ended: u32) {
 /// this. Nothing else about the helper changed, so nothing else is said of it. A
 /// debt moved is a new one (`rev`): a notice looked up before this told of the turn
 /// that missed, and neither goes out nor settles anything.
+#[cfg(test)]
 pub fn retried(id: &str, callers: &[String], turns_ended: u32) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     for caller in callers {
-        let key = (caller.clone(), id.to_string());
-        if let Some(o) = r.owed.get_mut(&key) {
-            o.baseline = o.baseline.max(turns_ended);
-            o.wake.after = None;
-            o.held = None;
-            o.rev = next_rev();
-            o.delivery_rev = o.rev;
-        }
-        let floor = r.delivery_floors.entry(key).or_default();
-        *floor = (*floor).max(turns_ended);
+        retry_debt(&mut r, (caller.clone(), id.to_string()), turns_ended);
     }
+}
+
+pub fn retry_deliveries(id: &str, queued: &[crate::background::Queued], turns_ended: u32) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    for q in queued {
+        let Some(caller) = &q.from else { continue };
+        let key = (caller.clone(), id.to_string());
+        let matches = |request: &Request| request.delivery.as_ref() == Some(&q.id);
+        if let Some(requests) = r.requests.get_mut(&key) {
+            for request in requests.open.iter_mut().filter(|request| matches(request)) {
+                request.delivery_rev = next_rev();
+                request.baseline = request.baseline.max(turns_ended);
+                request.taken = false;
+                request.told = false;
+            }
+        }
+        if let Some(receipt) = r.receipts.get_mut(&key) {
+            receipt.requests.retain(|request| !matches(request));
+            for (_, requests) in receipt.partials.values_mut() {
+                requests.retain(|request| !matches(request));
+            }
+        }
+        retry_debt(&mut r, key, turns_ended);
+    }
+}
+
+fn retry_debt(r: &mut Registry, key: (String, String), turns_ended: u32) {
+    if let Some(o) = r.owed.get_mut(&key) {
+        o.baseline = o.baseline.max(turns_ended);
+        o.wake.after = None;
+        o.held = None;
+        o.rev = next_rev();
+        o.delivery_rev = o.rev;
+    }
+    let floor = r.delivery_floors.entry(key).or_default();
+    *floor = (*floor).max(turns_ended);
 }
 
 /// Text queued for a background helper `id`, by `Queued::id`, went onto the
@@ -974,7 +1034,7 @@ pub fn retried(id: &str, callers: &[String], turns_ended: u32) {
 /// its debt in already, or moves it here itself once in (delivery.rs `send`),
 /// the move kept for it past the process's end (background `Entry::drained`);
 /// and a line that goes untaken with the process is put past it again
-/// (`retried`) only after this. The count it ends past, if moved.
+/// (`retry_deliveries`) only after this. The count it ends past, if moved.
 pub fn moved_onto_stdin(id: &str, qids: &[String]) -> Option<u32> {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let mut moved = None;
@@ -1283,6 +1343,37 @@ mod tests {
             forget(caller);
             forget(id);
         }
+    }
+
+    #[test]
+    fn cancel_restores_only_requests_whose_own_delivery_has_not_retried() {
+        let (caller, id) = ("partial-retry-caller", "partial-retry-helper");
+        register(id, Provider::Claude, "C:/p", "C:/acc/one", Some(caller), false, serde_json::json!({}));
+        let queued = ["first", "second", "third"].map(|text| crate::background::Queued::new(Some(caller.into()), text.into()));
+        for (index, q) in queued.iter().enumerate() {
+            assert!(owe_sent(
+                caller,
+                id,
+                index as u32,
+                (index as u64 * 10).into(),
+                None,
+                &Asked { text: &q.text, key: None, reply: true },
+                (false, Some(q.id.clone()), true)
+            ));
+        }
+        let key = (caller.into(), id.into());
+        let debt = reg().lock().unwrap().owed[&key];
+        let cancel = hand_over_scope(caller, id, 2, None, Some(AnswerScope { debt, covered: vec![1, 2] }), vec![], vec![]).unwrap();
+        // Request 2's old delivery cannot come back with the receipt, and
+        // request 3's retry cannot make request 1 lose its pending answer.
+        retry_deliveries(id, &queued[1..], 3);
+        cancel();
+        let open = requests_of(caller, id);
+        assert_eq!(open.iter().map(|q| (q.n, q.baseline, q.taken)).collect::<Vec<_>>(), [(1, 0, true), (3, 3, false)]);
+        let left = reg().lock().unwrap().owed[&key];
+        assert_eq!((left.notice_baseline(), left.cursor), (0, 0));
+        forget(caller);
+        forget(id);
     }
 
     #[test]

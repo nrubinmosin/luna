@@ -245,7 +245,8 @@ then the window's `background_promoted`) becomes theirs for good
    it finds the handover and goes nowhere. The window's word is acted on once
    (`Entry::handing`); said again, or after the record is gone, it changes
    nothing.
-3. Each session owed by it, and each sender of that text, gets one line in
+3. Its former parent, each caller with an active or watched debt, and each
+   sender of that text gets one line in
    `Registry::news`: its parent that the person took it over and nothing more
    is owed, the others that nothing more is owed by it; each with the file its
    undelivered text is in (`note_file`). `news` is saved in `chat-ties.json`,
@@ -585,8 +586,10 @@ turn, stopped on a prompt (once per stop) or exited.
 - A notice is an ordinary turn of the caller; a dev caller with no terminal gets
   none, its lines going to the log. Typing one takes seconds and the turn it
   starts may ask again meanwhile. A notice, wait or complete read settles the
-  request numbers it covered, scoped to the transcript and delivery
-  generation it read. A queued request keeps its own turn baseline and cursor.
+  request numbers it covered, scoped to the transcript and each request's
+  delivery state. A notice acknowledges restart interruptions and losses
+  carried in its rendered text after delivery succeeds. A queued request
+  keeps its own turn baseline and cursor.
 - Lines no debt brings (a helper taken over, an auto-delete, a queued text
   refused, or a system notice) wait for a caller a restart has yet to bring back for as
   long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
@@ -598,13 +601,16 @@ turn, stopped on a prompt (once per stop) or exited.
   that wants a reply gets one idle stall, carrying what the session said.
   Work, queued inputs and due replies keep that stall back. A peer's due
   reply holds it even while the peer is idle, except when the peer's
-  dependencies lead back to this session. Each caller in an idle cycle
+  notice is itself held by pending replies leading back to this session.
+  Each caller in an idle cycle
   can still get its own stall. A draft holds only its
   own notice. Interim and suppressed text
   stays readable. After a PLAN, the idle stall stays covered through that
   turn and later turns started by FYIs. A joined FYI stays part of the
   original turn. Permission prompts, failures, exits and restart
-  interruptions still go to the caller. A separate allowance per task covers
+  interruptions still go to the caller. A failure or restart cut after a
+  silent settlement wakes that caller for a later PLAN turn or a turn
+  started by one of its requests. A separate allowance per task covers
   the 30-minute quiet check, including when a turn waits for its own background
   work.
   Ties save request intent and coverage, idle plan state, quiet allowance,
@@ -805,7 +811,8 @@ none is `transcriptMissing`, not "no reply".
 (its record not active, however long that has done nothing), and no turn for 30 minutes, as `delete` would.
 Any `read` / `wait` / `send` restarts the clock (`deletesInMin`).
 A silent settlement keeps its unread cursor without holding up a lead.
-Unread text holds auto-delete until it is read or 24 hours elapse, even
+The notifier marks unread answers before checking whether their caller can
+take a notice. Unread text holds auto-delete until it is read or 24 hours elapse, even
 after the notifier stops waiting for a caller to reopen after a restart.
 A helper an agent killed mid-turn is left alone. On by default.
 

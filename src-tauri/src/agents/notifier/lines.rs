@@ -3,7 +3,7 @@
 
 use crate::agents::ask::{ask_of, live};
 use crate::agents::lost::{never_started_what, sentence, undelivered_for, undelivered_line, undelivered_text};
-use crate::agents::notifier::Settled;
+use crate::agents::notifier::{LineEvidence, Settled};
 use crate::agents::owed::{requests_through, Owed, QUEUED_GRACE_MS};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{failure_of, transcript_end, transcript_found, transcript_path};
@@ -367,6 +367,24 @@ pub(super) fn breaker_lifted(pty: &crate::pty::PtyManager, caller: &str, id: &st
 }
 
 /// The notice for one session, or None while nothing has happened to it.
+pub(super) fn render_notice(
+    pty: &crate::pty::PtyManager,
+    caller: &str,
+    who: &str,
+    id: &str,
+    k: &Known,
+    o: Owed,
+) -> Option<(Option<String>, Settled, LineEvidence)> {
+    let mut evidence = LineEvidence::default();
+    let (text, how) = notice_line_inner(pty, caller, who, id, k, o, &mut evidence)?;
+    if matches!(how, Settled::Exited) {
+        evidence.ended = crate::activity::turn_state(id).map_or(o.notice_baseline(), |t| t.turns_ended);
+        evidence.requests = requests_through(caller, id, o, evidence.ended);
+    }
+    Some((text, how, evidence))
+}
+
+#[cfg(test)]
 pub(in crate::agents) fn notice_line(
     pty: &crate::pty::PtyManager,
     caller: &str,
@@ -374,6 +392,18 @@ pub(in crate::agents) fn notice_line(
     id: &str,
     k: &Known,
     o: Owed,
+) -> Option<(Option<String>, Settled)> {
+    render_notice(pty, caller, who, id, k, o).map(|(text, how, _)| (text, how))
+}
+
+fn notice_line_inner(
+    pty: &crate::pty::PtyManager,
+    caller: &str,
+    who: &str,
+    id: &str,
+    k: &Known,
+    o: Owed,
+    evidence: &mut LineEvidence,
 ) -> Option<(Option<String>, Settled)> {
     transcript_path(pty, id);
     if reg()
@@ -386,7 +416,7 @@ pub(in crate::agents) fn notice_line(
         return None;
     }
     let ts = crate::activity::turn_state(id);
-    let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
+    let ended = ts.map_or(0, |t| t.turns_ended);
     let turn = ts.map(|t| t.turn);
     let alive = live(pty, id);
     // A Claude Code chat ends a turn on a job it put in the background and takes
@@ -396,6 +426,29 @@ pub(in crate::agents) fn notice_line(
     // will be to hear of.
     let background = ts.is_some_and(|t| t.children_busy) && alive;
     let left = if background { left_named(id) } else { None };
+    let notice_baseline = o.notice_baseline();
+    let between_turns = turn != Some(crate::activity::Turn::Busy);
+    if o.wake.delivery_expired.is_some() {
+        return None;
+    }
+    let cut = crate::background::cut_short(id) || o.cut_short;
+    let failed = (between_turns && (ended > notice_baseline || o.told_pending || o.wake.skipped.is_some()))
+        .then(|| failure_of(pty, id, k.provider).or_else(|| crate::activity::limit_of(id)))
+        .flatten();
+    let covered_ended = ts.map_or_else(|| crate::activity::turns_counted(id).unwrap_or(0), |t| t.turns_ended);
+    let covered_turn = o.active()
+        || o.wake.plan_through.is_some_and(|plan| covered_ended > plan)
+        || (cut || failed.is_some()) && covered_ended > notice_baseline && {
+            let (words, _) = written_range(pty, id, k.provider, o.held_to.unwrap_or(o.cursor));
+            let requests = requests_through(caller, id, o, covered_ended);
+            words.asked_after(requests, None).last_turn_started_by_request()
+        };
+    let cut = cut && covered_turn;
+    let failed = failed.filter(|_| covered_turn);
+    let o = Owed { cut_short: o.cut_short && cut, ..o };
+    if !o.active() && !o.watches_later_turns() && !cut && failed.is_none() {
+        return None;
+    }
     let standing = standing_line(pty, who, id, k, o);
     if o.resumed || o.job_went {
         if let Some((Some(_), Settled::Waiting | Settled::Asked(_))) = &standing {
@@ -416,15 +469,6 @@ pub(in crate::agents) fn notice_line(
         return standing;
     }
     if turn == Some(crate::activity::Turn::Waiting) {
-        return None;
-    }
-    let between_turns = turn != Some(crate::activity::Turn::Busy);
-    let notice_baseline = o.notice_baseline();
-    let cut = crate::background::cut_short(id) || o.cut_short;
-    let failed = (between_turns && (ended > notice_baseline || o.told_pending || o.wake.skipped.is_some()))
-        .then(|| failure_of(pty, id, k.provider).or_else(|| crate::activity::limit_of(id)))
-        .flatten();
-    if !o.active() && !o.watches_later_turns() && !cut && failed.is_none() {
         return None;
     }
     let waits = waits_on_helpers(id, caller);
@@ -485,9 +529,10 @@ pub(in crate::agents) fn notice_line(
                     return None;
                 }
                 let halted = crate::background::stop_of(id);
-                let stopped = background_stopped(id, caller);
+                let (stopped, stopped_ids) = background_stopped_line(id, caller).unwrap_or_default();
                 // A core's going took the job, or its CLI cut it off: news, whatever was said.
-                let lost = undelivered_for(id, caller, k.parent.as_deref() == Some(caller));
+                let parent = k.parent.as_deref() == Some(caller);
+                let (lost_ids, lost): (Vec<_>, Vec<_>) = crate::background::undelivered_snapshot(id, caller, parent).into_iter().unzip();
                 let found = transcript_found(pty, id);
                 let plain = failed.is_none() && halted.is_none() && stopped.is_empty() && lost.is_empty() && !o.unsure && found;
                 let status = fresh_status(&said);
@@ -514,9 +559,9 @@ pub(in crate::agents) fn notice_line(
                     return Some((None, silent_or_untaken(o, ended, &requests, !said.is_empty())));
                 }
                 let how = if plain {
-                    turn_settlement(o, ended, read_to, &said, requests, status, plan || keeps_plan, false, false, false)
+                    turn_settlement(o, ended, read_to, &said, requests.clone(), status, plan || keeps_plan, false, false, false)
                 } else {
-                    failed_requests(id, o, ended, &requests)
+                    failed_requests(o, ended, &requests, &lost_ids)
                 };
                 let quoted = if failed.is_some() { String::new() } else { begins_re(&said, o.told_pending) };
                 let n = said.len();
@@ -538,6 +583,7 @@ pub(in crate::agents) fn notice_line(
                 };
                 let lost = undelivered_line(&lost, n > 0, None);
                 let unsure = unsure_line(o);
+                *evidence = LineEvidence { requests, lost: lost_ids, parent, stopped: stopped_ids, read_to: Some(read_to), ended };
                 Some((Some(format!("{who} has nothing left running now, and {said}.{stopped}{failed}{lost}{unsure}")), how))
             }
             Some((n, _)) if n == ended => None,
@@ -582,8 +628,8 @@ pub(in crate::agents) fn notice_line(
             }
         }
         let parent = k.parent.as_deref() == Some(caller);
-        let lost = undelivered_for(id, caller, parent);
-        let stopped = background_stopped(id, caller);
+        let (lost_ids, lost): (Vec<_>, Vec<_>) = crate::background::undelivered_snapshot(id, caller, parent).into_iter().unzip();
+        let (stopped, stopped_ids) = background_stopped_line(id, caller).unwrap_or_default();
         let found = transcript_found(pty, id);
         let never_started = parent && crate::background::never_started(id);
         let trouble =
@@ -591,7 +637,7 @@ pub(in crate::agents) fn notice_line(
         if !trouble && wake_is_pending(id, ended) {
             return None;
         }
-        let failure = || failed_requests(id, o, ended, &requests);
+        let failure = || failed_requests(o, ended, &requests, &lost_ids);
         let lead = is_lead(k);
         if !trouble && work_left {
             if lead && (background || waits) {
@@ -628,6 +674,14 @@ pub(in crate::agents) fn notice_line(
             if lost.is_empty() && failed.is_none() && !cut && replies.requests().len() <= 1 { inline_answer(&replies) } else { None };
         let file = text.as_deref().filter(|_| inline.is_none()).and_then(|t| note_file(id, t));
         let span = report_span(&replies);
+        *evidence = LineEvidence {
+            requests: requests.clone(),
+            lost: lost_ids.clone(),
+            parent,
+            stopped: stopped_ids,
+            read_to: Some(read_to),
+            ended,
+        };
         let reply = match replies.len() {
             0 if !found => ", but Luna cannot find its transcript, so whether it replied is unknown".to_string(),
             0 => " without a reply".to_string(),
@@ -770,7 +824,7 @@ pub(in crate::agents) fn notice_line(
     standing_line(pty, who, id, k, o)
 }
 
-fn failed_requests(id: &str, o: Owed, ended: u32, requests: &[Request]) -> Settled {
+fn failed_requests(o: Owed, ended: u32, requests: &[Request], lost: &[String]) -> Settled {
     if requests.is_empty() {
         return Settled::Failed;
     }
@@ -778,7 +832,7 @@ fn failed_requests(id: &str, o: Owed, ended: u32, requests: &[Request]) -> Settl
         .iter()
         .filter(|q| {
             q.taken
-                || q.delivery.as_deref().is_some_and(|qid| crate::background::delivery_lost(id, qid))
+                || q.delivery.as_ref().is_some_and(|qid| lost.contains(qid))
                 || (q.n == 1 && q.baseline < ended && !q.queued && (q.delivery.is_none() || o.cut_short))
         })
         .map(|q| q.n)
@@ -879,7 +933,7 @@ pub(super) fn runs_nothing(id: &str, ts: Option<crate::activity::TurnState>) -> 
     if crate::background::has_work(id) {
         return false;
     }
-    let (edges, pending) = {
+    let (edges, pending, providers) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let pending: HashSet<String> = r
             .waits
@@ -902,14 +956,25 @@ pub(super) fn runs_nothing(id: &str, ts: Option<crate::activity::TurnState>) -> 
             }
             edges.entry(from.clone()).or_default().push((to.clone(), *o));
         }
-        (edges, pending)
+        let providers = r.known.iter().map(|(id, k)| (id.clone(), k.provider)).collect::<HashMap<_, _>>();
+        (edges, pending, providers)
     };
-    // A due reply cannot keep this session waiting when its peer, directly
-    // or through another debt, is waiting on this session's own reply.
+    let pty = crate::pty::manager();
+    let due = |caller: &str, peer: &str, owed: &Owed| {
+        (owed.resumed
+            || owed.job_went
+            || owed.cut_short
+            || crate::activity::turn_state(peer).is_some_and(|t| t.turns_ended > owed.notice_baseline() || owed.told_pending))
+            && !pair_stopped(pty, caller, peer)
+    };
+    // Only due replies can hold stalls in a cycle. A peer's open ask for a
+    // future turn does not keep its own reply from going first.
     let mut upstream: HashMap<&str, Vec<&str>> = HashMap::new();
     for (from, asks) in &edges {
-        for (peer, _) in asks {
-            upstream.entry(peer).or_default().push(from);
+        for (peer, owed) in asks {
+            if due(from, peer, owed) {
+                upstream.entry(peer).or_default().push(from);
+            }
         }
     }
     let mut leads_back = HashSet::new();
@@ -921,18 +986,17 @@ pub(super) fn runs_nothing(id: &str, ts: Option<crate::activity::TurnState>) -> 
     }
     let mut visited = HashSet::from([id]);
     let mut peers = vec![id];
-    let pty = crate::pty::manager();
     while let Some(caller) = peers.pop() {
         for (peer, owed) in edges.get(caller).into_iter().flatten() {
             let peer = peer.as_str();
             let state = crate::activity::turn_state(peer);
-            let due = !leads_back.contains(peer)
-                && (owed.resumed
+            if peer != id
+                && due(caller, peer, owed)
+                && (!leads_back.contains(peer)
+                    || owed.resumed
                     || owed.job_went
-                    || owed.cut_short
-                    || state.is_some_and(|t| t.turns_ended > owed.notice_baseline() || owed.told_pending))
-                && !pair_stopped(pty, caller, peer);
-            if due {
+                    || reply_can_go_while_work_remains(pty, caller, peer, *owed, providers.get(peer).copied()))
+            {
                 return false;
             }
             if !visited.insert(peer) {
@@ -950,6 +1014,21 @@ pub(super) fn runs_nothing(id: &str, ts: Option<crate::activity::TurnState>) -> 
     true
 }
 
+/// A peer can report these even if it is still waiting for an answer itself.
+fn reply_can_go_while_work_remains(pty: &crate::pty::PtyManager, caller: &str, peer: &str, owed: Owed, provider: Option<Provider>) -> bool {
+    owed.cut_short
+        || owed.unsure
+        || crate::background::cut_short(peer)
+        || crate::background::stop_of(peer).is_some()
+        || !crate::background::untold_losses(peer, caller).is_empty()
+        || !undelivered_for(peer, caller, crate::agents::registry::parent_of(peer).as_deref() == Some(caller)).is_empty()
+        || provider.is_some_and(|provider| {
+            failure_of(pty, peer, provider).is_some()
+                || crate::activity::limit_of(peer).is_some()
+                || fresh_status(&written_range(pty, peer, provider, owed.cursor).0).is_some()
+        })
+}
+
 /// What a notice says of a helper whose CLI stopped what its last turn left in
 /// the background (background/run.rs `stops_background`), or whose turn's
 /// process went with background subagents unfinished (background/events.rs
@@ -963,7 +1042,7 @@ fn background_stopped(id: &str, caller: &str) -> String {
 /// See `background_stopped`: a line for each loss `caller` has yet to hear
 /// of, oldest first, each by its own cause, and the turns of those losses.
 /// A notice that went in with a loss's line acknowledges that loss for its
-/// caller (notifier `ack_background_stop`); a reply of a wait, read or
+/// caller (notifier `settle_delivered`); a reply of a wait, read or
 /// report, the turns it carried (owed.rs `background_stopped_note`,
 /// `hand_over_said`).
 pub(in crate::agents) fn background_stopped_line(id: &str, caller: &str) -> Option<(String, Vec<u32>)> {
@@ -1777,7 +1856,7 @@ mod tests {
         let lost = "2 background subagents (\"Implement slice A\", \"Implement slice B\") ended with its turn without finishing; their work is not done. luna_session_send has it check what they left and carry on";
         let turn = Owed { told_pending: false, baseline: 3, cursor: 0, ..o };
         let turn = held(turn, 4, REPLY_GRACE_MS);
-        let Some((Some(text), Settled::Failed)) = notice_line(pty, caller, "Your helper", id, &known, turn) else {
+        let Some((Some(text), Settled::Failed, evidence)) = render_notice(pty, caller, "Your helper", id, &known, turn) else {
             panic!("its turn is over")
         };
         assert!(text.starts_with("Your helper finished its turn") && text.contains(lost), "{text}");
@@ -1786,13 +1865,13 @@ mod tests {
         let note = crate::agents::owed::background_stopped_note(caller, id).0.expect("still to be said");
         assert!(note.starts_with(lost), "{note}");
         // The notice that said it is the caller's acknowledgment; one that did not is none.
-        let settle = |text: &str| {
-            super::super::settle_delivered(&mut reg().lock().unwrap(), caller, id.to_string(), Settled::Failed, &turn, text, None)
+        let settle = |evidence| {
+            super::super::settle_delivered(&mut reg().lock().unwrap(), caller, id.to_string(), Settled::Failed, &turn, evidence, None)
         };
-        settle("Your helper finished its turn.");
+        settle(LineEvidence::default());
         assert!(crate::background::background_stopped_for(id, caller), "not said yet");
         reg().lock().unwrap().owed.insert((caller.to_string(), id.to_string()), turn);
-        settle(&text);
+        settle(evidence);
         assert!(!crate::background::background_stopped(id), "said to the one caller it concerns");
 
         // Killed, the turn's error comes first, and the subagents still go by name.
@@ -2691,8 +2770,15 @@ mod tests {
         let settle = |caller: &str, ended: u32| {
             let told = Owed::from(1, 0);
             reg().lock().unwrap().owed.insert((caller.into(), id.into()), told);
-            let text = "Your helper finished its turn without a reply.";
-            super::super::settle_delivered(&mut reg().lock().unwrap(), caller, id.into(), Settled::Answered, &told, text, Some(ended));
+            super::super::settle_delivered(
+                &mut reg().lock().unwrap(),
+                caller,
+                id.into(),
+                Settled::Answered,
+                &told,
+                LineEvidence::default(),
+                Some(ended),
+            );
         };
         settle(peer, 2);
         assert!(reg().lock().unwrap().woken.get(id).is_some_and(|w| w.ended == 2), "the wake stands");
@@ -2994,6 +3080,7 @@ mod tests {
         }
         owe_from(a, b, 0, 0);
         owe_from(b, c, 0, 0);
+        owe_from(c, b, 1, 0);
         let path = std::env::temp_dir().join(format!("luna-{b}-{}.jsonl", std::process::id()));
         std::fs::write(&path, said_line("Waiting on C.")).unwrap();
         transcripts().lock().unwrap().insert(b.into(), path.clone());
@@ -3005,6 +3092,12 @@ mod tests {
         assert!(!waits_on_helpers(b, a), "C is a peer chat");
         assert!(!runs_nothing(b, crate::activity::turn_state(b)), "C ended the turn it owes to B");
         assert!(matches!(line(), Some((None, Settled::Skip(1, ..)))), "A stays asleep while C's reply is due");
+        // An explicit answer is also independent of B's reply if both are due.
+        let c_path = path.with_file_name(format!("luna-{c}-{}.jsonl", std::process::id()));
+        std::fs::write(&c_path, said_line("DONE: C has the result.")).unwrap();
+        transcripts().lock().unwrap().insert(c.into(), c_path.clone());
+        owe_from(c, b, 0, 0);
+        assert!(matches!(line(), Some((None, Settled::Skip(1, ..)))));
         reg().lock().unwrap().owed.remove(&(b.into(), c.into()));
         assert!(runs_nothing(b, crate::activity::turn_state(b)), "C's answer has been delivered");
         crate::background::idle_for_test(b, Provider::Claude, 2, false);
@@ -3015,6 +3108,60 @@ mod tests {
             forget(id);
         }
         std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(c_path).unwrap();
+    }
+
+    #[test]
+    fn an_inactive_debt_only_hears_failure_of_a_turn_it_still_covers() {
+        use crate::agents::owed::{owe_asked, Asked};
+
+        for cut in [false, true] {
+            let caller = "covered-failure-caller";
+            let id = if cut { "covered-cut-helper" } else { "covered-failure-helper" };
+            register(id, Provider::Claude, "C:/p", "C:/acc/one", None, false, serde_json::json!({}));
+            crate::background::idle_for_test(id, Provider::Claude, 1, false);
+            let path = std::env::temp_dir().join(format!("luna-{id}-{}.jsonl", std::process::id()));
+            std::fs::write(&path, prompt_line("Earlier request")).unwrap();
+            transcripts().lock().unwrap().insert(id.into(), path.clone());
+            owe_asked(caller, id, 0, 0, &Asked { text: "First caller's request", key: None, reply: false });
+            let key = (caller.into(), id.into());
+            {
+                let mut r = reg().lock().unwrap();
+                let o = r.owed.get_mut(&key).unwrap();
+                o.wake.silent = Some(1);
+                o.held = Some((2, 0));
+            }
+            if cut {
+                crate::background::idle_for_test(id, Provider::Claude, 2, false);
+                crate::background::cut_for_test(id);
+            } else {
+                crate::background::set_running_for_test(id);
+                crate::background::exited_for_test(id, Some(1));
+            }
+            let known = reg().lock().unwrap().known[id].clone();
+            let render = || {
+                let o = reg().lock().unwrap().owed[&key];
+                notice_line(crate::pty::manager(), caller, "Your helper", id, &known, o)
+            };
+            let turn = |prompt| {
+                std::fs::write(&path, format!("{}{}{}", prompt_line("Earlier request"), said_line("Acknowledged."), prompt_line(prompt)))
+                    .unwrap();
+            };
+            turn("A different caller's request");
+            assert!(render().is_none(), "an unrelated failed or cut turn owes nothing");
+            let expected = if cut { "did NOT finish" } else { "stopped on an error" };
+            let text = || render().and_then(|(line, _)| line).unwrap_or_default();
+            turn("First caller's request");
+            let own = text();
+            assert!(own.contains(expected), "cut {cut}: {own}, {:?}", crate::activity::turn_state(id));
+            turn("Continue the existing plan");
+            reg().lock().unwrap().owed.get_mut(&key).unwrap().wake.plan_through = Some(1);
+            let plan = text();
+            assert!(plan.contains(expected), "{plan}");
+            crate::background::gone_for_test(id);
+            forget(id);
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]

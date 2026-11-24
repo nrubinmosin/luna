@@ -356,10 +356,6 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
     Ok((placed, kept_open))
 }
 
-pub fn delivery_lost(id: &str, qid: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.undelivered.iter().any(|q| q.id == qid))
-}
-
 /// What never reached it that `caller` is to hear of (`Entry::undelivered`):
 /// what it sent, and for its parent what no session did.
 pub fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
@@ -376,18 +372,6 @@ pub fn undelivered_snapshot(id: &str, caller: &str, parent: bool) -> Vec<(String
         }
     };
     lock().entries.get(id).map(|e| e.undelivered.iter().filter(|q| mine(q)).map(|q| (q.id.clone(), told(q))).collect()).unwrap_or_default()
-}
-
-/// Snapshot the identities of losses of which this caller can be told.
-pub fn undelivered_ids(id: &str, caller: &str, parent: bool) -> Vec<String> {
-    lock()
-        .entries
-        .get(id)
-        .into_iter()
-        .flat_map(|e| &e.undelivered)
-        .filter(|q| q.from.as_deref().map_or(parent, |f| f == caller))
-        .map(|q| q.id.clone())
-        .collect()
 }
 
 /// Takes it off, `caller` having been told: `put_back` undoes that.

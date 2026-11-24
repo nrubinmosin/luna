@@ -113,6 +113,8 @@ pub(super) struct Request {
     pub(super) queued: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) delivery: Option<String>,
+    #[serde(skip)]
+    pub(super) delivery_rev: u64,
 }
 
 /// How much of a request's text is kept to find it again among the prompts:
@@ -135,7 +137,7 @@ pub(super) fn reply_by_default() -> bool {
 
 impl Request {
     pub(super) fn new(n: u32, key: Option<String>, head: String, reply: bool) -> Self {
-        Self { n, key, head, reply, taken: false, told: false, baseline: 0, cursor: 0, queued: false, delivery: None }
+        Self { n, key, head, reply, taken: false, told: false, baseline: 0, cursor: 0, queued: false, delivery: None, delivery_rev: 0 }
     }
 
     /// The heading used in answer files and tool replies.
@@ -239,6 +241,10 @@ impl Said {
                 prompt.is_some() && self.matches.iter().rposition(|matched| matched == prompt).is_some_and(|k| !requests[k].reply)
             });
         (requests, plan && !lasting_in_last_turn, fyi)
+    }
+
+    pub(super) fn last_turn_started_by_request(&self) -> bool {
+        self.turn_prompts.last().copied().flatten().is_some_and(|prompt| self.matches.contains(&Some(prompt)))
     }
 
     /// The requests these answer, in the order they were asked.
