@@ -162,7 +162,7 @@ mod tests {
         std::fs::write(&settings, r#"{"autoCompactWindow": 500000}"#).unwrap();
         let mut delegate = launch(account, 1);
         delegate.claude_window = Some(400_000);
-        let at = |start| left("tc-claude-delegate", start, "claude-opus-5-5", 50_000, 1_000_000);
+        let at = |start: &Launch| left("tc-claude-delegate", start, "claude-opus-5-5", 50_000, 1_000_000);
         assert_eq!(at(&delegate), Some(317_000));
         assert_eq!(at(&launch(account, 2)), Some(417_000), "the chat has no window from Luna");
         std::fs::write(&settings, r#"{"env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "250k"}}"#).unwrap();
