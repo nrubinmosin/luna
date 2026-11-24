@@ -283,7 +283,7 @@ pub fn send_tracked(id: &str, q: Queued) -> Result<(Placed, String), String> {
 /// but its sender cannot collect the loss until the debt is published.
 pub struct PublishingRequest(String);
 
-fn publishing_requests() -> &'static Mutex<std::collections::HashSet<String>> {
+pub(super) fn publishing_requests() -> &'static Mutex<std::collections::HashSet<String>> {
     static IDS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     IDS.get_or_init(Default::default)
 }

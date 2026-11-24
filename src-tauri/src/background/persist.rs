@@ -672,10 +672,12 @@ pub fn untold_losses(id: &str, caller: &str) -> Vec<Loss> {
 /// Who still has loss news coming, even after their answers settled.
 pub fn loss_recipients() -> Vec<(String, String)> {
     let r = lock();
+    let publishing = publishing_requests().lock().unwrap_or_else(|e| e.into_inner());
     let mut pairs = std::collections::HashSet::new();
     for (id, e) in &r.entries {
         let callers = e.observed.losses.iter().flat_map(|l| l.owed.iter().filter(|c| !l.told.contains(c)));
-        let senders = e.undelivered.iter().filter_map(|q| q.from.as_ref().or(e.spec.parent.as_ref()));
+        let senders =
+            e.undelivered.iter().filter(|q| !publishing.contains(&q.id)).filter_map(|q| q.from.as_ref().or(e.spec.parent.as_ref()));
         for caller in callers.chain(senders) {
             pairs.insert((caller.clone(), id.clone()));
         }

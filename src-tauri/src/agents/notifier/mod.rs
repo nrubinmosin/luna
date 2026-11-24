@@ -2177,10 +2177,12 @@ mod tests {
             crate::background::fail_queued_launch_for_test(id);
             assert!(crate::background::undelivered_for(id, caller, true).is_empty());
             assert!(crate::background::take_undelivered_for(id, caller, true, None).is_empty());
+            assert!(!crate::background::loss_recipients().contains(&(caller.into(), id.into())));
             tick_for_test(caller);
             assert!(terminal.input.try_recv().is_err());
             stop.go();
             sending.join().unwrap().unwrap();
+            assert!(crate::background::loss_recipients().contains(&(caller.into(), id.into())));
             let lost = crate::background::undelivered_snapshot(id, caller, true);
             let requests = super::super::owed::requests_of(caller, id);
             assert_eq!(requests[0].delivery.as_deref(), Some(lost[0].0.as_str()));
