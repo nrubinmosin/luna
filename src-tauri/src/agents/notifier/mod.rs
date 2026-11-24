@@ -672,6 +672,8 @@ fn notify_once_since_start(
                     breaker_suffix(&caller, &id, &Settled::Failed, now_ms()).unwrap_or_default()
                 };
                 lines.push(format!("{who}:{stopped}{lost}{suffix}"));
+                // The fallback sends the caller to the queue to read the text.
+                let ids = if file.is_some() { ids } else { Vec::new() };
                 let mut requests = super::owed::requests_of(&caller, &id);
                 requests.retain(|q| q.delivery.as_ref().is_some_and(|qid| ids.contains(qid)));
                 losses.push((id, LineEvidence { lost: ids, parent, stopped: turns, requests, ..LineEvidence::default() }));
@@ -2221,6 +2223,37 @@ mod tests {
             forget(caller);
             crate::activity::forget(caller);
         }
+    }
+
+    #[test]
+    fn a_loss_only_notice_keeps_the_text_until_its_report_can_be_written() {
+        let (caller, id) = ("loss-report-caller", "loss-report-helper");
+        register(caller, Provider::Claude, ".", "acc", None, true, serde_json::json!({}));
+        register(id, Provider::Claude, ".", "acc", Some(caller), false, serde_json::json!({"background":true}));
+        let terminal = crate::pty::notice_terminal(caller, Provider::Claude, false);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        crate::background::lose_for_test(id, caller, "queued text");
+        let payload = super::super::lost::undelivered_text(&["queued text".into()]);
+        let path = super::super::said::note_file(id, &payload).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        tick_for_test(caller);
+        std::fs::remove_dir(&path).unwrap();
+        let fallback: String = terminal.input.try_iter().collect();
+        assert!(fallback.contains("luna_message_list gives them"), "{fallback}");
+        assert_eq!(crate::background::undelivered_for(id, caller, true), ["queued text"]);
+
+        tick_for_test(caller);
+        let notice: String = terminal.input.try_iter().collect();
+        assert!(notice.contains(&path.display().to_string()), "{notice}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), payload);
+        assert!(crate::background::undelivered_for(id, caller, true).is_empty());
+        std::fs::remove_file(&path).unwrap();
+        crate::background::gone_for_test(id);
+        forget(id);
+        forget(caller);
+        crate::activity::forget(caller);
     }
 
     #[test]
