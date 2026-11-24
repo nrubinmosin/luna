@@ -548,6 +548,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         session: s.session,
         cwd,
         run: None,
+        compaction: None,
         turns_ended: s.turns_ended + u32::from(s.running) + u32::from(s.queued),
         queue: Vec::new(),
         in_flight: Vec::new(),
@@ -1193,7 +1194,7 @@ mod tests {
             let e = through_a_core(entry_like(&codex), session);
             let (args, _, envs, _) = command_for(&e, "x").unwrap();
             assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")), "{args:?}");
-            let open = command_and_open(&e, "x", &crate::library::role_texts(role_of(&e.spec))).unwrap().1.unwrap();
+            let open = command_and_open(&e, "x", &crate::library::role_texts(role_of(&e.spec)), None).unwrap().1.unwrap();
             assert_eq!(open["method"] == "thread/resume", session.is_some());
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
             // The caller gets back what it asked, the note going on as that turn starts.

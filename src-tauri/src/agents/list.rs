@@ -110,7 +110,7 @@ fn chat_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> cra
     };
     let context = crate::background::Context::of(&path, provider);
     let left_running = crate::activity::left_running(id);
-    crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running }
+    crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running, ..Default::default() }
 }
 
 /// The caller's own, or the sessions `ids` names, which may be any: what a row

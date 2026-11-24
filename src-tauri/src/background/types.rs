@@ -75,17 +75,25 @@ impl Context {
     /// Off the tail of a transcript (Claude Code) or rollout (Codex). None
     /// until an answer has stated its usage, as before the first turn.
     pub(crate) fn of(path: &std::path::Path, provider: Provider) -> Option<Self> {
-        let (tokens, window) = match provider {
-            Provider::Claude => crate::claude::session::last_context(path)?,
+        Self::read(path, provider).map(|(context, _)| context)
+    }
+
+    pub(super) fn read(path: &std::path::Path, provider: Provider) -> Option<(Self, Option<crate::to_compact::Sample>)> {
+        let (tokens, window, sample) = match provider {
+            Provider::Claude => {
+                let read = crate::claude::session::last_context(path)?;
+                (read.tokens, read.window, read.compaction)
+            }
             Provider::Codex => {
                 let tail = crate::codex::session::read_tail(path);
-                (tail.context_tokens?, tail.context_window?)
+                let tokens = tail.context_tokens?;
+                let sample = tail.context_model.map(|model| crate::to_compact::Sample { tokens: tokens as u64, model });
+                (tokens, tail.context_window?, sample)
             }
         };
-        (tokens >= 0.0 && window > 0.0).then(|| Self {
-            pct: ((tokens / window).min(1.0) * 100.0).round() as u64,
-            tokens: tokens as u64,
-            window: window as u64,
+        (tokens >= 0.0 && window > 0.0).then(|| {
+            let context = Self { pct: ((tokens / window).min(1.0) * 100.0).round() as u64, tokens: tokens as u64, window: window as u64 };
+            (context, sample)
         })
     }
 }
@@ -104,6 +112,9 @@ pub struct Signs {
     pub resolved_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<Context>,
+    /// The last delegate turn's estimated tokens to auto-compaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_to_compact: Option<u64>,
     /// Between turns, what it runs beside them, by name ("tail.exe (pid
     /// 22104)") or count ("2 shells"): each keeps it active for as long as it
     /// is there.

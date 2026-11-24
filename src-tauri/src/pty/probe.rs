@@ -268,6 +268,7 @@ impl Probe {
             account_path: self.account_path.clone(),
             folder: folder.unwrap_or_else(|| self.cwd.clone()),
             start: self.spawned_at_ms as u64,
+            claude_window: None,
             codex: self.codex_compaction.clone(),
         }
     }

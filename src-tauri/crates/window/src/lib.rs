@@ -31,6 +31,7 @@ mod root;
 mod scale;
 mod selector;
 mod settings;
+pub use settings::{DELEGATE_COMPACT_DEFAULT, DELEGATE_COMPACT_MAX, DELEGATE_COMPACT_MIN, DELEGATE_COMPACT_STEP};
 #[cfg(feature = "shots")]
 mod shots;
 mod sidebar;

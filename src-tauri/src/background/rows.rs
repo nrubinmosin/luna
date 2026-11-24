@@ -101,7 +101,7 @@ fn activity_of(e: &Entry) -> Option<u64> {
 
 /// What `luna_session_get` says of a helper beyond its state.
 pub fn signs(id: &str) -> Option<Signs> {
-    let (signs, provider) = {
+    let (mut signs, provider, launch) = {
         let r = lock();
         let e = r.entries.get(id)?;
         let o = &e.observed;
@@ -114,13 +114,19 @@ pub fn signs(id: &str) -> Option<Signs> {
             // once a turn has got through on it.
             resolved_model: o.model.clone().or_else(|| e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && o.answered)),
             context: None,
+            context_to_compact: None,
             left_running: left_shown(e),
         };
-        (signs, e.spec.provider)
+        (signs, e.spec.provider, e.compaction.clone())
     };
     // Off the transcript, with the lock let go: every helper's events wait on it.
-    let context = transcript(id).and_then(|path| Context::of(&path, provider));
-    Some(Signs { context, ..signs })
+    if let Some((context, sample)) = transcript(id).and_then(|path| Context::read(&path, provider)) {
+        if let (Some(launch), Some(sample)) = (launch, sample) {
+            signs.context_to_compact = crate::to_compact::left(id, &launch, &sample.model, sample.tokens, context.window);
+        }
+        signs.context = Some(context);
+    }
+    Some(signs)
 }
 
 /// While a turn runs, how long its CLI has said nothing: no event on its
@@ -679,7 +685,21 @@ mod tests {
         std::fs::write(&path, format!("{answer}\n")).unwrap();
         let s = signs("context-1").unwrap();
         assert_eq!(s.context, Some(Context { pct: 75, tokens: 150_000, window: 200_000 }));
+        assert_eq!(s.context_to_compact, None);
         assert!(serde_json::to_string(&s).unwrap().contains(r#""context":{"pct":75,"tokens":150000,"window":200000}"#));
+        lock().entries.get_mut("context-1").unwrap().compaction = Some(crate::to_compact::Launch {
+            provider: Provider::Claude,
+            account_path: account.clone(),
+            folder: account.clone(),
+            start: 1,
+            claude_window: Some(100_000),
+            codex: None,
+        });
+        let boundary = r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"postTokens":10000}}"#;
+        std::fs::write(&path, format!("{answer}\n{boundary}\n")).unwrap();
+        let compacted = signs("context-1").unwrap();
+        assert_eq!(compacted.context, s.context);
+        assert_eq!(compacted.context_to_compact, Some(57_000));
         lock().entries.remove("context-0");
         lock().entries.remove("context-1");
         let _ = std::fs::remove_dir_all(&account);

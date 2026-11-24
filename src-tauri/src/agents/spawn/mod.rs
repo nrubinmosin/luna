@@ -586,6 +586,7 @@ pub struct HelperSettings {
     pub max_helpers: u32,
     pub min: u32,
     pub max: u32,
+    pub delegate_auto_compact_tokens: u32,
     /// `Settings::helper_context_pct`, 0 for off.
     pub helper_context_pct: u32,
 }
@@ -601,8 +602,15 @@ pub fn helper_settings() -> HelperSettings {
         max_helpers: s.max_helpers.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end()),
         min: *HELPERS_RANGE.start(),
         max: *HELPERS_RANGE.end(),
+        delegate_auto_compact_tokens: crate::settings::delegate_auto_compact_tokens(s.delegate_auto_compact_tokens).unwrap_or(0),
         helper_context_pct: s.helper_context_pct.min(100),
     }
+}
+
+pub fn set_delegate_auto_compact_tokens(tokens: u32) -> Result<HelperSettings, String> {
+    let tokens = crate::settings::delegate_auto_compact_tokens(tokens).unwrap_or(0);
+    crate::settings::update(|s| s.delegate_auto_compact_tokens = tokens)?;
+    Ok(helper_settings())
 }
 
 /// Only what notices say: nothing a helper may do changes.

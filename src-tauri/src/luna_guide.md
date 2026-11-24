@@ -30,7 +30,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - `luna_session_get` gives one session whole: `settings`, `folder`, `cwd` (where its CLI works,
   when not the folder: a worktree), `transcript`, `sessionId` (the CLI's own), `turnStartedAt` (null between turns), `lastActivityAt` (a long command shows nothing
   until it ends: quiet is not stuck), `resolvedModel` (the model that answered), `context`
-  (`tokens` in its window against the model's `window`, `pct`, after its last step) and
+  (`tokens` in its window against the model's `window`, `pct`, after its last step),
+  `contextToCompact` (estimated tokens to compaction, omitted until the delegate's first turn after a core restart), and
   `leftRunning`: what its turns left running between turns, by name and pid (`"tail.exe (pid 22104)"`) or as a
   count (`"2 shells"`), which keeps the PC awake for as long as it is there.
   Times are UTC ISO.
@@ -83,6 +84,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - A model the organization does not allow is swapped by the CLI: `resolvedModel` says what ran.
 
 ## Spawning
+- Helpers and leads use Luna's delegate auto-compaction setting.
 - A safe spawn: a prompt that stands alone (the helper sees nothing of your conversation), the
   least mode that does the job (`readOnly`, `plan`, a read-only sandbox), a worktree you made
   for edits beside other work (see `folder`); then end your turn and let the notice come.

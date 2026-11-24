@@ -93,6 +93,8 @@ struct Entry {
     /// Where the CLI says it works: the worktree it went into, if it did.
     cwd: Option<String>,
     run: Option<Run>,
+    /// The last turn's compaction inputs, kept here through idle.
+    compaction: Option<crate::to_compact::Launch>,
     turns_ended: u32,
     /// Text sent while a turn ran, for the turn after it.
     queue: Vec<Queued>,

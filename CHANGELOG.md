@@ -10,6 +10,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Added
 
+- **Delegates' auto-compaction** in Settings → Agents & trust → Helpers sets
+  the token window for Claude Code and the token limit for Codex at each
+  delegate CLI start. The 400,000-token default also applies to existing Luna
+  settings files and overrides the account or project's `autoCompactWindow`
+  or `model_auto_compact_token_limit` for delegates. Claude Code settings-file
+  `env` and managed Codex config can still take precedence. Off leaves
+  compaction to the CLI.
+
 - A pane's context meter tooltip shows an estimate of the tokens the session
   can still take in before its CLI compacts on its own. Luna works it out from
   Claude Code's and Codex's settings for the session's model. The estimate

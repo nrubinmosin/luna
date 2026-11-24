@@ -51,14 +51,19 @@ pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
 /// the turn refuses rather than run without them.
 #[cfg(test)]
 pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleTexts) -> Result<Command, String> {
-    command_and_open(e, id, texts).map(|(command, _)| command)
+    command_and_open(e, id, texts, None).map(|(command, _)| command)
 }
 
 /// `command_with`, and for Codex the request that opens the turn's thread
 /// once its server is up (appserver.rs): `thread/start` with the folder, the
 /// model and the role layers, or `thread/resume` of the thread an earlier
 /// turn started, with the same.
-pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::RoleTexts) -> Result<(Command, Option<Value>), String> {
+pub(super) fn command_and_open(
+    e: &Entry,
+    id: &str,
+    texts: &crate::library::RoleTexts,
+    compact_tokens: Option<u32>,
+) -> Result<(Command, Option<Value>), String> {
     let mut open = None;
     let s = &e.spec;
     let role = role_of(s);
@@ -208,6 +213,11 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             applied.extend(skills_off.map(|why| Item::LibrarySkillsOff.with(why)));
             args.extend(skills.args);
             envs.push(("CLAUDE_CONFIG_DIR", s.account_path.clone()));
+            if let Some(window) = compact_tokens {
+                let key = crate::claude::compact::AUTO_COMPACT_WINDOW_ENV;
+                envs.push((key, window.to_string()));
+                applied.push(Item::DelegateAutoCompaction.with(format!("{key}={window}")));
+            }
             envs.push(("DISABLE_AUTOUPDATER", "1".into()));
             applied.push(Item::NoAutoUpdate.with("DISABLE_AUTOUPDATER=1"));
             // Never inherited: a `0` there turns auto-memory on (`HelperSettings`).
@@ -230,6 +240,13 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // (appserver.rs): the thread is opened and the turn started by
             // requests, not flags, and the turn's text goes in `turn/start`.
             args.push("app-server".into());
+            // Cold resume reloads the server's -c; the saved thread settings
+            // do not carry this limit (Codex 0.171.0).
+            if let Some(limit) = compact_tokens {
+                let value = format!("{}={limit}", crate::codex::config::AUTO_COMPACT_LIMIT_KEY);
+                applied.push(Item::DelegateAutoCompaction.with(format!("-c {value}")));
+                args.extend(["-c".into(), value]);
+            }
             applied.push(Item::HelperHeadless.with("app-server: JSON-RPC on stdio, thread/start or thread/resume, then turn/start"));
             // A conversation resumes, and one not begun starts, where an
             // earlier turn worked if that is still there.
@@ -664,7 +681,7 @@ mod tests {
 
     /// A Codex turn's request that opens its thread (`command_and_open`).
     fn open_of(e: &Entry, id: &str) -> Value {
-        command_and_open(e, id, &crate::library::role_texts(role_of(&e.spec))).unwrap().1.expect("a Codex turn opens its thread")
+        command_and_open(e, id, &crate::library::role_texts(role_of(&e.spec)), None).unwrap().1.expect("a Codex turn opens its thread")
     }
 
     /// The text of a turn's role layers: Claude Code's `CLAUDE.md` in the
@@ -957,7 +974,11 @@ mod tests {
     }
 
     fn turn(e: &Entry, id: &str, r: &Redact) -> Turn {
-        let ((args, dir, envs, applied), open) = command_and_open(e, id, &crate::library::role_texts(role_of(&e.spec))).unwrap();
+        turn_with_compaction(e, id, r, None)
+    }
+
+    fn turn_with_compaction(e: &Entry, id: &str, r: &Redact, tokens: Option<u32>) -> Turn {
+        let ((args, dir, envs, applied), open) = command_and_open(e, id, &crate::library::role_texts(role_of(&e.spec)), tokens).unwrap();
         Redact::assert_shown(&args, &envs, &dir, &applied);
         Redact::assert_probed(e.spec.provider, &args);
         let applied = r.applied(&applied, &envs);
@@ -993,6 +1014,43 @@ mod tests {
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
         Turn { dir: r.text(&dir), envs: r.envs(&envs), settings, mcp, instructions, role, open, args, applied }
+    }
+
+    #[test]
+    fn delegate_auto_compaction_goes_to_every_start_and_resume_and_off_passes_nothing() {
+        const WINDOW: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+        const LIMIT: &str = "model_auto_compact_token_limit";
+        for provider in [Provider::Claude, Provider::Codex] {
+            let id = format!("golden-bg-compact-{}", provider.as_str());
+            let mut e = entry(provider);
+            e.spec.folder = golden::project();
+            if provider == Provider::Claude {
+                e.spec.mode = "default".into();
+            }
+            let r = Redact::for_chat(&id);
+            for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_owned())] {
+                e.session = session;
+                for enabled in [false, true] {
+                    let t = turn_with_compaction(&e, &id, &r, enabled.then_some(400_000));
+                    let env = t.envs.iter().find(|(k, _)| k == WINDOW).map(|(_, v)| v.as_str());
+                    let arg = t.args.windows(2).find(|pair| pair[0] == "-c" && pair[1].starts_with(LIMIT));
+                    let item = t.value(Item::DelegateAutoCompaction.key());
+                    match provider {
+                        Provider::Claude => {
+                            assert_eq!(env, enabled.then_some("400000"));
+                            assert!(arg.is_none());
+                            assert_eq!(item, enabled.then_some("CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000"));
+                        }
+                        Provider::Codex => {
+                            assert_eq!(arg.map(|pair| pair[1].as_str()), enabled.then_some("model_auto_compact_token_limit=400000"));
+                            assert!(env.is_none());
+                            assert!(t.open.as_ref().unwrap()["params"]["config"].get(LIMIT).is_none());
+                            assert_eq!(item, enabled.then_some("-c model_auto_compact_token_limit=400000"));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// A Claude Code turn's arguments up to where a conversation is named.

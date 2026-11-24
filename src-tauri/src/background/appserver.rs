@@ -1201,7 +1201,7 @@ mod tests {
         e.spec.approval = Some("on-request".into());
         e.spec.mode = "workspace-write".into();
         e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
-        let (_, open) = command_and_open(&e, "as-typed", &crate::library::role_texts(role_of(&e.spec))).unwrap();
+        let (_, open) = command_and_open(&e, "as-typed", &crate::library::role_texts(role_of(&e.spec)), None).unwrap();
         let open = open.unwrap();
         assert_eq!(
             (open["params"]["approvalPolicy"].as_str(), open["params"]["sandbox"].as_str()),

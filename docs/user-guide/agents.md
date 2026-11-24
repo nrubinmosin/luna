@@ -59,6 +59,20 @@ can type into it and answer its model's questions with `scope: "all"`
   `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or `PLAN`. Once they are all done and
   it has said nothing, Luna wakes the lead itself, once, and its parent hears
   what came of that, or that it seems stuck.
+- **Delegates' auto-compaction** in Settings → Agents & trust → Helpers
+  sets a value in tokens at each delegate CLI start, including resumes.
+  The default is 400,000. Off leaves compaction to the CLI's own settings.
+  Codex starts a process for each turn. Claude Code can take follow-up turns
+  in the same process, so a change in Luna takes effect at its next CLI
+  start. Claude Code compacts roughly 33,000 tokens below the selected
+  window, which is capped by the model's window. An `env` block in its
+  settings can override Luna's window. Codex's default scope compacts at the
+  smaller of the selected limit and 90% of the model's window. Luna leaves
+  the scope to Codex. The setting applies until a delegate is opened as a chat.
+  When Luna can calculate the estimate, `luna_session_get` gives the
+  delegate's remaining tokens before auto-compaction as `contextToCompact`.
+  After a core restart, the estimate is omitted until the delegate starts
+  its next turn.
 - When a helper or lead ends a turn with nothing of its own running (no job,
   subagent or helper of its own still at it,
   nothing waiting to go into it, a usage or context notice included),
