@@ -1,0 +1,229 @@
+{
+  "conflictingTrust": {
+    "config": {
+      "approval_policy": "on-request",
+      "mcp_servers": {},
+      "features": {
+        "api_key_cyber_access_programs": true,
+        "api_key_model_discovery": true,
+        "auth_elicitation": true,
+        "background_paginated_rollout_migration": false,
+        "codex_apps_mcp_2026_07_28": false,
+        "daybreak_program_propagation": false,
+        "mcp_2026_07_28": false,
+        "mcp_connection_sharing": false,
+        "mcp_lazy_stdio_startup": false,
+        "mcp_shared_repl_cwd": false,
+        "memories": false,
+        "mentions_v2": true,
+        "remote_control": false,
+        "remote_plugin": true,
+        "tool_suggest": true,
+        "windows_sandbox_service": false
+      },
+      "plugins": {}
+    },
+    "layers": [
+      {
+        "name": {
+          "type": "project",
+          "dotCodexFolder": "C:\\Fixture\\primary\\.codex"
+        },
+        "version": "sha256:63b84b7c124589ebfd369abed53bd97e8efcadaa8de7f62ec9f94020a0f6763c",
+        "config": {
+          "model": "repo",
+          "developer_instructions": "repo-instruction",
+          "mcp_servers": {
+            "team.docs": {
+              "url": "https://repo.example.invalid"
+            }
+          },
+          "plugins": {
+            "repo@market": {
+              "enabled": true
+            }
+          }
+        },
+        "disabledReason": "c:\\fixture\\primary is marked as untrusted in the effective configuration. To load project-local config, hooks, and exec policies, update its trust setting. If that setting is managed by your organization, contact your administrator."
+      },
+      {
+        "name": {
+          "type": "user",
+          "file": "C:\\Fixture\\full-config\\config.toml",
+          "profile": null
+        },
+        "version": "sha256:403c30c34046dc5e1211319f792c2fe633a5f0dae75064decdf5af2548e635a6",
+        "config": {
+          "model_auto_compact_token_limit_scope": "body_after_prefix",
+          "model_post_turn_compact_threshold_percent": 53,
+          "approval_policy": "on-request",
+          "sandbox_mode": "read-only",
+          "projects": {
+            "c:\\fixture\\primary": {
+              "trust_level": "untrusted"
+            },
+            "C:\\Fixture\\primary": {
+              "trust_level": "trusted"
+            }
+          }
+        }
+      },
+      {
+        "name": {
+          "type": "system",
+          "file": "C:\\ProgramData\\OpenAI\\Codex\\config.toml"
+        },
+        "version": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "config": {}
+      }
+    ]
+  },
+  "loaded": {
+    "config": {
+      "model": "override",
+      "model_context_window": 50000,
+      "model_auto_compact_token_limit": 12345,
+      "developer_instructions": "inner-instruction",
+      "plugins": {
+        "sample@market": {
+          "enabled": true
+        },
+        "repo@market": {
+          "enabled": true
+        },
+        "inner@market": {
+          "enabled": true
+        }
+      },
+      "mcp_servers": {
+        "team.docs": {
+          "url": "https://inner.example.invalid",
+          "environment_id": "local",
+          "enabled": true,
+          "tool_timeout_sec": 55.0
+        }
+      },
+      "windows": {
+        "sandbox": "unelevated",
+        "allow_mxc": null
+      },
+      "features": {
+        "api_key_cyber_access_programs": true,
+        "api_key_model_discovery": true,
+        "auth_elicitation": true,
+        "background_paginated_rollout_migration": false,
+        "codex_apps_mcp_2026_07_28": false,
+        "daybreak_program_propagation": false,
+        "mcp_2026_07_28": false,
+        "mcp_connection_sharing": false,
+        "mcp_lazy_stdio_startup": false,
+        "mcp_shared_repl_cwd": false,
+        "memories": false,
+        "mentions_v2": true,
+        "remote_control": false,
+        "remote_plugin": true,
+        "tool_suggest": true,
+        "windows_sandbox_service": false
+      }
+    },
+    "layers": [
+      {
+        "name": {
+          "type": "sessionFlags"
+        },
+        "version": "sha256:45dfe4f9a06dba854c20d5089c7adece61a77afc5b92975d3f1e13ebd23aed58",
+        "config": {
+          "model": "override"
+        }
+      },
+      {
+        "name": {
+          "type": "project",
+          "dotCodexFolder": "C:\\Fixture\\primary\\inner\\.codex"
+        },
+        "version": "sha256:b7c7324a3cf6869324f6967a1063fa5535a384cdec0c9c6f5df2c0b66955d438",
+        "config": {
+          "model": "inner",
+          "developer_instructions": "inner-instruction",
+          "mcp_servers": {
+            "team.docs": {
+              "url": "https://inner.example.invalid"
+            }
+          },
+          "plugins": {
+            "inner@market": {
+              "enabled": true
+            }
+          }
+        }
+      },
+      {
+        "name": {
+          "type": "project",
+          "dotCodexFolder": "C:\\Fixture\\primary\\.codex"
+        },
+        "version": "sha256:63b84b7c124589ebfd369abed53bd97e8efcadaa8de7f62ec9f94020a0f6763c",
+        "config": {
+          "model": "repo",
+          "developer_instructions": "repo-instruction",
+          "mcp_servers": {
+            "team.docs": {
+              "url": "https://repo.example.invalid"
+            }
+          },
+          "plugins": {
+            "repo@market": {
+              "enabled": true
+            }
+          }
+        }
+      },
+      {
+        "name": {
+          "type": "user",
+          "file": "C:\\Fixture\\account\\config.toml",
+          "profile": null
+        },
+        "version": "sha256:246d449dcafa8b55a5e10128a36688bfaf46031732edf1fcd33226e9b89c6b6e",
+        "config": {
+          "model": "account",
+          "model_reasoning_effort": "medium",
+          "developer_instructions": "account-instruction",
+          "model_auto_compact_token_limit": 12345,
+          "model_context_window": 50000,
+          "compact_prompt": "literal",
+          "windows": {
+            "sandbox": "unelevated"
+          },
+          "mcp_servers": {
+            "team.docs": {
+              "url": "https://account.example.invalid",
+              "tool_timeout_sec": 55.0
+            }
+          },
+          "plugins": {
+            "sample@market": {
+              "enabled": true
+            }
+          },
+          "projects": {
+            "C:\\Fixture\\primary": {
+              "trust_level": "trusted"
+            },
+            "C:\\Fixture\\other": {
+              "trust_level": "untrusted"
+            }
+          }
+        }
+      },
+      {
+        "name": {
+          "type": "system",
+          "file": "C:\\ProgramData\\OpenAI\\Codex\\config.toml"
+        },
+        "version": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "config": {}
+      }
+    ]
+  }
+}

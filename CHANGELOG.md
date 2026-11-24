@@ -35,6 +35,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - Luna wakes callers for fresh status reports, asks, failures, and one stall
   per task. Interim replies stay readable without starting a caller turn.
+- Codex helpers read their configuration from the turn's own app-server
+  before opening or resuming a thread. The read supplies connector switches,
+  role instructions, and the context meter's compaction inputs. Helpers reset
+  startup and tool visibility options for Luna's MCP server in the thread
+  configuration. A connectors-off helper replaces any inherited Luna MCP
+  header command. If Codex reports that Luna's server failed to start, the
+  helper continues without Luna tools and records the failure in its log.
 
 - The pane meter and session get diagnostics show the share of the CLI's estimated
   auto-compaction limit when known, or the model window otherwise.
@@ -142,6 +149,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Removed
 
+- Luna leaves the MCP server name `luna` to Codex's config merge for chats
+  and helpers. Codex reports any conflict from merging server settings.
+
 - Helper context thresholds, their notice text, and the Settings control.
   `luna_session_spawn` still accepts and ignores `budgetPct` and `budgetTokens`.
 
@@ -203,14 +213,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Luna starts again at sign-in: it is set to, or `luna.log` says why not.
   `luna_power_set`'s description no longer says sleep and hibernate close
   the CLIs; they leave them running.
-- A Codex chat with Luna tools, or a Codex helper given them with
-  `connectors: true`, whose config defines an MCP server named `luna` failed
-  with Codex's own "url is not supported for stdio", or started with Luna's
-  tools silently off where that server said `enabled = false`: Codex merges
-  it into Luna's own server, which goes by that name. Such a start is now
-  refused with a message naming the file, as a helper without connectors
-  already was; rename that server there. A project's `.codex/config.toml`
-  saved as untrusted, which Codex does not load, does not count.
 - A Codex `config.toml` that does not parse is reported by its path, line and
   column, no longer with the line itself quoted, in a refused start and in
   what a start applied alike: the file may be a link to one that is not a

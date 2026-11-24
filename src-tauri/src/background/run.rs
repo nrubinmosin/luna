@@ -215,13 +215,53 @@ pub(super) struct OutReader {
 impl OutReader {
     /// Reads `out` to its end as bytes, handing each line that holds JSON to
     /// `on_event`, which says whether to go on.
-    pub(super) fn read_events(&self, out: impl std::io::Read, mut on_event: impl FnMut(&Value) -> bool) {
-        self.read_lines(out, |line| serde_json::from_slice::<Value>(line).map_or(true, |v| on_event(&v)));
+    #[cfg(test)]
+    pub(super) fn read_events(&self, out: impl std::io::Read, on_event: impl FnMut(&Value) -> bool) {
+        let mut on_event = on_event;
+        self.read_turn_events(out, Provider::Claude, |frame, _| (frame.map_or(true, &mut on_event), false));
+    }
+
+    fn read_turn_events(
+        &self,
+        out: impl std::io::Read,
+        provider: Provider,
+        mut on_frame: impl FnMut(Result<&Value, &str>, std::time::Instant) -> (bool, bool),
+    ) {
+        use crate::codex::snapshot::MAX_FRAME;
+        let bounded = std::cell::Cell::new(provider == Provider::Codex);
+        self.read_bounded_lines(
+            out,
+            || if bounded.get() { MAX_FRAME } else { usize::MAX },
+            |line| {
+                let received = std::time::Instant::now();
+                let mut invalid = |why| on_frame(Err(why), received);
+                let (read_on, validated) = match line {
+                    None => invalid("the app-server's startup frame exceeded 8 MiB"),
+                    Some(line) if bounded.get() && !line.ends_with(b"\n") => {
+                        invalid("the app-server closed stdout with an unterminated startup frame")
+                    }
+                    Some(line) => match serde_json::from_slice::<Value>(line) {
+                        Ok(v) => on_frame(Ok(&v), received),
+                        Err(_) if bounded.get() => invalid("the app-server sent malformed startup JSON"),
+                        Err(_) => return true,
+                    },
+                };
+                if validated {
+                    // A resumed thread can return its full history in one frame.
+                    bounded.set(false);
+                }
+                read_on && line.is_some()
+            },
+        );
     }
 
     /// Reads `out` to its end as bytes, handing each line to `on_line`, which
     /// says whether to go on; the last one too, should it come with no line end.
-    fn read_lines(&self, mut out: impl std::io::Read, mut on_line: impl FnMut(&[u8]) -> bool) {
+    fn read_lines(&self, out: impl std::io::Read, mut on_line: impl FnMut(&[u8]) -> bool) {
+        self.read_bounded_lines(out, || usize::MAX, |line| line.is_none_or(&mut on_line));
+    }
+
+    fn read_bounded_lines(&self, mut out: impl std::io::Read, max: impl Fn() -> usize, mut on_line: impl FnMut(Option<&[u8]>) -> bool) {
         use std::sync::atomic::Ordering::SeqCst;
         let mut buf = vec![0u8; 64 * 1024];
         let mut line = Vec::new();
@@ -234,9 +274,13 @@ impl OutReader {
                 break;
             }
             for chunk in buf[..n].split_inclusive(|b| *b == b'\n') {
+                if line.len().saturating_add(chunk.len()) > max() {
+                    on_line(None);
+                    return;
+                }
                 line.extend_from_slice(chunk);
                 if chunk.last() == Some(&b'\n') {
-                    if !on_line(&line) {
+                    if !on_line(Some(&line)) {
                         return;
                     }
                     line.clear();
@@ -244,7 +288,7 @@ impl OutReader {
             }
         }
         if !line.is_empty() {
-            on_line(&line);
+            on_line(Some(&line));
         }
     }
 
@@ -279,30 +323,35 @@ impl OutReader {
 /// the lock: `turn_over` takes it after the flag is up and the next turn starts
 /// after that, so an event of this turn can land neither after its end nor in
 /// the next one. Whether to go on reading: not once the helper is gone.
+#[cfg(test)]
 fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bool {
+    take_frame(id, provider, reader, Ok(v), std::time::Instant::now()).0
+}
+
+fn take_frame(id: &str, provider: Provider, reader: &OutReader, frame: Result<&Value, &str>, received: std::time::Instant) -> (bool, bool) {
     let mut r = lock();
     if reader.over.load(std::sync::atomic::Ordering::SeqCst) {
-        return true;
+        return (true, false);
     }
-    let Some(e) = r.entries.get_mut(id) else { return false };
+    let Some(e) = r.entries.get_mut(id) else { return (false, false) };
     e.observed.event_ms = crate::throttle::now_ms();
     let unnamed = e.session.is_none();
     let drained = e.drained.len();
     let held = e.held.len();
     let (landed, heard) = match provider {
-        Provider::Claude => (on_claude_event(e, v), Heard::default()),
+        Provider::Claude => (frame.is_ok_and(|v| on_claude_event(e, v)), Heard::default()),
         Provider::Codex => {
-            let heard = on_message(&mut r, id, v);
+            let heard = on_frame(&mut r, id, frame, received);
             (heard.landed, heard)
         }
     };
-    let Some(e) = r.entries.get(id) else { return false };
+    let Some(e) = r.entries.get(id) else { return (false, false) };
     let named = unnamed && e.session.is_some();
     let moved = drained_since(e, drained);
     // An ask of its CLI's, held for the turn this reader's process runs,
     // under this lock (ask.rs `take_ask`); and what it held that its stdin's
     // closing has made unanswerable lets go.
-    if provider == Provider::Claude {
+    if let (Provider::Claude, Ok(v)) = (provider, frame) {
         if let Some((request_id, request)) = permission_request(v) {
             take_ask(&mut r, id, &request_id, &request);
         }
@@ -312,6 +361,12 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     }
     let asks_moved = r.entries.get(id).is_some_and(|e| e.held.len() != held);
     drop(r);
+    if let Some((account, start, compaction)) = heard.compaction {
+        let estimate = crate::codex::compact::at_launch_from_config(id, &account, compaction);
+        if let Some(launch) = lock().entries.get_mut(id).and_then(|e| e.compaction.as_mut()).filter(|launch| launch.start == start) {
+            launch.codex = estimate;
+        }
+    }
     if asks_moved {
         reg().1.notify_all();
         changed();
@@ -343,7 +398,7 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     if named || landed || heard.approval_changed {
         save();
     }
-    true
+    (true, heard.config_validated)
 }
 
 /// The end of a turn's stderr kept, as lines, at most `STDERR_KEPT` bytes of
@@ -356,6 +411,42 @@ fn keep_stderr(kept: &Mutex<String>, line: &[u8]) {
         let cut = (s.len() - STDERR_KEPT..s.len()).find(|&i| s.is_char_boundary(i)).unwrap_or(s.len());
         s.drain(..cut);
     }
+}
+
+fn take_turn_stderr(
+    id: &str,
+    provider: Provider,
+    reader: &OutReader,
+    kept: &Mutex<String>,
+    next_is_secret: &mut bool,
+    line: &[u8],
+) -> bool {
+    let startup = if provider == Provider::Codex {
+        lock().entries.get(id).and_then(|e| {
+            let rpc = e.run.as_ref()?.rpc.as_ref()?;
+            (!rpc.thread_opened || *next_is_secret).then(|| e.spec.token.clone())
+        })
+    } else {
+        None
+    };
+    if let Some(token) = startup {
+        let text = crate::codex::snapshot::without_excerpts(&String::from_utf8_lossy(line));
+        let text = match token.as_deref().filter(|token| !token.is_empty()) {
+            Some(token) => text.replace(token, "<redacted>"),
+            None => text,
+        };
+        let diagnostic = redact_lines(&text, next_is_secret);
+        if !diagnostic.is_empty() {
+            keep_stderr(kept, diagnostic.as_bytes());
+            let mut entries = lock();
+            if let Some(e) = entries.entries.get_mut(id).filter(|_| !reader.over.load(std::sync::atomic::Ordering::SeqCst)) {
+                note(e, &format!("startup stderr: {}", one_line(&diagnostic)));
+            }
+        }
+        return true;
+    }
+    keep_stderr(kept, line);
+    take_stderr(id, reader, line)
 }
 
 const STDERR_KEPT: usize = 4096;
@@ -448,11 +539,15 @@ fn secret_value_at(lower: &str) -> Option<usize> {
 /// so a cut never keeps a value without what named it. Luna gives a helper no
 /// secret it could print (its MCP token goes by environment, F3; it has no
 /// hook URL), so this is for the CLI's own.
-fn redacted(text: &str) -> String {
+pub(super) fn redacted(text: &str) -> String {
+    redact_lines(text, &mut false)
+}
+
+/// Keep the redaction state between lines when the caller reads a stream.
+fn redact_lines(text: &str, next_is_secret: &mut bool) -> String {
     let named = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     let mut lines: Vec<String> = Vec::new();
     // Across lines too: `Bearer` at one's end names the next one's start.
-    let mut next_is_secret = false;
     for line in text.lines() {
         let mut out: Vec<String> = Vec::new();
         for word in line.split_whitespace() {
@@ -460,19 +555,19 @@ fn redacted(text: &str) -> String {
             let bare = lower.trim_matches(|c: char| !c.is_ascii_alphanumeric());
             // `Bearer` names what follows it, whatever came before.
             if bare == "bearer" || lower.ends_with("bearer") {
-                next_is_secret = true;
+                *next_is_secret = true;
                 out.push(word.to_string());
                 continue;
             }
-            if next_is_secret {
-                next_is_secret = false;
+            if *next_is_secret {
+                *next_is_secret = false;
                 out.push("<redacted>".into());
                 continue;
             }
             if let Some(at) = secret_value_at(&lower) {
                 let value = lower[at..].trim_matches(|c: char| !c.is_ascii_alphanumeric());
                 // Its value is the next word: `"token": "…"`, `Authorization: …`.
-                next_is_secret = value.is_empty();
+                *next_is_secret = value.is_empty();
                 out.push(if value.is_empty() { word.to_string() } else { format!("{}<redacted>", &word[..at]) });
                 continue;
             }
@@ -595,8 +690,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // lock (library/folders.rs `session_args`).
     // The helper's account counted as in use from here, as a chat's start
     // counts its own (`library::lay_out_for`).
-    let (account_path, project, role) =
-        lock().entries.get(id).map(|e| (e.spec.account_path.clone(), e.spec.folder.clone(), role_of(&e.spec))).ok_or("no such helper")?;
+    let (account_path, role) = lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec))).ok_or("no such helper")?;
     let reserved = crate::library::lay_out_for("before a helper's turn", &account_path)?;
     // Its role's texts, also off the lock: an override is a file of the
     // person's, read from disk.
@@ -611,7 +705,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         if e.run.as_ref().is_some_and(|run| run.stopped) {
             return Err(STOPPED.into());
         }
-        let ((args, dir, envs, applied), open) = command_and_open(e, id, &texts, compact_tokens)?;
+        let ((args, dir, envs, applied), open) = build_command(e, id, &texts, compact_tokens)?;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
         (
@@ -636,12 +730,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     }
     // Its version directory held until the process has exited (cli.rs `launch`).
     let (exe, on_version) = crate::cli::launch(provider, Some(id))?;
-    let codex_compaction = if provider == Provider::Codex {
-        let trust = crate::codex::trust::override_key(&project);
-        crate::codex::compact::at_launch_with(id, &account, &dir, Some(&trust), compact_tokens)
-    } else {
-        None
-    };
     let mut cmd = std::process::Command::new(exe);
     cmd.args(&args).current_dir(&dir);
     crate::pty::clean_env(&mut cmd);
@@ -693,7 +781,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                     let (helper, on_it) = (id.clone(), reader.clone());
                     let read = std::thread::Builder::new().name(format!("luna-bg-out-{id}")).spawn(move || {
                         let _drained = drained;
-                        on_it.read_events(out, |v| take_event(&helper, provider, &on_it, v));
+                        on_it.read_turn_events(out, provider, |frame, received| take_frame(&helper, provider, &on_it, frame, received));
                     });
                     if let Err(e) = read {
                         crate::log::warn("background", &format!("cannot read what {} says: {e}", crate::agents::label(&id)));
@@ -707,10 +795,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                     let (helper, on_it, kept) = (id.clone(), err_reader.clone(), said.clone());
                     let read = std::thread::Builder::new().name(format!("luna-bg-err-{id}")).spawn(move || {
                         let _drained = err_drained;
-                        on_it.read_lines(err, |line| {
-                            keep_stderr(&kept, line);
-                            take_stderr(&helper, &on_it, line)
-                        });
+                        let mut next_is_secret = false;
+                        on_it.read_lines(err, |line| take_turn_stderr(&helper, provider, &on_it, &kept, &mut next_is_secret, line));
                     });
                     if let Err(e) = read {
                         crate::log::warn("background", &format!("cannot read what {} says on stderr: {e}", crate::agents::label(&id)));
@@ -837,11 +923,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             Some(e) => {
                 let claude = provider == Provider::Claude;
                 let opening_line = line.clone();
-                let rpc = open.map(|open| {
-                    // The Codex command adds this variable with Luna's server.
-                    let luna_supplied = envs.iter().any(|(name, _)| *name == "LUNA_MCP_TOKEN");
-                    Rpc::new(open, on_stdin.clone(), effort, opening_line.clone(), luna_supplied)
-                });
+                let rpc = open.map(|open| Rpc::starting(open, on_stdin.clone(), effort, opening_line.clone()));
                 e.run = Some(Run { feed: Some(feed), rpc, line: claude.then_some(line), ..Run::claimed(pid, started_ms) });
                 e.compaction = Some(crate::to_compact::Launch {
                     provider,
@@ -849,7 +931,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                     folder: dir.clone(),
                     start: started_ms,
                     claude_window: compact_tokens.filter(|_| claude),
-                    codex: codex_compaction,
+                    codex: None,
                 });
                 e.observed.begin_turn();
                 e.error = None;
@@ -903,6 +985,88 @@ pub(super) fn stdin_took(e: &mut Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_startup_stdout_rejects_oversized_malformed_and_unterminated_frames() {
+        use crate::codex::snapshot::MAX_FRAME;
+        let oversized = "x".repeat(MAX_FRAME + 1);
+        for (input, reason) in [
+            (oversized.as_str(), "exceeded 8 MiB"),
+            ("{not-json}\n", "malformed startup JSON"),
+            (r#"{"id":"init","result":{}}"#, "unterminated startup frame"),
+        ] {
+            let mut seen = Vec::new();
+            OutReader::default().read_turn_events(input.as_bytes(), Provider::Codex, |frame, _| {
+                seen.push(frame.unwrap_err().to_owned());
+                (true, false)
+            });
+            assert_eq!(seen.len(), 1);
+            assert!(seen[0].contains(reason), "{seen:?}");
+        }
+    }
+
+    #[test]
+    fn the_helper_caps_config_frames_but_keeps_large_thread_replies() {
+        use crate::codex::snapshot::{MAX_FRAME, READ_ID};
+        let config = format!("{{\"id\":\"{READ_ID}\",\"result\":{{}}}}\n");
+        let large = "x".repeat(MAX_FRAME);
+        let input = format!("{config}{{\"id\":\"open\",\"result\":{{\"history\":\"{large}\"}}}}\n");
+        for validated in [false, true] {
+            let mut seen = Vec::new();
+            OutReader::default().read_turn_events(input.as_bytes(), Provider::Codex, |frame, _| {
+                match frame {
+                    Ok(v) if v["id"] == READ_ID => {
+                        seen.push(READ_ID.to_owned());
+                        return (true, validated);
+                    }
+                    Ok(v) => {
+                        assert_eq!(v["result"]["history"].as_str().unwrap().len(), MAX_FRAME);
+                        seen.push("open".to_owned());
+                    }
+                    Err(why) => seen.push(why.to_owned()),
+                }
+                (true, false)
+            });
+            assert_eq!(seen.len(), 2);
+            assert_eq!(seen[0], READ_ID);
+            if validated {
+                assert_eq!(seen[1], "open");
+            } else {
+                assert!(seen[1].contains("exceeded 8 MiB"));
+            }
+        }
+    }
+
+    #[test]
+    fn startup_stderr_keeps_diagnostics_without_tokens_or_source_excerpts() {
+        let id = "codex-startup-stderr";
+        let mut e = entry(Provider::Codex);
+        e.spec.token = Some("exact-secret".into());
+        let rpc = Rpc::new(Value::Null, String::new(), String::new(), String::new(), false);
+        e.run = Some(Run { rpc: Some(rpc), ..Run::claimed(Some(1), 0) });
+        lock().entries.insert(id.to_owned(), e);
+        let reader = OutReader::default();
+        let kept = Mutex::new(String::new());
+        let mut next_is_secret = false;
+        let mut read = |line: &[u8]| take_turn_stderr(id, Provider::Codex, &reader, &kept, &mut next_is_secret, line);
+        read(b"login rejected: Authorization: Bearer short");
+        read(b"  2 | a private config value");
+        read(b"Authorization: Bearer");
+        read(b"split-secret and exact-secret");
+        let safe = ["login rejected: Authorization: Bearer <redacted>", "Authorization: Bearer", "<redacted> and <redacted>"];
+        assert_eq!(&*kept.lock().unwrap(), &format!("{}\n", safe.join("\n")));
+        {
+            let mut entries = lock();
+            let e = entries.entries.get_mut(id).unwrap();
+            assert_eq!(e.log.iter().cloned().collect::<Vec<_>>(), safe.map(|line| format!("startup stderr: {line}")));
+            let rpc = e.run.as_mut().unwrap().rpc.as_mut().unwrap();
+            rpc.thread_opened = true;
+            rpc.broken = Some("settings mismatch".into());
+        }
+        assert!(read(b"last words after thread open"));
+        assert!(kept.lock().unwrap().ends_with("last words after thread open\n"));
+        lock().entries.remove(id);
+    }
 
     #[test]
     fn the_log_gets_no_hub_secret() {

@@ -60,6 +60,10 @@ pub(crate) fn at_launch(id: &str, account: &str, folder: &str) -> Option<Arc<Sta
 
 pub(crate) fn at_launch_with(id: &str, account: &str, folder: &str, trust: Option<&str>, limit: Option<u32>) -> Option<Arc<Startup>> {
     let config = config::compaction(account, folder, trust, limit).ok()?;
+    at_launch_from_config(id, account, config)
+}
+
+pub(crate) fn at_launch_from_config(id: &str, account: &str, config: Compaction) -> Option<Arc<Startup>> {
     let version = crate::cli::session_version(id);
     Startup::read(config, &account_catalog(account), version.as_deref()).map(Arc::new)
 }

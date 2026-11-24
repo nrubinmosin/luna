@@ -23,19 +23,21 @@ its whole life, and one an account shared by its helpers.
 ## Decision
 
 **One `codex app-server` a turn, per helper** (`background/appserver.rs`,
-`background/run.rs`). A turn starts the server with the `-c` overrides an
-`exec` had (MCP, connectors off, trust, sandbox, the approval its parent
-named), sends `initialize`, then `thread/start` (a first turn: `cwd`,
-`model`, the role layers as `developerInstructions`) or `thread/resume` (the
-same, by the thread's id), then `turn/start` with the text and the effort.
+`background/run.rs`). A turn starts the server with trust, sandbox and approval
+overrides and disables startup plugin maintenance. It sends `initialize`
+and `initialized`, then reads `config/read` with `includeLayers: true` for
+the thread's cwd. The thread request carries Luna's MCP configuration,
+connector switches, and the plugin feature choice from the loaded layers. The request is `thread/start`
+(cwd, model and role layers as `developerInstructions`) or `thread/resume`
+(the same, by thread ID). Then `turn/start` carries the text and effort.
 At `turn/completed` Luna closes stdin and the server goes; the turn ends with
 the process, as every helper turn does. Not one a helper: an idle helper
 would hold a server (memory, the version directory a CLI update or rollback
 needs free) and a process that reads as work in the lifecycle record, and a
 helper's turns would share a crash. Not one an account: Luna's MCP server is
-given per helper, with its own token, by `-c` at the server's start. Every
-turn after the first resumes, so resuming after a core restart is no
-special path.
+given per helper in its thread request, with its own token in the server's
+environment. Every subsequent turn resumes the thread, including after a
+core restart.
 
 **Steer, else queue** (`queue.rs` `write_line`). A `luna_session_send` while
 the turn runs and has an id goes in as `turn/steer` and is delivered when the

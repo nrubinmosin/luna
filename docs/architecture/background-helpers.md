@@ -42,7 +42,9 @@ owed by the person's chats, outlive a core restart.
   command-line limit); or `codex app-server`
   ([ADR-0032](../adr/0032-codex-helpers-on-app-server.md)), spoken to in
   JSON-RPC on its stdio (`appserver.rs`): `initialize`, its reply, the
-  `initialized` notification, then `thread/start`
+  `initialized` notification, then `config/read` with the thread's actual
+  `cwd` and `includeLayers: true`. The process already carries the helper's
+  run-scoped trust override. Luna uses the loaded configuration to prepare `thread/start`
   (the folder as `cwd`, the model, the role layers as
   `developerInstructions`) or `thread/resume` of the thread an earlier turn
   started (the same), then `turn/start` with the prompt and the effort. At
@@ -56,10 +58,13 @@ owed by the person's chats, outlive a core restart.
   start on, whatever stops it (a core's death, a stop, a refused
   `turn/start`). A `thread/resume` refused so, or answered with another
   thread's id, starts a new thread with the turn's text, once.
-- The approval and sandbox Luna passes (named by the parent, or its closed
-  fallback) go typed in `thread/start` and `thread/resume` as well as `-c`:
-  a resumed thread's saved settings win over `-c`, not over these. The
-  server's answer is checked against them (`settings_differ`); a thread that
+- The approval and sandbox Luna passes, including any default pair, go in
+  the startup flags and as typed settings in `thread/start` and
+  `thread/resume`. The thread request also carries connector suppression,
+  Luna's MCP settings, and any Windows sandbox fallback. A replacement
+  thread keeps those settings and drops the missing thread's saved approval
+  exception. Typed settings take precedence over a resumed thread's saved
+  settings. The server's answer is checked against them (`settings_differ`); a thread that
   answers with another approval, reviewer or sandbox does not start its turn
   (fail closed), its error saying which. Luna's own profiles (read-only-net,
   a core deny) are defined by `-c` and named typed as `permissions`, which

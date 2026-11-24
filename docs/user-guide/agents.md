@@ -102,16 +102,13 @@ can type into it and answer its model's questions with `scope: "all"`
   macOS, or macOS MDM config) can turn a helper's memory back on, and Luna
   does not undo that. Codex's cloud config sits below what Luna passes and
   cannot.
-- In a Codex session Luna's own MCP server is named `luna`, and Codex merges a
-  server of that name from its config into Luna's. So a chat with Luna tools,
-  and a helper given them, is not started where the account's `config.toml`,
-  Codex's machine-wide config or a project's `.codex/config.toml` that Codex
-  loads (not one of a folder saved as untrusted) defines an
-  `[mcp_servers.luna]` setting anything Luna's does not replace (a `command`,
-  say, or an `enabled = false` that would keep Luna's tools away), or
-  `/etc/codex/managed_config.toml` defines one at all; the message names the
-  file, and renaming that server there lets it start. A chat can also start
-  without Luna tools.
+- Codex uses `luna` for Luna's MCP server. Luna supplies the URL and
+  bearer-token variable ahead of ordinary account and project settings.
+  Other keys can merge. A configured HTTP header helper can run a local
+  command during MCP setup even with connectors off. A conflicting stdio
+  transport can cause Codex to report a launch error. Organization-managed
+  settings can replace the endpoint or require ChatGPT apps or plugin
+  maintenance to stay enabled.
 - A tool called with an argument it does not take, or of the wrong type, is
   refused with what it does take, rather than run on a default.
 

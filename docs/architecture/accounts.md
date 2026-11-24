@@ -231,9 +231,11 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
 - Codex helper: `background/command.rs` passes
   `-c check_for_update_on_startup=false` to `codex app-server`.
 - Codex on Windows: chats and helpers in `read-only`, `read-only-net`,
-  `workspace-write`, or Codex's own mode get `-c windows.sandbox="unelevated"`
+  `workspace-write`, or Codex's own mode get `windows.sandbox="unelevated"`
   when their account config leaves `windows.sandbox` unset
-  (`codex/launch.rs` `codex_windows_sandbox`, `codex/config.rs` `windows_sandbox_set`).
+  (`codex/launch.rs` `codex_windows_sandbox`). Chats use the file mirror
+  (`codex/config.rs` `windows_sandbox_set`). Helpers take the user layer
+  from the app-server (`codex/snapshot.rs` `own_windows_sandbox`).
 
 ### Copy-on-select, the one setting written
 

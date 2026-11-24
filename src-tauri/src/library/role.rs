@@ -19,7 +19,7 @@
 //! via `--add-dir` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`.
 //!
 //! Codex gets the layers after any `developer_instructions` from its config
-//! stack (codex/config.rs `developer_instructions_in`). A chat gets
+//! stack (codex/config.rs for chats, codex/snapshot.rs for helpers). A chat gets
 //! `-c developer_instructions`, which Codex sends at thread start and after
 //! compaction. If the layers would overflow the command line (32,767 units
 //! on Windows), the value points to a file (`Spill`). A lead or helper gets
