@@ -20,6 +20,7 @@ use crate::agents::spawn::role::settle_role;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 /// How many sessions under a line's top chat may be at work at once, all
 /// generations counted, unless the person sets otherwise
@@ -306,17 +307,17 @@ fn free_first(caller: &str, lines: &crate::background::Lines, at_work: &[String]
 /// one line; one after it was told starts another.
 pub(in crate::agents) fn refused_a_place(r: &mut Registry, caller: &str) {
     let Some(top) = top_chat(r, caller).filter(|top| top != caller) else { return };
-    let p = r.places_refused.entry(top).or_insert_with(|| PlacesRefused { since: now_ms(), ..PlacesRefused::default() });
+    let p = r.places_refused.entry(top).or_insert_with(|| PlacesRefused { since: Instant::now(), who: Vec::new() });
     if !p.who.iter().any(|w| w == caller) {
         p.who.push(caller.to_string());
     }
 }
 
 /// Sessions below a top chat refused a place since it was last told.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(in crate::agents) struct PlacesRefused {
     pub(in crate::agents) who: Vec<String>,
-    pub(in crate::agents) since: u64,
+    pub(in crate::agents) since: Instant,
 }
 
 impl PlacesRefused {

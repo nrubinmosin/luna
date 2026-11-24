@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// Whether a rule is held up: by an active session (`Life::active`, not known
 /// included), or by an agent's call that may yet start one.
 fn held_up(st: &State, summary: &Summary) -> bool {
-    summary.busy > 0 || st.admitted > 0 || crate::agents::places_pending(&summary.sessions, now_ms())
+    summary.busy > 0 || st.admitted > 0 || crate::agents::places_pending(&summary.sessions)
 }
 
 /// The last activity a board says, a board made before any read being no

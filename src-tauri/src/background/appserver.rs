@@ -1266,9 +1266,11 @@ mod tests {
         let e = &r.entries[id];
         assert_eq!(e.fed, ["PINEAPPLE"], "the server took it; the model has not read it yet");
         drop(r);
+        assert_eq!(delivery_turn(id, "steered"), None);
         // As 0.169.0 says it once the model has (seen live with clientUserMessageId).
         let read = json!({ "method": "item/started", "params": { "item": { "type": "userMessage", "id": "u", "clientId": "steered" } } });
         assert!(hear(id, &read).landed);
+        assert!(delivery_turn(id, "steered").is_some());
         let r = lock();
         let e = &r.entries[id];
         assert!(e.fed.is_empty(), "its userMessage item: the model's now");

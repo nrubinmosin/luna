@@ -363,6 +363,10 @@ pub fn delivery_lost(id: &str, qid: &str) -> bool {
 /// What never reached it that `caller` is to hear of (`Entry::undelivered`):
 /// what it sent, and for its parent what no session did.
 pub fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
+    undelivered_snapshot(id, caller, parent).into_iter().map(|(_, text)| text).collect()
+}
+
+pub fn undelivered_snapshot(id: &str, caller: &str, parent: bool) -> Vec<(String, String)> {
     let mine = |q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller);
     let told = |q: &Queued| {
         if q.maybe_reached {
@@ -371,7 +375,7 @@ pub fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
             q.text.clone()
         }
     };
-    lock().entries.get(id).map(|e| e.undelivered.iter().filter(|q| mine(q)).map(told).collect()).unwrap_or_default()
+    lock().entries.get(id).map(|e| e.undelivered.iter().filter(|q| mine(q)).map(|q| (q.id.clone(), told(q))).collect()).unwrap_or_default()
 }
 
 /// Snapshot the identities of losses of which this caller can be told.

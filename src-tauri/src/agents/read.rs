@@ -371,14 +371,14 @@ pub fn read(
         });
     // Ahead of the hand-over, which takes it off. With an answer still to come
     // it stays for the notice; with none owed this read is all that tells it.
-    let undelivered = undelivered_note(caller, id);
+    let (undelivered, lost_ids) = undelivered_note(caller, id);
     let (background_stopped, said) = background_stopped_note(caller, id);
     let lost = undelivered.is_some() && lost_whole(caller, id);
     if lost || settles || (undelivered.is_some() && owed.is_none()) {
         let count = if lost { lost_count(caller, id) } else { turns_ended };
         let scope = owed.map(|o| AnswerScope::read(caller, id, o, known.provider, count, Some(cursor)));
         transcript_path(pty, id);
-        if let Some(undo) = hand_over_scope(caller, id, count, None, scope, said) {
+        if let Some(undo) = hand_over_scope(caller, id, count, None, scope, lost_ids, said) {
             call.commit(undo);
         }
     } else {
@@ -531,7 +531,7 @@ pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &
     // its place since the look above stays owed.
     if let Some(scope) = scope {
         transcript_path(crate::pty::manager(), id);
-        if let Some(undo) = hand_over_scope(caller, id, turns_ended, None, Some(scope), said) {
+        if let Some(undo) = hand_over_scope(caller, id, turns_ended, None, Some(scope), Vec::new(), said) {
             reading.acked = call.commit(undo);
         }
     }

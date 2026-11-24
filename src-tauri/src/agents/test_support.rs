@@ -161,7 +161,8 @@ pub(crate) fn notifier_tick_for_test(caller: &str) {
 }
 
 pub(crate) fn expire_refusal_for_test(caller: &str) {
-    reg().lock().unwrap().places_refused.get_mut(caller).unwrap().since = now_ms().saturating_sub(10 * 60 * 1000);
+    reg().lock().unwrap().places_refused.get_mut(caller).unwrap().since =
+        std::time::Instant::now() - std::time::Duration::from_secs(10 * 60);
 }
 
 pub(crate) fn refusal_for_power_test(lead: &str) {

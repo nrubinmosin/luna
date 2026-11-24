@@ -17,7 +17,7 @@ use crate::agents::notifier::system::SystemNews;
 use crate::agents::notifier::usage::{quota_file, quota_from, quota_news, save_quota_told, your_helper, QuotaNews};
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
-use crate::agents::registry::{chat_name, is_dev, is_persons_chat, label, parent_of, reg, waits_on_helpers, Known, Registry};
+use crate::agents::registry::{chat_name, is_dev, is_persons_chat, label, reg, waits_on_helpers, Known, Registry};
 use crate::agents::said::{Request, Status};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::spawn::PlacesRefused;
@@ -276,14 +276,14 @@ fn can_take_refusal(pty: &crate::pty::PtyManager, caller: &str) -> bool {
         && (!pty.has_draft(caller) || puts_draft_aside(pty.provider(caller)))
 }
 
-pub(crate) fn places_pending(sessions: &[crate::activity::SessionLife], now: u64) -> bool {
+pub(crate) fn places_pending(sessions: &[crate::activity::SessionLife]) -> bool {
     let pending: Vec<_> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         sessions
             .iter()
             .filter_map(|s| {
                 let p = r.places_refused.get(&s.id)?;
-                (now.saturating_sub(p.since) < RIDE_MAX_MS && refusal_has_chat(&r, &s.id, p)).then_some(s.id.as_str())
+                (p.since.elapsed() < Duration::from_millis(RIDE_MAX_MS) && refusal_has_chat(&r, &s.id, p)).then_some(s.id.as_str())
             })
             .collect()
     };
@@ -541,6 +541,7 @@ fn notify_once(
         let mut lines = Vec::new();
         let mut settled = Vec::new();
         let mut riders = Vec::new();
+        let mut lost = HashMap::new();
         for (id, k, o, who) in &items {
             if held_for_wait(pty, &caller, id, o) {
                 continue;
@@ -568,6 +569,12 @@ fn notify_once(
             };
             match said {
                 Some((Some(mut line), how)) => {
+                    if matches!(how, Settled::Failed | Settled::FailedRequests(..))
+                        && (line.contains(" Not delivered:") || line.contains("never got started"))
+                    {
+                        let parent = k.parent.as_deref() == Some(&caller);
+                        lost.insert(id.clone(), (crate::background::undelivered_ids(id, &caller, parent), parent));
+                    }
                     if let Some(suffix) = breaker_suffix(&caller, id, &how, now_ms()) {
                         line.push_str(suffix);
                     }
@@ -594,7 +601,7 @@ fn notify_once(
         let refused = places.remove(&caller).filter(|_| can_take_refusal(pty, &caller));
         let otherwise_owed = refused.is_some()
             && reg().lock().unwrap_or_else(|e| e.into_inner()).owed.iter().any(|((to, _), o)| *to == caller && o.active());
-        let refusal_age = refused.as_ref().map(|p| now_ms().saturating_sub(p.since));
+        let refusal_age = refused.as_ref().map(|p| p.since.elapsed().as_millis() as u64);
         if riders_go(!lines.is_empty(), otherwise_owed, refusal_age) {
             if let Some(line) = refused.map(|p| p.line()) {
                 lines.push(line.clone());
@@ -637,7 +644,7 @@ fn notify_once(
         let Some(typing) = TypingInto::claim(&caller) else { continue };
         idle_looks.insert(caller.clone(), 0);
         let text = format!("{NOTICE_TAG} {}", lines.join(" "));
-        let notice = Notice { settled, quota_lines, spawn_lines, news_lines, system_news, held_for };
+        let notice = Notice { settled, quota_lines, spawn_lines, news_lines, system_news, held_for, lost };
         deliver(typing, caller, text, notice);
     }
 }
@@ -838,6 +845,8 @@ struct Notice {
     /// How long it waited for company (`hold_for_company`), for the log: what
     /// a wider window of batching would have saved is read off there.
     held_for: Option<Duration>,
+    /// Queue IDs of undelivered messages mentioned by each line.
+    lost: HashMap<String, (Vec<String>, bool)>,
 }
 
 /// The name of what became of a session, for the log line of the notice that
@@ -866,7 +875,7 @@ fn kind_of(how: &Settled) -> &'static str {
 
 /// Types a notice into `caller` and settles what it said (`Notice`).
 fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice: Notice) {
-    let Notice { settled, quota_lines, spawn_lines, news_lines, system_news, held_for } = notice;
+    let Notice { settled, quota_lines, spawn_lines, news_lines, system_news, held_for, lost } = notice;
     let before = crate::activity::turn_state(caller);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     // Again here, where it goes in, and held from this check until it is in
@@ -882,19 +891,6 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
         crate::log::info("agents", &format!("notice to {} not typed: what it told of changed as it was about to go in", label(caller)));
         return;
     };
-    // Match losses by the queue ids present before typing, since another
-    // request can fail before the terminal confirms the notice.
-    let lost: HashMap<_, _> = settled
-        .iter()
-        .filter(|(_, how, _)| {
-            matches!(how, Settled::Failed | Settled::FailedRequests(..))
-                && (text.contains(" Not delivered:") || text.contains("never got started"))
-        })
-        .map(|(id, _, _)| {
-            let parent = parent_of(id).as_deref() == Some(caller);
-            (id.clone(), (crate::background::undelivered_ids(id, caller, parent), parent))
-        })
-        .collect();
     #[cfg(test)]
     tests::between_check_and_typing(caller);
     if !system_news.is_empty() && !system::still_due(pty, caller, &system_news) {
@@ -1319,7 +1315,7 @@ mod tests {
     use super::*;
     use crate::agents::notifier::lines::{notice_line, BACKGROUND_GRACE_MS, QUIET_TURN_MS};
     use crate::agents::owed::{owe_from, retried, Owed};
-    use crate::agents::registry::{reg, register};
+    use crate::agents::registry::{parent_of, reg, register};
     use crate::agents::teardown::forget;
     use crate::agents::test_support::job_over_helper;
     use crate::agents::wait::{Reserved, WaitOut};
@@ -1683,12 +1679,34 @@ mod tests {
             got
         };
         assert!(draft().is_none());
-        reg().lock().unwrap().places_refused.get_mut(top).unwrap().since = now_ms() - RIDE_MAX_MS;
+        reg().lock().unwrap().places_refused.get_mut(top).unwrap().since = Instant::now() - Duration::from_millis(RIDE_MAX_MS);
         assert!(draft().unwrap().contains("No place was left"));
         for id in [lead, top] {
             forget(id);
             crate::background::gone_for_test(id);
         }
+    }
+
+    #[test]
+    fn a_restart_notice_blocked_by_a_draft_is_cleared_once() {
+        let (caller, id) = ("resumed-draft-caller", "resumed-draft-helper");
+        register(caller, Provider::Codex, ".", "acc", None, true, serde_json::json!({}));
+        register(id, Provider::Claude, ".", "acc", Some(caller), true, serde_json::json!({"background":true}));
+        let terminal = crate::pty::notice_terminal(caller, Provider::Codex, true);
+        crate::background::idle_for_test(id, Provider::Claude, 0, false);
+        owe_from(caller, id, 0, 0);
+        let key = (caller.into(), id.into());
+        reg().lock().unwrap().owed.get_mut(&key).unwrap().resumed = true;
+        tick_for_test(caller);
+        let o = reg().lock().unwrap().owed[&key];
+        assert!(o.active() && !o.resumed, "keep the unfinished request");
+        crate::pty::manager().set_draft(caller, 0);
+        tick_for_test(caller);
+        assert!(terminal.input.try_recv().is_err());
+        crate::background::gone_for_test(id);
+        forget(id);
+        forget(caller);
+        crate::activity::forget(caller);
     }
 
     #[test]

@@ -136,6 +136,8 @@ pub struct Waited {
     pub(super) job_debt: Option<u64>,
     #[serde(skip)]
     scope: Option<AnswerScope>,
+    #[serde(skip)]
+    lost: Vec<String>,
 }
 
 /// The outcome of a session in a `wait_many` that is out of the caller's reach
@@ -163,6 +165,7 @@ impl Waited {
             said: Vec::new(),
             job_debt: None,
             scope: None,
+            lost: Vec::new(),
         }
     }
 }
@@ -264,6 +267,7 @@ fn wait_for(
                     said: Vec::new(),
                     job_debt: None,
                     scope: None,
+                    lost: Vec::new(),
                 },
                 false,
             ));
@@ -442,7 +446,7 @@ fn wait_for(
             let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some() || halted.is_some());
             let screen = (outcome == "waiting" || bare).then(|| screen_of(pty, id)).flatten();
             // Ahead of the hand-over, which takes it off.
-            let undelivered = if answers { undelivered_note(caller, id) } else { None };
+            let (undelivered, lost) = if answers { undelivered_note(caller, id) } else { (None, Vec::new()) };
             let (background_stopped, said) = if answers { background_stopped_note(caller, id) } else { (None, Vec::new()) };
             let job_debt = told_debt.filter(|_| outcome == "job_done");
             let scope = sampled
@@ -453,7 +457,7 @@ fn wait_for(
                 // Nothing was handed over: whatever is owed stays owed.
                 looked(id);
             } else if alone {
-                if let Some(undo) = hand_over_scope(caller, id, turns_ended, job_debt, scope.clone(), said.clone()) {
+                if let Some(undo) = hand_over_scope(caller, id, turns_ended, job_debt, scope.clone(), lost.clone(), said.clone()) {
                     if !call.commit(undo) {
                         return gone_err();
                     }
@@ -477,6 +481,7 @@ fn wait_for(
                     said,
                     job_debt,
                     scope,
+                    lost,
                 },
                 answers,
             ));
@@ -504,6 +509,7 @@ fn wait_for(
                     said: Vec::new(),
                     job_debt: None,
                     scope: None,
+                    lost: Vec::new(),
                 },
                 false,
             ));
@@ -644,7 +650,7 @@ pub fn wait_many(
             let waited = match r {
                 Some(Ok((w, answered))) => {
                     if answered {
-                        answers.push((id.to_string(), w.turns_ended, w.job_debt, w.scope.clone(), w.said.clone()));
+                        answers.push((id.to_string(), w.turns_ended, w.job_debt, w.scope.clone(), w.lost.clone(), w.said.clone()));
                     }
                     w
                 }
@@ -675,6 +681,7 @@ pub fn wait_many(
                         said: Vec::new(),
                         job_debt: None,
                         scope: None,
+                        lost: Vec::new(),
                     }
                 }
             };
@@ -692,9 +699,9 @@ pub fn wait_many(
     // recorded while the others were waited on is still to be said.
     let undo: Vec<_> = answers
         .into_iter()
-        .filter_map(|(id, turns_ended, job_debt, scope, said)| {
+        .filter_map(|(id, turns_ended, job_debt, scope, lost, said)| {
             transcript_path(crate::pty::manager(), &id);
-            hand_over_scope(caller, &id, turns_ended, job_debt, scope, said)
+            hand_over_scope(caller, &id, turns_ended, job_debt, scope, lost, said)
         })
         .collect();
     if !call.commit(move || undo.into_iter().for_each(|u| u())) {
@@ -1133,6 +1140,7 @@ mod tests {
             said: Vec::new(),
             job_debt: None,
             scope: None,
+            lost: Vec::new(),
         };
         // One report past the limit: cut, and the cut names a file with all of it.
         let long = "R".repeat(MAX_TEXT + 100);
@@ -1185,6 +1193,7 @@ mod tests {
                 said: Vec::new(),
                 job_debt: None,
                 scope: None,
+                lost: Vec::new(),
             },
         };
         let mut results = [

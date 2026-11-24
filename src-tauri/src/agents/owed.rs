@@ -2,7 +2,7 @@
 //! turn that answers it (`Owed`), until a tool response shows it one past the
 //! question (`shown`, `hand_over`) or a notice tells it.
 
-use crate::agents::lost::{put_undelivered_back, take_undelivered};
+use crate::agents::lost::{put_undelivered_back, take_undelivered_ids};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{is_descendant, is_dev, parent_of, reg, stands, waits_on_helpers_in, Registry};
 use crate::agents::said::{replies_since, request_head, Request, Status};
@@ -364,9 +364,10 @@ pub(super) fn hand_over_scope(
     ended: u32,
     job_debt: Option<u64>,
     scope: Option<AnswerScope>,
+    lost: Vec<String>,
     said: Vec<u32>,
 ) -> Option<impl FnOnce() + Send + 'static> {
-    hand_over_of(caller, id, ended, job_debt, Some(scope), said)
+    hand_over_of(caller, id, ended, job_debt, Some((scope, lost)), said)
 }
 
 /// The latest answer handed over to a caller about a session (`hand_over`).
@@ -417,20 +418,31 @@ fn hand_over_of(
     id: &str,
     turns_ended: u32,
     job_debt: Option<u64>,
-    expected: Option<Option<AnswerScope>>,
+    expected: Option<(Option<AnswerScope>, Vec<String>)>,
     said: Vec<u32>,
 ) -> Option<impl FnOnce() + Send + 'static> {
     let key = (caller.to_string(), id.to_string());
+    let (scope, lost) = expected.map_or((None, None), |(scope, lost)| (Some(scope), Some(lost)));
     let (taken, seen_before, receipt, goes_on, stop, partial) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let current = r.owed.get(&key).copied();
         let mut partial = None;
-        if let Some(expected) = expected {
-            match (expected, current) {
+        if let Some(scope) = scope {
+            match (scope, current) {
                 (None, None) => {}
-                (Some(scope), Some(now))
+                (Some(mut scope), Some(now))
                     if scope.debt.transcript_rev == now.transcript_rev && scope.debt.delivery_rev == now.delivery_rev =>
                 {
+                    if let Some(lost) = &lost {
+                        if let Some(qs) = r.requests.get(&key) {
+                            scope.covered.extend(
+                                qs.open
+                                    .iter()
+                                    .filter(|q| q.n <= scope.debt.upto && q.delivery.as_ref().is_some_and(|id| lost.contains(id)))
+                                    .map(|q| q.n),
+                            );
+                        }
+                    }
                     let uncovered = r.requests.get(&key).is_some_and(|qs| qs.open.iter().any(|q| !scope.covered.contains(&q.n)));
                     if now.rev != scope.debt.rev || uncovered {
                         let matches = r.requests.get(&key).is_some_and(|qs| qs.open.iter().any(|q| scope.covered.contains(&q.n)));
@@ -486,13 +498,11 @@ fn hand_over_of(
     // What never reached it goes with this response alone: any later one no
     // longer finds it, so the receipt below says nothing of it.
     let parent = parent_of(id).as_deref() == Some(caller);
-    let taken = partial.is_none().then(|| take_undelivered(id, caller, parent));
+    let taken = take_undelivered_ids(id, caller, parent, lost.as_deref());
     let stop_told = stop.map(|owed| crate::background::losses_told(id, caller, &said, &owed)).unwrap_or_default();
     let id = id.to_string();
     Some(move || {
-        if let Some(taken) = taken {
-            put_undelivered_back(&id, taken);
-        }
+        put_undelivered_back(&id, taken);
         // Whatever the receipt below says: a later reply found the caller told
         // and did not say it again.
         crate::background::losses_untold(&id, &key.0, &stop_told);
