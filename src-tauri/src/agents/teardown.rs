@@ -169,6 +169,8 @@ fn remove(id: &str, known: Known, _held: &crate::background::DeleteClaim) -> Res
 /// with whatever work is in it.
 pub(super) fn reap(pty: &crate::pty::PtyManager) {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.keys().cloned().collect();
+    #[cfg(test)]
+    let ids = ids.into_iter().filter(|id| crate::agents::sweep_includes(id)).collect();
     reap_these(pty, ids);
 }
 
@@ -353,11 +355,10 @@ mod tests {
     use crate::agents::persist::{ties_of, Ties};
     use crate::agents::registry::{authorize, authorize_view, descendants, parent_of, reg, register};
     use crate::provider::Provider;
-    use std::sync::Mutex;
 
     #[test]
     fn an_auto_delete_helper_counts_idle_only_once_its_answer_is_out() {
-        let _reaping = reaps_to_myself();
+        let _sweep = crate::agents::test_support::sweep_only(&["ad-child"]);
         let none = serde_json::json!({});
         register("ad-parent", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
         register("ad-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ad-parent"), false, none);
@@ -381,7 +382,7 @@ mod tests {
     /// has gone, and then goes as any idle one does.
     #[test]
     fn an_auto_delete_helper_stays_while_what_it_left_is_there() {
-        let _reaping = reaps_to_myself();
+        let _sweep = crate::agents::test_support::sweep_only(&["ai-s"]);
         register("ai-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         register(
             "ai-s",
@@ -409,7 +410,7 @@ mod tests {
 
     #[test]
     fn a_helper_with_helpers_or_answers_to_come_is_not_auto_deleted() {
-        let _reaping = reaps_to_myself();
+        let _sweep = crate::agents::test_support::sweep_only(&["rq-mid"]);
         let none = serde_json::json!({});
         register("rq-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
         register("rq-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rq-top"), true, none.clone());
@@ -498,13 +499,6 @@ mod tests {
         crate::background::gone_for_test("ks-s");
         forget("ks-s");
         forget("ks-c");
-    }
-
-    /// `reap` goes over every `autoDelete` helper there is, a test's or not, and in
-    /// Luna it has one caller: two at once would both delete one.
-    fn reaps_to_myself() -> std::sync::MutexGuard<'static, ()> {
-        static ONE: Mutex<()> = Mutex::new(());
-        ONE.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// A helper the person is opening as a chat is theirs to be: its parent can

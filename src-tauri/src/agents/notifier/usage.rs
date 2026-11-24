@@ -145,12 +145,22 @@ pub(in crate::agents) fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<Str
     // Older cores also told leads. Keep unknown IDs in case a chat has yet to
     // register, but drop rows for known delegates.
     let mut told = std::mem::take(&mut r.quota_told);
-    told.retain(|(caller, ..), _| !r.known.contains_key(caller) || persons_chat_in(&r, caller));
+    told.retain(|(caller, ..), _| {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(caller) {
+            return true;
+        }
+        !r.known.contains_key(caller) || persons_chat_in(&r, caller)
+    });
     r.quota_told = told;
     let mut pairs: Vec<&(String, String)> = live_ones.iter().collect();
     pairs.sort();
     pairs.dedup();
     for (caller, account) in pairs {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(caller) {
+            continue;
+        }
         for (label, pct, resets_at) in windows.get(account).into_iter().flatten() {
             let key = (caller.clone(), account.clone(), label.clone());
             let (level, say) = quota_step(r.quota_told.get(&key), *pct, resets_at.as_deref(), now);
@@ -219,6 +229,7 @@ mod tests {
 
     #[test]
     fn only_the_top_chat_hears_quota_for_live_delegates_at_every_depth() {
+        let _sweep = crate::agents::test_support::sweep_only(&["qn-top", "qn-mid", "qn-lead", "qn-low", "qn-peer", "qn-dead"]);
         let none = serde_json::json!({});
         let bg = serde_json::json!({ "background": true });
         let acc = "C:/acc/anthropic/qn-hot";

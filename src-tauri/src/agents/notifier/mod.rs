@@ -347,6 +347,10 @@ fn notify_once(
         let Registry { owed, known, names, .. } = &mut *r;
         let up_ms = core_up_ms();
         owed.retain(|(caller, id), _| {
+            #[cfg(test)]
+            if !crate::agents::sweep_includes(caller) {
+                return true;
+            }
             let stands = owed_stands(known, caller, id, up_ms);
             if !stands && known.contains_key(id) {
                 gave_up.push((caller.clone(), id.clone()));
@@ -354,6 +358,10 @@ fn notify_once(
             stands
         });
         for ((caller, id), o) in owed.iter() {
+            #[cfg(test)]
+            if !crate::agents::sweep_includes(caller) {
+                continue;
+            }
             let Some(k) = known.get(id) else { continue };
             if known.get(caller).is_none_or(|k| k.waiting) {
                 continue;
@@ -402,12 +410,20 @@ fn notify_once(
         // The dev caller has no terminal to be told in: the log has its lines,
         // as it has its spawns' (`spawn_news`).
         queued.retain(|(caller, line)| {
+            #[cfg(test)]
+            if !crate::agents::sweep_includes(caller) {
+                return true;
+            }
             if is_dev(caller) {
                 crate::log::warn("agents", &format!("{caller} is not there to be told: {line}"));
             }
             !is_dev(caller) && (known.contains_key(caller) || up_ms < CALLER_RETURN_MS)
         });
         for (caller, line) in queued.iter().filter(|(caller, _)| known.get(caller).is_some_and(|k| !k.waiting)) {
+            #[cfg(test)]
+            if !crate::agents::sweep_includes(caller) {
+                continue;
+            }
             news.entry(caller.clone()).or_default().push(line.clone());
         }
     }
@@ -428,7 +444,13 @@ fn notify_once(
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         r.places_refused
             .iter()
-            .filter(|(caller, _)| r.known.get(*caller).is_some_and(|k| k.is_persons_chat() && !k.waiting))
+            .filter(|(caller, _)| {
+                #[cfg(test)]
+                if !crate::agents::sweep_includes(caller) {
+                    return false;
+                }
+                r.known.get(*caller).is_some_and(|k| k.is_persons_chat() && !k.waiting)
+            })
             .map(|(caller, p)| (caller.clone(), p.clone()))
             .collect()
     };
@@ -437,7 +459,13 @@ fn notify_once(
     }
     idle_looks.retain(|c, _| by_caller.contains_key(c));
     company_since.retain(|c, _| by_caller.contains_key(c));
-    reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.retain(|c, _| by_caller.contains_key(c));
+    reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.retain(|c, _| {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(c) {
+            return true;
+        }
+        by_caller.contains_key(c)
+    });
     for (caller, items) in by_caller {
         if notice_waits(&caller) {
             idle_looks.insert(caller, 0);
@@ -1331,6 +1359,7 @@ mod tests {
         let bg = serde_json::json!({ "background": true });
         let account = "C:/acc/anthropic/one";
         let (top, lead, id) = ("bt-top", "bt-inner", "bt-helper");
+        let _sweep = crate::agents::test_support::sweep_only(&[top, lead, id, "bt-lead"]);
         register("bt-lead", Provider::Claude, "C:/p", account, Some("bt-top"), true, bg.clone());
         register(lead, Provider::Claude, "C:/p", account, Some("bt-lead"), true, bg.clone());
         register(id, Provider::Claude, "C:/p", account, Some(lead), false, bg);
@@ -1398,6 +1427,7 @@ mod tests {
     #[test]
     fn system_news_built_before_a_handover_goes_to_the_new_top_chat() {
         let (chat, lead, helper) = ("ns-old-top", "ns-new-top", "ns-helper");
+        let _sweep = crate::agents::test_support::sweep_only(&[chat, lead, helper]);
         let account = "C:/acc/anthropic/one";
         register(chat, Provider::Claude, "C:/p", account, None, true, serde_json::json!({}));
         let bg = serde_json::json!({ "background": true });

@@ -944,6 +944,10 @@ pub fn take_up_spawns() {
             .collect()
     };
     for (request, caller, id) in due {
+        #[cfg(test)]
+        if !crate::agents::sweep_includes(&caller) {
+            continue;
+        }
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let Some(spawn) = r.spawns.get_mut(&request) else { continue };
         spawn.owed_placed = true;
@@ -969,7 +973,7 @@ mod tests {
     use crate::agents::said::{first_words, TASK_CHARS};
     use crate::agents::spawn::SpawnTaken;
     use crate::agents::teardown::forget;
-    use crate::agents::test_support::{owed_chat, spawn_taken, spawns_to_myself, take_up};
+    use crate::agents::test_support::{owed_chat, spawn_taken, sweep_only, take_up};
     use std::collections::HashMap;
 
     /// Of two saves at once, the one that took its snapshot later writes
@@ -1745,6 +1749,7 @@ mod tests {
 
     #[test]
     fn text_held_across_a_core_waits_for_the_chat_to_come_back() {
+        let _sweep = sweep_only(&["ho-chat"]);
         take_up(
             vec![owed_chat("ho-chat", "ho-parent", 3, 40)],
             vec![SavedSend { caller: "ho-parent".into(), id: "ho-chat".into(), text: "and this".into(), going_in: None }],
@@ -1760,7 +1765,7 @@ mod tests {
 
     #[test]
     fn a_helper_a_later_core_finds_done_is_not_owed_again() {
-        let _one = spawns_to_myself();
+        let _sweep = sweep_only(&["fd-caller"]);
         register("fd-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         let bg = serde_json::json!({ "background": true });
         // The same spawn as a third core finds it: under the second the helper went on,
