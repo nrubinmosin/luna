@@ -140,6 +140,8 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     r.answered.retain(|(_, s), _| s != id);
     r.notice_times.retain(|(_, s), _| s != id);
     r.stopped.retain(|(_, s), _| s != id);
+    r.failures_told.retain(|(_, s), _| s != id);
+    r.held_failures.retain(|(_, s), _| s != id);
     r.system_news.retain(|n| !n.about(id));
     // What only a helper has: nothing deletes it now but the person.
     r.auto.remove(id);
@@ -482,13 +484,24 @@ mod tests {
             register(&parent, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
             register(&peer, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none);
             helper(&id, &parent, provider);
+            let key = (peer.clone(), id.clone());
+            {
+                let mut r = reg().lock().unwrap();
+                r.stopped.insert(key.clone(), 0);
+                r.failures_told.insert(key.clone(), 0);
+                r.held_failures.insert(key.clone(), (1, "A held error".into()));
+            }
             crate::background::idle_for_test(&id, provider, 1, false);
             crate::background::background_promote(id.clone()).unwrap();
             assert_eq!(crate::background::background_promoted(id.clone(), None), Ok(true));
             // The person's chat goes on: another session asks it something.
             owe_from(&peer, &id, 2, 0);
             assert_eq!(crate::background::background_promoted(id.clone(), None), Ok(true), "the retry is answered as the first");
-            assert!(reg().lock().unwrap().owed.contains_key(&(peer.clone(), id.clone())), "what it is owed since stands");
+            {
+                let r = reg().lock().unwrap();
+                assert!(r.owed.contains_key(&key), "what it is owed since stands");
+                assert!(!r.stopped.contains_key(&key) && !r.failures_told.contains_key(&key) && !r.held_failures.contains_key(&key));
+            }
             assert_eq!(handovers_of(&id), 1);
             assert_eq!(news_for(&parent).len(), 1, "told once");
             reg().lock().unwrap().news.retain(|(c, _)| *c != parent);

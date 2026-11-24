@@ -10,8 +10,7 @@ use crate::agents::ask::live;
 use crate::agents::delivery::{puts_draft_aside, still_starting, type_text, TypingInto};
 use crate::agents::lost::take_undelivered_ids;
 use crate::agents::notifier::lines::{
-    count_notice, is_wake, last_notice, notice_turn, pair_stopped, render_notice, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
-    BREAKER_WINDOW_MS,
+    count_notice, is_wake, last_notice, notice_turn, pair_stopped, render_notice, BACKGROUND_GRACE_MS, BREAKER_NOTICES, BREAKER_WINDOW_MS,
 };
 use crate::agents::notifier::system::SystemNews;
 use crate::agents::notifier::usage::{quota_file, quota_from, quota_news, save_quota_told, your_helper, QuotaNews};
@@ -205,6 +204,9 @@ pub(super) fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str
             return false;
         }
     }
+    if pair_stopped(pty, caller, id) {
+        return true;
+    }
     let ts = crate::activity::turn_state(id);
     let turn = ts.map(|t| t.turn);
     let alive = live(pty, id);
@@ -251,13 +253,15 @@ pub(super) fn owed_stands(known: &HashMap<String, Known>, caller: &str, id: &str
 fn prune_owed(
     owed: &mut HashMap<(String, String), Owed>,
     known: &HashMap<String, Known>,
+    stopped: &HashMap<(String, String), u64>,
     up_ms: u64,
     now: u64,
     caller_in_scope: impl Fn(&str) -> bool,
 ) -> Vec<(String, String)> {
     let mut unreachable = Vec::new();
-    owed.retain(|(caller, id), o| {
-        if !caller_in_scope(caller) {
+    owed.retain(|key, o| {
+        let (caller, id) = key;
+        if !caller_in_scope(caller) || stopped.contains_key(key) {
             return true;
         }
         if !known.contains_key(id) {
@@ -454,18 +458,16 @@ fn notify_once_since_start(
     let mut gave_up: Vec<(String, String)> = Vec::new();
     {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let Registry { owed, known, names, .. } = &mut *r;
-        gave_up.extend(prune_owed(owed, known, up_ms, now_ms(), &caller_in_scope));
+        let Registry { owed, known, names, stopped, held_failures, .. } = &mut *r;
+        gave_up.extend(prune_owed(owed, known, stopped, up_ms, now_ms(), &caller_in_scope));
+        held_failures.retain(|key, _| owed.get(key).is_some_and(|o| o.active()));
         for ((caller, id), o) in owed.iter() {
             if !caller_in_scope(caller) {
                 continue;
             }
             let Some(k) = known.get(id) else { continue };
             if o.wake.delivery_expired.is_some()
-                || (!o.active()
-                    && !o.watches_later_turns()
-                    && o.upto == 0
-                    && !o.wake.silent.is_some_and(|turn| o.late_transcript_cursor(turn).is_some()))
+                || (!o.active() && !o.watches_later_turns() && o.upto == 0)
                 || known.get(caller).is_none_or(|k| k.waiting)
             {
                 continue;
@@ -605,24 +607,6 @@ fn notify_once_since_start(
             let said = render_notice(pty, &caller, who, id, k, *o, &mut work);
             #[cfg(test)]
             super::test_support::reached("notice rendered", &caller);
-            let said = if said.as_ref().is_some_and(|(_, how, _)| breaker_blocks(pty, &caller, id, how)) {
-                standing_line(pty, who, id, k, *o)
-                    .filter(|(_, how)| o.active() && matches!(how, Settled::Waiting | Settled::Asked(_) | Settled::Exited))
-                    .map(|(text, how)| (text, how, LineEvidence::default()))
-                    .or_else(|| {
-                        if !matches!(said, Some((_, Settled::Answered, _))) {
-                            return None;
-                        }
-                        let ts = crate::activity::turn_state(id)?;
-                        if !work.runs_nothing(pty, &caller, id, Some(ts)) {
-                            return None;
-                        }
-                        let unread = crate::agents::read::transcript_end(id) > o.cursor;
-                        Some((None, Settled::Silent(ts.turns_ended, unread), LineEvidence::default()))
-                    })
-            } else {
-                said
-            };
             match said {
                 Some((Some(mut line), how, read)) => {
                     if let Some(suffix) = breaker_suffix(&caller, id, &how, now_ms()) {
@@ -759,7 +743,8 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
                     && o.wake.silent.is_none()
                     && o.wake.unread_since.is_none()
                     && o.wake.unread_to.is_none();
-                (caller_in_scope(caller) && (o.active() || o.watches_later_turns() || awaiting_unread))
+                let checks_growth = o.wake.silent.is_some_and(|turn| o.late_transcript_cursor(turn).is_some());
+                (caller_in_scope(caller) && (o.active() || o.watches_later_turns() || awaiting_unread || checks_growth))
                     .then(|| ((caller.clone(), id.clone()), *o, k.provider))
             })
             .collect()
@@ -767,30 +752,57 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
     let mut changed = false;
     for (key, o, provider) in debts {
         let id = &key.1;
-        let Some(turn) = crate::activity::turn_state(id) else { continue };
-        if turn.turn == crate::activity::Turn::Busy
-            || turn.turns_ended <= o.with_late_transcript(turn.turns_ended, || super::read::transcript_end(id)).notice_baseline()
-        {
+        if pair_stopped(pty, &key.0, id) {
+            if let Some(turn) = crate::activity::turn_state(id) {
+                remember_held_failure(pty, key, o, turn, provider);
+            }
             continue;
         }
-        let from = o.wake.unread_to.unwrap_or_else(|| o.notice_cursor()).max(o.cursor);
-        let (words, end) = crate::agents::said::written_range(pty, id, provider, from);
-        if words.is_empty()
-            || crate::activity::turn_state(id)
-                .is_some_and(|now| now.turn == crate::activity::Turn::Busy || now.turns_ended != turn.turns_ended)
-        {
+        let Some(turn) = crate::activity::turn_state(id) else { continue };
+        if turn.turn == crate::activity::Turn::Busy {
+            continue;
+        }
+        let late_status = (turn.turn == crate::activity::Turn::Idle)
+            .then(|| o.late_transcript_cursor(turn.turns_ended))
+            .flatten()
+            .and_then(|from| lines::status_after(pty, id, provider, from));
+        let end = if let Some(end) = late_status {
+            end
+        } else {
+            if turn.turns_ended <= o.with_late_transcript(turn.turns_ended, || super::read::transcript_end(id)).notice_baseline() {
+                continue;
+            }
+            let from = o.wake.unread_to.unwrap_or_else(|| o.notice_cursor()).max(o.cursor);
+            let (words, end) = crate::agents::said::written_range(pty, id, provider, from);
+            if words.is_empty() {
+                continue;
+            }
+            end
+        };
+        if crate::activity::turn_state(id).is_none_or(|now| now.turn != turn.turn || now.turns_ended != turn.turns_ended) {
             continue;
         }
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if r.stopped.contains_key(&key) {
+            continue;
+        }
         if let Some(current) = r.owed.get_mut(&key).filter(|now| {
             now.rev == o.rev
                 && now.transcript_rev == o.transcript_rev
                 && now.cursor == o.cursor
                 && now.wake.unread_to == o.wake.unread_to
                 && now.wake.unread_since == o.wake.unread_since
+                && now.wake.late_check == o.wake.late_check
+                && now.wake.reported_to == o.wake.reported_to
         }) {
+            if late_status.is_some() {
+                current.wake.silent = None;
+                current.wake.skipped = None;
+                current.wake.late_check = None;
+                current.wake.late_status_to = late_status;
+            }
             current.wake.unread_since.get_or_insert_with(now_ms);
-            current.wake.unread_to = Some(end);
+            current.wake.unread_to = current.wake.unread_to.max(Some(end));
             current.wake.reconciling = false;
             if current.wake.delivery_expired.is_some() {
                 current.wake.delivery_expired = unread_until(current);
@@ -803,6 +815,29 @@ fn observe_unread(pty: &crate::pty::PtyManager, caller_in_scope: impl Fn(&str) -
     }
 }
 
+fn remember_held_failure(
+    pty: &crate::pty::PtyManager,
+    key: (String, String),
+    o: Owed,
+    turn: crate::activity::TurnState,
+    provider: Provider,
+) {
+    if !o.active()
+        || turn.turn == crate::activity::Turn::Busy
+        || (turn.turns_ended <= o.notice_baseline() && !o.told_pending && o.wake.skipped.is_none())
+    {
+        return;
+    }
+    let Some(why) = super::read::failure_of(pty, &key.1, provider).or_else(|| crate::activity::limit_of(&key.1)) else { return };
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if r.stopped.contains_key(&key)
+        && r.owed.get(&key).is_some_and(|current| current.rev == o.rev && current.transcript_rev == o.transcript_rev && current.active())
+        && r.held_failures.get(&key).is_none_or(|(ended, _)| *ended < turn.turns_ended)
+    {
+        r.held_failures.insert(key, (turn.turns_ended, why));
+    }
+}
+
 /// Watch delegate completions and later plan turns even while delivery waits.
 fn observe_without_delivery(
     pty: &crate::pty::PtyManager,
@@ -811,7 +846,7 @@ fn observe_without_delivery(
     work: &mut lines::WorkLook,
 ) {
     for (id, known, owed, who) in items {
-        if owed.wake.plan_through.is_some() || (owed.active() && lines::is_lead(known)) {
+        if (owed.wake.plan_through.is_some() || (owed.active() && lines::is_lead(known))) && !pair_stopped(pty, caller, id) {
             if let Some((None, how @ (Settled::Hold(_) | Settled::Unhold | Settled::Skip(..) | Settled::PlanFyi(..)), read)) =
                 render_notice(pty, caller, who, id, known, *owed, work)
             {
@@ -824,6 +859,9 @@ fn observe_without_delivery(
 fn settle_control(caller: &str, id: &str, o: &Owed, how: Settled, read_to: Option<u64>) {
     let key = (caller.to_string(), id.to_string());
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if r.stopped.contains_key(&key) {
+        return;
+    }
     let Some(current) = r.owed.get_mut(&key).filter(|now| now.rev == o.rev && now.transcript_rev == o.transcript_rev) else { return };
     match how {
         Settled::Hold(ended) => current.held = Some((ended, now_ms())),
@@ -859,6 +897,7 @@ fn debts_moved(caller: &str, told: &[(String, Settled, Owed)]) -> bool {
         r.owed.get(&(caller.to_string(), id.clone())).is_none_or(|now| {
             now.rev != o.rev
                 || now.transcript_rev != o.transcript_rev
+                || now.wake.late_status_to != o.wake.late_status_to
                 || matches!(how, Settled::Resumed) && now.restart_rev != o.restart_rev
         })
     })
@@ -999,9 +1038,7 @@ fn breaker_blocks(pty: &crate::pty::PtyManager, caller: &str, id: &str, how: &Se
     if !counts_for_breaker(how) || !pair_stopped(pty, caller, id) {
         return false;
     }
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.failures_told.retain(|_, at| now_ms().saturating_sub(*at) < BREAKER_WINDOW_MS);
-    !failure(how) || r.failures_told.contains_key(&(caller.into(), id.into()))
+    !failure(how) || reg().lock().unwrap_or_else(|e| e.into_inner()).failures_told.contains_key(&(caller.into(), id.into()))
 }
 
 /// What a notice tells of, for `deliver_notice` to settle once it is in.
@@ -1058,6 +1095,7 @@ pub(super) struct LineEvidence {
     read_to: Option<u64>,
     ended: u32,
     batch_failed: bool,
+    held_failure: Option<u32>,
 }
 
 /// The name of what became of a session, for the log line of the notice that
@@ -1330,9 +1368,19 @@ fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, to
     {
         return;
     }
+    if current.wake.late_status_to != told.wake.late_status_to && current.wake.late_status_to > read.read_to {
+        return;
+    }
+    let held_turn = read.held_failure.or_else(|| (failure(&how) && (read.read_to.is_some() || read.batch_failed)).then_some(read.ended));
+    if held_turn.is_some_and(|turn| r.held_failures.get(&key).is_some_and(|(ended, _)| *ended == turn)) {
+        r.held_failures.remove(&key);
+    }
     if let Some(to) = read.read_to {
         let wake = &mut r.owed.get_mut(&key).unwrap().wake;
         wake.reported_to = wake.reported_to.max(Some(to));
+        if wake.late_status_to.is_some_and(|end| end <= to) {
+            wake.late_status_to = None;
+        }
         if told.notice_cursor() <= current.cursor && wake.unread_to.is_some_and(|end| end <= to) {
             wake.unread_since = None;
             wake.unread_to = None;
@@ -1497,6 +1545,7 @@ pub(super) fn settle_told(r: &mut Registry, key: (String, String), how: Settled,
             wake.unread_since = current_wake.unread_since;
             wake.unread_to = current_wake.unread_to;
             wake.reported_to = current_wake.reported_to;
+            wake.late_status_to = current_wake.late_status_to;
             let cursor = if wake.unread_since.is_some() { current.cursor.min(cursor) } else { cursor };
             r.owed.insert(
                 key,
@@ -1735,18 +1784,18 @@ mod tests {
         silent.wake.plan_through = Some(1);
         silent.wake.unread_since = Some(now_ms());
         let mut owed = HashMap::from([(key.clone(), silent)]);
-        prune_owed(&mut owed, &known, CALLER_RETURN_MS - 1, now_ms(), |_| true);
+        prune_owed(&mut owed, &known, &HashMap::new(), CALLER_RETURN_MS - 1, now_ms(), |_| true);
         assert!(owed.contains_key(&key), "the caller can still come back");
-        prune_owed(&mut owed, &known, CALLER_RETURN_MS, now_ms(), |_| true);
+        prune_owed(&mut owed, &known, &HashMap::new(), CALLER_RETURN_MS, now_ms(), |_| true);
         let expired = owed.get_mut(&key).expect("the unread answer still holds auto-delete");
         assert!(!expired.active() && !expired.watches_later_turns());
         assert!(crate::agents::teardown::unread_holds(expired, now_ms()));
         let read = expired.wake.unread_since.take().unwrap();
-        prune_owed(&mut owed, &known, CALLER_RETURN_MS, now_ms(), |_| true);
+        prune_owed(&mut owed, &known, &HashMap::new(), CALLER_RETURN_MS, now_ms(), |_| true);
         let expired = owed.get_mut(&key).expect("a cancel can still restore the unread hold");
         expired.wake.unread_since = Some(read);
         expired.wake.delivery_expired = Some(now_ms());
-        prune_owed(&mut owed, &known, CALLER_RETURN_MS, now_ms(), |_| true);
+        prune_owed(&mut owed, &known, &HashMap::new(), CALLER_RETURN_MS, now_ms(), |_| true);
         assert!(owed.is_empty(), "the unread hold expired");
         forget(id);
     }
@@ -2249,7 +2298,7 @@ mod tests {
         let expire = || {
             let mut r = reg().lock().unwrap();
             let Registry { owed, known, .. } = &mut *r;
-            prune_owed(owed, known, CALLER_RETURN_MS, now_ms(), |other| other == caller);
+            prune_owed(owed, known, &HashMap::new(), CALLER_RETURN_MS, now_ms(), |other| other == caller);
         };
         for (expires_first, turn_ended) in [(false, true), (true, false), (true, true)] {
             for s in [caller, id] {
@@ -2504,7 +2553,7 @@ mod tests {
         reg().lock().unwrap().failures_told.insert(key.clone(), now_ms());
         assert!(breaker_blocks(pty, caller, id, &Settled::Failed));
         reg().lock().unwrap().failures_told.insert(key, now_ms().saturating_sub(BREAKER_WINDOW_MS));
-        assert!(!breaker_blocks(pty, caller, id, &Settled::Failed));
+        assert!(breaker_blocks(pty, caller, id, &Settled::Failed));
         assert!(!breaker_blocks(pty, caller, id, &Settled::Waiting));
         forget(caller);
         forget(id);

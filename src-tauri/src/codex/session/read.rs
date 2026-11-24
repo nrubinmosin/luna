@@ -1092,8 +1092,8 @@ impl Conversation {
 
     /// A turn ended with `said`. The assistant message of it that says that
     /// (`same_words`) is its final answer, `phase` or not. A turn read whole
-    /// that has no assistant message at all in the rollout's `response_item`s
-    /// gets it as its one: a report is never lost for the shape its message
+    /// that has no final answer in the rollout's `response_item`s
+    /// gets it as its final answer: a report is never lost for the shape its message
     /// was written in. A turn begun before this read (a cursor inside it, or
     /// at its end line alone) may have had its message in the read before: it
     /// is only marked, or kept for `finish` to look back for.
@@ -1105,7 +1105,7 @@ impl Conversation {
             m.final_answer = true;
         } else if !whole {
             self.orphans.push((self.messages.len(), said.to_string()));
-        } else if !turn.iter().any(|m| m.role == "assistant") {
+        } else if !turn.iter().any(|m| m.final_answer) {
             self.messages.push(crate::agents::Message {
                 role: "assistant".into(),
                 text: said.to_string(),

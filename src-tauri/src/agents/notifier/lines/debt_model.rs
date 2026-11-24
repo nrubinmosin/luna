@@ -2,7 +2,7 @@
 //! specify which input causes each wake and which requests it can cover. No
 //! notice verdict, rendered evidence, or settlement is used as an expectation.
 
-use super::super::{deliver_notice_with, notify_once_since_start, Notice, TypingInto, NOTIFY_IDLE_LOOKS};
+use super::super::{deliver_notice_with, notify_once_since_start, Notice, TypingInto, COALESCE_MS, NOTIFY_IDLE_LOOKS};
 use crate::agents::owed::{owe_from, owe_sent, requests_of, resumed, retry_deliveries, Asked};
 use crate::agents::persist::{restore_answers, ties_in};
 use crate::agents::read::{move_transcript_for_test, transcripts};
@@ -10,6 +10,7 @@ use crate::agents::registry::{reg, register};
 use crate::agents::teardown::forget;
 use crate::provider::Provider;
 use crate::throttle::{at_time_for_test, now_ms};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -115,12 +116,16 @@ impl Fixture {
     }
 
     fn look(&self) -> Vec<(TypingInto, String, Notice)> {
+        self.look_with_company(&mut HashMap::new())
+    }
+
+    fn look_with_company(&self, company: &mut HashMap<String, Instant>) -> Vec<(TypingInto, String, Notice)> {
         let mut drafts = Vec::new();
         at_time_for_test(self.now, || {
             notify_once_since_start(
                 crate::pty::manager(),
                 &mut SESSIONS.into_iter().map(|id| (id.into(), NOTIFY_IDLE_LOOKS - 1)).collect(),
-                &mut Default::default(),
+                company,
                 self.up,
                 |id| SESSIONS.contains(&id),
                 |typing, caller, notice| drafts.push((typing, caller, notice)),
@@ -652,11 +657,16 @@ fn peer_fyi(f: &mut Fixture, rng: &mut Seed) {
     f.session(TOP, None, true);
     f.session(WORKER, Some(TOP), true);
     f.session(PEER, None, true);
+    f.send(WORKER, PEER, 0, "Heads up", false, false);
+    f.append(PEER, "assistant", "Earlier activity.", false);
+    f.idle(PEER, 1, false);
+    expect(&f.tick(WriteResult::Started), &[]);
+    assert_eq!(reg().lock().unwrap().owed[&(WORKER.into(), PEER.into())].wake.unused_turn, Some(1));
+
     f.send(TOP, WORKER, 0, "Do the work", true, false);
     f.append(WORKER, "user", "Do the work", false);
     f.append(WORKER, "assistant", "Waiting for the peer.", false);
     f.idle(WORKER, 1, false);
-    f.send(WORKER, PEER, 0, "Heads up", false, false);
     f.append(PEER, "user", "Heads up", false);
     let status = rng.coin();
     let words = if status { "DONE: peer result" } else { "Acknowledged." };
@@ -666,12 +676,74 @@ fn peer_fyi(f: &mut Fixture, rng: &mut Seed) {
     expect(&f.tick(WriteResult::Started), expected);
 }
 
+fn held_late_status(f: &mut Fixture, rng: &mut Seed) {
+    f.session(TOP, None, true);
+    f.session(WORKER, Some(TOP), false);
+    f.send(TOP, WORKER, 0, "Heads up", false, false);
+    if f.provider == Provider::Codex {
+        writeln!(
+            OpenOptions::new().append(true).open(f.path(WORKER)).unwrap(),
+            r#"{{"type":"event_msg","payload":{{"type":"task_started"}}}}"#
+        )
+        .unwrap();
+    }
+    f.append(WORKER, "user", "Heads up", false);
+    f.append(WORKER, "assistant", "Ordinary commentary.", false);
+    f.idle(WORKER, 1, false);
+    expect(&f.tick(WriteResult::Started), &[]);
+
+    let busy_caller = rng.coin();
+    if busy_caller {
+        crate::background::in_turn_for_test(TOP);
+    } else {
+        f.session(PEER, Some(TOP), false);
+        owe_from(TOP, PEER, 0, 0);
+        crate::background::in_turn_for_test(PEER);
+    }
+    f.advance(2_000);
+    if f.provider == Provider::Codex {
+        writeln!(
+            OpenOptions::new().append(true).open(f.path(WORKER)).unwrap(),
+            r#"{{"type":"event_msg","payload":{{"type":"task_complete","last_agent_message":"DONE: late final status"}}}}"#
+        )
+        .unwrap();
+    } else {
+        f.append(WORKER, "assistant", "DONE: late final status", false);
+    }
+    let mut company = HashMap::new();
+    assert!(f.look_with_company(&mut company).is_empty());
+    if !busy_caller {
+        assert!(company.contains_key(TOP), "the sibling held the rendered notice");
+    }
+
+    let key = (TOP.into(), WORKER.into());
+    {
+        let mut r = reg().lock().unwrap();
+        assert!(r.owed[&key].active(), "the status is already owed");
+        let saved = serde_json::to_vec(&ties_in(&r, WORKER).unwrap()).unwrap();
+        r.owed.remove(&key);
+        r.requests.remove(&key);
+        restore_answers(&mut r, WORKER, &mut serde_json::from_slice(&saved).unwrap());
+    }
+    f.advance(9_000);
+    assert!(f.look_with_company(&mut company).is_empty());
+    if busy_caller {
+        f.idle(TOP, 1, false);
+    } else {
+        company.insert(TOP.into(), Instant::now() - Duration::from_millis(COALESCE_MS));
+    }
+    let writes = f.deliver(f.look_with_company(&mut company), WriteResult::Started);
+    expect(&writes, &[(TOP, &["DONE: late final status"])]);
+    f.checkpoint(&[]);
+}
+
 fn lifted_breaker(f: &mut Fixture, _: &mut Seed) {
     f.session(TOP, None, true);
     f.session(WORKER, Some(TOP), false);
     let terminal = crate::pty::notice_terminal(TOP, f.provider, false);
-    reg().lock().unwrap().stopped.insert((TOP.into(), WORKER.into()), f.now);
-    let fail = |baseline| {
+    let key = (TOP.into(), WORKER.into());
+    reg().lock().unwrap().stopped.insert(key.clone(), f.now);
+    let fail = |f: &Fixture, baseline| {
         f.send(TOP, WORKER, baseline, "Do the work", true, false);
         f.append(WORKER, "user", "Do the work", false);
         f.append(WORKER, "assistant", "An attempt.", false);
@@ -679,16 +751,28 @@ fn lifted_breaker(f: &mut Fixture, _: &mut Seed) {
         crate::background::exited_for_test(WORKER, Some(1));
     };
     let expected: &[(&str, &[&str])] = &[(TOP, &["stopped on an error"])];
-    fail(0);
+    fail(f, 0);
     expect(&f.tick(WriteResult::Started), expected);
     f.requests(TOP, WORKER, &[]);
-    fail(1);
+    fail(f, 1);
+    let before = reg().lock().unwrap().owed[&key];
+    f.advance(super::BREAKER_WINDOW_MS + 1);
     expect(&f.tick(WriteResult::Started), &[]);
     f.requests(TOP, WORKER, &[2]);
-    f.advance(GRACE);
+
+    f.append(WORKER, "assistant", "DONE: work after rerun", false);
+    f.idle(WORKER, 3, false);
+    expect(&f.tick(WriteResult::Started), &[]);
+    let after = reg().lock().unwrap().owed[&key];
+    assert_eq!((after.baseline, after.cursor, after.held, after.wake), (before.baseline, before.cursor, before.held, before.wake));
     terminal.typed_at(f.now);
-    expect(&f.tick(WriteResult::Started), expected);
+    expect(&f.tick(WriteResult::Started), &[(TOP, &["An attempt.", "DONE: work after rerun", "earlier turn stopped on an error"])]);
     f.requests(TOP, WORKER, &[]);
+    f.checkpoint(&[]);
+
+    reg().lock().unwrap().stopped.insert(key, f.now);
+    fail(f, 3);
+    expect(&f.tick(WriteResult::Started), expected);
     f.checkpoint(&[]);
 }
 
@@ -713,6 +797,7 @@ fn seeded_debt_interleavings() {
         acknowledgments,
         late_transcript,
         peer_fyi,
+        held_late_status,
         lifted_breaker,
     ];
     let mut failed = 0;

@@ -124,6 +124,9 @@ pub(super) struct WakeState {
     /// A silent or skipped turn, checked through this byte at this time.
     #[serde(skip)]
     pub(super) late_check: Option<(u32, u64, u64)>,
+    /// Transcript boundary of a late status found but still to be told.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) late_status_to: Option<u64>,
     /// The older turn a merged send must still let the notifier consider.
     pub(super) after: Option<u32>,
     /// A settled idle answer, left readable from its original cursor.
@@ -220,6 +223,7 @@ impl Owed {
         self.wake.unread_to = None;
         self.wake.reported_to = None;
         self.wake.late_check = None;
+        self.wake.late_status_to = None;
         if self.wake.unused_to.take().is_some_and(|(ended, _)| self.wake.unused_turn == Some(ended)) {
             self.wake.unused_turn = None;
         }
@@ -371,6 +375,7 @@ fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<(bool, O
                     silent: (!waits).then_some(turns_ended),
                     unread_since: None,
                     unread_to: None,
+                    late_status_to: None,
                     ..before.wake
                 },
                 no_reply: before.no_reply,

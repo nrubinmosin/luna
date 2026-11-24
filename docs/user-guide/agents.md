@@ -423,7 +423,8 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   busy, and goes like any other.
 - A fresh report opening on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or
   `PLAN`, an ask, a failure or an exit wakes the caller. Interim turn ends and
-  plain replies to `expectReply: false` stay in the report.
+  plain replies to `expectReply: false` stay in the report. A late status Luna
+  finds in the transcript stays owed while its notice waits.
 - Each task gets one stall notice when the session is idle and an unanswered
   request that wanted a reply has run. It carries what the session said. Queued
   input and outstanding work keep it back. A `PLAN` covers the turn that
@@ -439,7 +440,8 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   stops telling the caller of that session's turns and jobs until you type
   into either chat. Luna tells the person's chat at the top of the line,
   logs the trip and shows a desktop notification. Prompts, questions, exits
-  and a pair's first failure still come.
+  and a pair's first failure still come. Typing lifts the breaker, so the
+  caller can hear the replies and any error held since it tripped.
 - Your chat hears when an account used by live delegates under it reaches 90%
   and then 95% of a usage window, once each per window. It also hears when
   a delegate turn starts without its folder skills or a delegate's spawn is

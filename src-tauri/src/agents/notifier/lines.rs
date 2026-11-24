@@ -380,7 +380,23 @@ pub(super) fn render_notice(
     work: &mut WorkLook,
 ) -> Option<(Option<String>, Settled, LineEvidence)> {
     let mut evidence = LineEvidence::default();
-    let (text, how) = notice_line_inner(pty, caller, who, id, k, o, &mut evidence, work)?;
+    let stopped = pair_stopped(pty, caller, id);
+    let key = (caller.to_string(), id.to_string());
+    let (failure_told, held_failure) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        (stopped && r.failures_told.contains_key(&key), r.held_failures.get(&key).cloned())
+    };
+    let (text, how) = if failure_told {
+        if !o.active() {
+            return None;
+        }
+        standing_line(pty, who, id, k, o)?
+    } else {
+        notice_line_inner(pty, caller, who, id, k, o, &mut evidence, work, stopped, held_failure.as_ref())?
+    };
+    if stopped && (!matches!(how, Settled::Waiting | Settled::Asked(_) | Settled::Exited) && !super::failure(&how)) {
+        return None;
+    }
     if matches!(how, Settled::Exited) {
         evidence.ended = crate::activity::turn_state(id).map_or(o.notice_baseline(), |t| t.turns_ended);
         evidence.requests = requests_through(caller, id, o, evidence.ended);
@@ -410,6 +426,8 @@ fn notice_line_inner(
     o: Owed,
     evidence: &mut LineEvidence,
     work: &mut WorkLook,
+    pair_is_stopped: bool,
+    held_failure: Option<&(u32, String)>,
 ) -> Option<(Option<String>, Settled)> {
     transcript_path(pty, id);
     if reg()
@@ -437,8 +455,8 @@ fn notice_line_inner(
         return None;
     }
     let o = if between_turns { o.with_late_transcript(ended, || transcript_end(id)) } else { o };
-    let late_status = turn == Some(crate::activity::Turn::Idle)
-        && o.late_transcript_cursor(ended).is_some_and(|from| status_after(pty, id, k.provider, from));
+    let late_status = turn == Some(crate::activity::Turn::Idle) && o.wake.late_status_to.is_some();
+    let held_failure = held_failure.filter(|(n, _)| !pair_is_stopped && between_turns && *n <= ended);
     let notice_baseline = o.notice_baseline();
     let cut = crate::background::cut_short(id) || o.cut_short;
     let unopened = between_turns && crate::background::unopened_turn(id, ended);
@@ -513,7 +531,10 @@ fn notice_line_inner(
     if !job_debt && now == Verdict::JobOver {
         now = Verdict::Nothing;
     }
-    if late_status || between_turns && (alive && cut || failed.is_some() && matches!(now, Verdict::AtWork | Verdict::Nothing)) {
+    if late_status
+        || held_failure.is_some()
+        || between_turns && (alive && cut || failed.is_some() && matches!(now, Verdict::AtWork | Verdict::Nothing))
+    {
         now = Verdict::TurnOver;
     }
     if now == Verdict::OnlyNotices {
@@ -564,6 +585,9 @@ fn notice_line_inner(
                 let (lost_ids, lost): (Vec<_>, Vec<_>) = crate::background::undelivered_snapshot(id, caller, parent).into_iter().unzip();
                 let found = transcript_found(pty, id);
                 let plain = failed.is_none() && halted.is_none() && stopped.is_empty() && lost.is_empty() && !o.unsure && found;
+                if plain && pair_is_stopped {
+                    return None;
+                }
                 let status = fresh_status(&said);
                 let (requests, plan, fyi) = said.notice_requests();
                 let keeps_plan = keeps_plan(id, o, ended, &requests, fyi);
@@ -621,6 +645,7 @@ fn notice_line_inner(
                     read_to: Some(read_to),
                     ended,
                     batch_failed: false,
+                    ..LineEvidence::default()
                 };
                 Some((Some(format!("{who} has nothing left running now, and {said}.{stopped}{failed}{lost}{unsure}")), how))
             }
@@ -654,7 +679,7 @@ fn notice_line_inner(
         };
         // Asked mid-turn: the CLI may start a turn on the text right after.
         let settle_ms = if o.queued { settle_ms.max(QUEUED_GRACE_MS) } else { settle_ms };
-        if settle_ms > 0 && !late_status {
+        if settle_ms > 0 && !late_status && held_failure.is_none() && !pair_is_stopped {
             match o.held {
                 Some((n, at)) if n == ended => {
                     if now_ms().saturating_sub(at) < settle_ms {
@@ -671,6 +696,9 @@ fn notice_line_inner(
         let never_started = parent && crate::background::never_started(id);
         let trouble =
             cut || halted.is_some() || failed.is_some() || never_started || !found || o.unsure || !lost.is_empty() || !stopped.is_empty();
+        if !trouble && pair_is_stopped {
+            return None;
+        }
         if !trouble && wake_is_pending(id, ended) {
             return None;
         }
@@ -680,12 +708,12 @@ fn notice_line_inner(
             if lead && (background || waits) {
                 note_delegates(pty, id, k.provider, left.as_deref().filter(|_| background));
             }
-            if status.is_none() {
+            if status.is_none() && !late_status && held_failure.is_none() {
                 evidence.read_to = Some(read_to);
                 return Some((None, Settled::Skip(ended, read_to, background)));
             }
         }
-        if !trouble && !work_left {
+        if !trouble && !work_left && !late_status && held_failure.is_none() {
             if keeps_plan && status.is_none() && requests.iter().all(|q| q.taken) {
                 evidence.read_to = Some(read_to);
                 return Some((None, Settled::PlanFyi(ended, requests, !replies.is_empty())));
@@ -714,6 +742,11 @@ fn notice_line_inner(
             if lost.is_empty() && failed.is_none() && !cut && replies.requests().len() <= 1 { inline_answer(&replies) } else { None };
         let file = text.as_deref().filter(|_| inline.is_none()).and_then(|t| note_file(id, t));
         let span = report_span(&replies);
+        let earlier_failure = held_failure
+            .filter(|(n, _)| *n < ended || failed.is_none())
+            .map(|(_, why)| format!(" An earlier turn stopped on an error: {}", sentence(why)))
+            .unwrap_or_default();
+        let stopped = format!("{stopped}{earlier_failure}");
         *evidence = LineEvidence {
             requests: requests.clone(),
             lost: lost_ids.clone(),
@@ -722,6 +755,7 @@ fn notice_line_inner(
             read_to: Some(read_to),
             ended,
             batch_failed: false,
+            held_failure: held_failure.map(|(n, _)| *n),
         };
         let reply = match replies.len() {
             0 if !found => ", but Luna cannot find its transcript, so whether it replied is unknown".to_string(),
@@ -802,7 +836,7 @@ fn notice_line_inner(
             ));
         }
         // The internal wake has had its chance to get this lead moving.
-        if lead && status.is_none() && (can_stall(o, &requests, plan_covers) || trouble) {
+        if lead && status.is_none() && held_failure.is_none() && (can_stall(o, &requests, plan_covers) || trouble) {
             if let Some(w) = woken_before(id, ended) {
                 if said_since(pty, id, k.provider, w.cursor).is_empty() {
                     let earlier = if replies.is_empty() { String::new() } else { format!(" Its turns since you asked ended{reply}.") };
@@ -865,8 +899,12 @@ fn notice_line_inner(
     standing_line(pty, who, id, k, o)
 }
 
-fn status_after(pty: &crate::pty::PtyManager, id: &str, provider: Provider, from: u64) -> bool {
-    transcript_end(id) > from && fresh_status(&written_range(pty, id, provider, from).0).is_some()
+pub(super) fn status_after(pty: &crate::pty::PtyManager, id: &str, provider: Provider, from: u64) -> Option<u64> {
+    if transcript_end(id) <= from {
+        return None;
+    }
+    let (said, end) = written_range(pty, id, provider, from);
+    fresh_status(&said).map(|_| end)
 }
 
 fn notice_replies(pty: &crate::pty::PtyManager, caller: &str, id: &str, provider: Provider, o: Owed, ended: u32) -> (Said, u64) {
@@ -1039,12 +1077,8 @@ impl WorkGraph {
             .chain(r.spawns.values().filter(|s| s.left_by_core || s.news.is_some()).map(|s| s.caller.clone()))
             .collect();
         let sessions = r.known.iter().map(|(id, k)| (id.clone(), (k.provider, k.parent.clone()))).collect();
-        let debts: Vec<_> = r
-            .owed
-            .iter()
-            .filter(|(_, o)| o.active() || o.wake.silent.is_some_and(|turn| o.late_transcript_cursor(turn).is_some()))
-            .map(|(pair, o)| (pair.clone(), *o, r.stopped.get(pair).copied()))
-            .collect();
+        let debts: Vec<_> =
+            r.owed.iter().filter(|(_, o)| o.active()).map(|(pair, o)| (pair.clone(), *o, r.stopped.get(pair).copied())).collect();
         drop(r);
 
         let mut graph = Self {
@@ -1066,21 +1100,16 @@ impl WorkGraph {
             let known = graph.sessions.get(&peer);
             let provider = known.map(|(provider, _)| *provider);
             let open = stopped.is_none_or(|at| breaker_lifted(pty, &from, &peer, at));
-            let late_status = open
-                && state
-                    .filter(|t| t.turn == crate::activity::Turn::Idle)
-                    .and_then(|t| owed.late_transcript_cursor(t.turns_ended))
-                    .is_some_and(|at| provider.is_some_and(|p| status_after(pty, &peer, p, at)));
-            let due = late_status
-                || open
-                    && owed.active()
-                    && (owed.resumed
-                        || owed.job_went
-                        || owed.cut_short
-                        || state.is_some_and(|t| t.turns_ended > owed.notice_baseline() || owed.told_pending));
-            let can_go = if late_status {
-                Some(true)
-            } else if owed.no_reply || !owed.active() {
+            let owed = state
+                .filter(|t| open && t.turn != crate::activity::Turn::Busy)
+                .map_or(owed, |t| owed.with_late_transcript(t.turns_ended, || transcript_end(&peer)));
+            let due = open
+                && (owed.resumed
+                    || owed.job_went
+                    || owed.cut_short
+                    || owed.wake.late_status_to.is_some()
+                    || state.is_some_and(|t| t.turns_ended > owed.notice_baseline() || owed.told_pending));
+            let can_go = if owed.no_reply {
                 let parent = known.and_then(|(_, parent)| parent.as_ref()) == Some(&from);
                 if !due
                     || state.is_some_and(|t| t.turn != crate::activity::Turn::Idle)

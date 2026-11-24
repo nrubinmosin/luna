@@ -615,12 +615,13 @@ turn, stopped on a prompt (once per stop) or exited.
   joined FYI stays part of the original turn. A turn seen before its prompt
   is written is reconsidered if its transcript grows. For eight seconds
   after a silent or skipped end, a status appended past the last complete
-  line the notifier read can still wake the caller. Permission prompts,
+  line the notifier read can reopen the debt. Once found, the status stays
+  owed across batching, a busy caller, and a core restart. Permission prompts,
   failures, exits and restart
   interruptions still go to the caller. A tripped breaker allows the first
-  failure of a pair and leaves later failures owed for another outcome or
-  when the breaker lifts. A failure or restart cut after a
-  silent settlement wakes that caller for a later PLAN turn or a turn
+  failure of a pair and leaves the pair's other debts as they are. When it
+  lifts, the accumulated replies and any held error go together. A failure
+  or restart cut after a silent settlement wakes that caller for a later PLAN turn or a turn
   started by one of its requests. A separate allowance per task covers
   the 30-minute quiet check, including when a turn waits for its own background
   work.
@@ -742,8 +743,9 @@ turn, stopped on a prompt (once per stop) or exited.
   A core restart clears the breaker and any pending trip details. The log
   warns, the desktop is told once, and a person
   typing into either chat lifts it. Prompts, questions, exits and a pair's
-  first failure still come. Other failures count toward the breaker and
-  are held when it trips. A loss-only notice counts once for the IDs it
+  first failure still come. The first-failure allowance resets when the
+  breaker lifts. Other failures count toward the breaker and are held when
+  it trips. A loss-only notice counts once for the IDs it
   acknowledges, with the same allowance for the first failure after a trip.
 - **System news.** The person's top chat hears when an account used by live
   delegates at any depth reaches 90%, then 95%, once per account, level and
