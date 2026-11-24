@@ -393,8 +393,7 @@ pub(in crate::agents) fn notice_line(
     // A silently settled answer is still readable. An idle PLAN also watches
     // for a later turn of its own, without holding up the caller's work.
     if let Some(silent) = o.wake.silent {
-        let watches_later_turns = o.wake.status == Some(Status::Plan) || (o.wake.quiet_send && !o.no_reply);
-        if !watches_later_turns || !alive || ended <= silent && turn == Some(crate::activity::Turn::Idle) {
+        if !o.watches_later_turns() || !alive || ended <= silent && turn == Some(crate::activity::Turn::Idle) {
             return None;
         }
     }
@@ -1198,74 +1197,42 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The loop of that night: two chats that wrote to each other, a stray
-    /// process under each. Every notice starts a turn in the chat it goes into,
-    /// and that turn's end is what the other is owed. Driven by the notifier's
-    /// own decisions, with a turn counted the moment its notice goes in.
     #[test]
     fn two_chats_with_a_job_each_do_not_wake_each_other_forever() {
-        use crate::activity::Turn;
         let (a, b) = ("pp-a", "pp-b");
-        let key = |caller: &str, id: &str| (caller.to_string(), id.to_string());
-        let mut turns: HashMap<&str, u32> = HashMap::from([(a, 1), (b, 1)]);
-        // The notifier sweep in another test drops debts of unknown chats.
-        for id in [a, b] {
+        let register_chat = |id: &str| {
             register(id, Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, serde_json::json!({}));
-        }
+            crate::background::idle_for_test(id, Provider::Claude, 1, false);
+            crate::background::left_for_test(id, &[("tail.exe", 22104)]);
+            let path = std::env::temp_dir().join(format!("luna-{id}-{}.jsonl", std::process::id()));
+            std::fs::write(&path, said_line("The job is still running.")).unwrap();
+            transcripts().lock().unwrap().insert(id.into(), path.clone());
+            (reg().lock().unwrap().known[id].clone(), path)
+        };
+        let (ka, pa) = register_chat(a);
+        let (kb, pb) = register_chat(b);
         owe_from(a, b, 0, 0);
         owe_from(b, a, 0, 0);
-        let mut notices = 0;
-        // One pass over both debts, with or without the jobs; returns how many
-        // notices went.
-        let pass = |job: bool, turns: &mut HashMap<&str, u32>| {
-            let mut sent = 0;
-            for (caller, id) in [(a, b), (b, a)] {
-                let Some(o) = reg().lock().unwrap().owed.get(&key(caller, id)).copied() else { continue };
-                let ended = turns[id];
-                let v = verdict(&o, ended, Some(Turn::Idle), job, real_turn_past(id, caller, o.baseline, ended, false, || true));
-                let settled = match v {
-                    Verdict::OnlyNotices => {
-                        reg().lock().unwrap().owed.get_mut(&key(caller, id)).unwrap().baseline = ended;
-                        continue;
-                    }
-                    Verdict::TurnOver if job => Settled::Pending(ended, 0, None, None, false),
-                    Verdict::TurnOver | Verdict::JobOver => Settled::Answered,
-                    Verdict::Nothing | Verdict::AtWork => continue,
-                };
-                sent += 1;
-                let mut r = reg().lock().unwrap();
-                notice_turn(&mut r, caller, turns[caller] + 1, &[id.to_string()], false);
-                match settled {
-                    Settled::Pending(n, c, ..) => {
-                        r.owed.insert(key(caller, id), Owed::pending(n, c));
-                    }
-                    _ => {
-                        r.owed.remove(&key(caller, id));
-                    }
-                }
-                drop(r);
-                *turns.get_mut(caller).unwrap() += 1;
-            }
-            sent
-        };
-        for _ in 0..500 {
-            notices += pass(true, &mut turns);
+        for (caller, id, known) in [(a, b, &kb), (b, a, &ka)] {
+            assert!(matches!(look(caller, id, known), Some((None, Settled::Hold(1)))));
+            assert!(matches!(look(caller, id, known), Some((None, Settled::Skip(1, ..)))));
+            assert!(look(caller, id, known).is_none());
+            // Even if another notice sends work back across the pair, a
+            // plain reply while its background job runs cannot echo.
+            notice_turn(&mut reg().lock().unwrap(), id, 2, &[caller.to_string()], false);
+            crate::background::idle_for_test(id, Provider::Claude, 2, false);
+            crate::background::left_for_test(id, &[("tail.exe", 22104)]);
+            assert!(matches!(look(caller, id, known), Some((None, Settled::Skip(2, ..)))));
+            crate::background::left_for_test(id, &[]);
+            assert!(matches!(look(caller, id, known), Some((None, Settled::Hold(2)))));
+            assert!(matches!(look(caller, id, known), Some((Some(_), Settled::Answered))));
+            assert!(!reg().lock().unwrap().owed.contains_key(&(caller.to_string(), id.to_string())), "one idle stall settled the debt");
         }
-        assert_eq!(notices, 2, "\"NOT done yet\" once per debt, whatever the turns on those notices");
-        let at_rest = turns.clone();
-        for _ in 0..500 {
-            notices += pass(true, &mut turns);
+        for (id, path) in [(a, pa), (b, pb)] {
+            crate::background::gone_for_test(id);
+            forget(id);
+            let _ = std::fs::remove_file(path);
         }
-        assert_eq!(turns, at_rest, "no notice, no turn: the chats are left at rest");
-        // The jobs end: each is told once, and that is the end of it.
-        for _ in 0..500 {
-            notices += pass(false, &mut turns);
-        }
-        assert_eq!(notices, 4, "the job's end is news, once per debt");
-        assert!(!reg().lock().unwrap().owed.contains_key(&key(a, b)));
-        assert!(!reg().lock().unwrap().owed.contains_key(&key(b, a)));
-        forget(a);
-        forget(b);
     }
 
     #[test]

@@ -202,8 +202,12 @@ impl Owed {
         self.wake.reported_to.filter(|(at, _)| *at > self.cursor).unwrap_or((self.cursor, self.request_match))
     }
 
+    pub(super) fn watches_later_turns(self) -> bool {
+        self.wake.status == Some(Status::Plan) || (self.wake.quiet_send && !self.no_reply)
+    }
+
     pub(super) fn notice_baseline(self) -> u32 {
-        self.wake.skipped.or(self.wake.silent).unwrap_or(0).max(self.baseline)
+        self.baseline.max(self.wake.skipped.unwrap_or(0)).max(self.wake.silent.unwrap_or(0))
     }
 
     /// Whether asks which merged in after a given revision all asked for no

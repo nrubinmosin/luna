@@ -336,7 +336,7 @@ fn notify_once(
                 continue;
             }
             let Some(k) = known.get(id) else { continue };
-            if known.get(caller).is_none_or(|k| k.waiting) {
+            if (!o.active() && !o.watches_later_turns()) || known.get(caller).is_none_or(|k| k.waiting) {
                 continue;
             }
             let parent = k.parent.as_deref() == Some(caller.as_str());
@@ -541,7 +541,7 @@ fn notify_once(
         // Another session it is owed an answer by still at work: this notice
         // waits a few seconds for that one's (COALESCE_MS), so near-simultaneous
         // ends wake the caller once. Not a question or a prompt.
-        let owed_by: Vec<&str> = items.iter().map(|(id, ..)| id.as_str()).collect();
+        let owed_by: Vec<&str> = items.iter().filter(|(_, _, o, _)| o.active()).map(|(id, ..)| id.as_str()).collect();
         let busy = |id: &str| crate::activity::turn_state(id).is_some_and(|t| t.turn == crate::activity::Turn::Busy);
         let now = Instant::now();
         // Taken before the hold looks, which lets go of it once the notice goes.
