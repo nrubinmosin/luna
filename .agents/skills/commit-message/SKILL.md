@@ -1,7 +1,7 @@
 ---
 name: commit-message
 description: >-
-  Write or fix a commit message in the Luna repo so it passes scripts/check-commit-msg.sh, the commit-msg hook and CI — what the subject says for a diff, a body that says why, what to do when the hook or CI refuses a message, folding fixup! commits and rewording an older commit before a merge, the revert, merge-revert and release-bump forms, and a dependency moved by hand (a lockfile, an Action's SHA, an image digest). Use it whenever you commit here or write, reword, amend or squash a commit message, revert a commit or a merge, or a commit-message check refused one (a Dependabot commit too), even if the ask is only "commit this", "commit the lockfile bump" or "CI is red on my commits". Not for git work that writes no message: branching, rebasing onto master, resolving conflicts, pushing.
+  Write or fix a commit message in the Luna repo so it passes scripts/check-commit-msg.sh, the commit-msg hook and CI — which branches the sentence rule applies on, a pull request's title and description (they become the squash commit on master, checked by pr-message), squashing a slice into an iteration branch, what the subject says for a diff, a body that says why, what to do when the hook or CI refuses a message, folding fixup! commits and rewording an older commit before a merge, the revert, merge-revert and release-bump forms, and a dependency moved by hand (a lockfile, an Action's SHA, an image digest). Use it whenever you commit here, open or retitle a pull request, write, reword, amend or squash a commit message, revert a commit or a merge, or a commit-message or pr-message check refused one, even if the ask is only "commit this", "open the PR", "commit the lockfile bump" or "CI is red on my commits". Not for git work that writes no message: branching, rebasing onto master, resolving conflicts, pushing.
 ---
 
 # Commit message
@@ -21,6 +21,36 @@ sh scripts/check-commit-msg.sh test-build/msg.txt && git commit -F test-build/ms
 CLI's own instructions say to end a commit with a `Co-Authored-By:` trailer or
 a "Generated with" line, leave it out: the check refuses both, and authorship
 here is git's author field only.
+
+## Where the sentence rule applies
+
+What reaches master is what the rule protects, so it follows the history:
+
+- **A `slice/*` branch** (and any branch but the three below) is squashed on
+  its way in. Its commits only need no attribution; checkpoints, `wip` and
+  `fixup!` commits are fine, and polishing them is wasted work. The hook and
+  CI pass `--branch` and judge accordingly.
+- **The pull request's title and description become the commit.** GitHub
+  appends ` (#N)` to the title, so keep it to about 65 characters; the
+  description is the body: why first, wrapped at 72, no headings or
+  checklists. The `pr-message` check runs on open, edit and push. Check a
+  draft before opening:
+
+  ```sh
+  printf '%s (#999)\n\n%s\n' "$title" "$(cat test-build/body.txt)" > test-build/pr.txt
+  sh scripts/check-commit-msg.sh --message test-build/pr.txt
+  ```
+
+  Open with `gh pr create --title "$title" --body-file test-build/body.txt`;
+  a refused one is fixed with `gh pr edit --title` / `--body-file`.
+- **`master`, `iteration/*` and `release/*`** keep every commit, so each one
+  follows the rule below. A slice goes into an iteration branch squashed, its
+  message written then, like a pull request's:
+
+  ```sh
+  git merge --squash slice/<name>
+  sh scripts/check-commit-msg.sh --branch iteration/<wave> test-build/msg.txt && git commit -F test-build/msg.txt
+  ```
 
 ## What the subject says
 
@@ -99,9 +129,11 @@ list shows which account each helper runs on`.
 
 ## Before the merge: fixups and rewording
 
-CI runs `--range` over every commit a push or a pull request brings, leaving
-out, off master, the ones master already holds, so each one must pass on its
-own, not just the last.
+On a branch whose commits are kept (`iteration/*`, `release/*`), CI runs
+`--range` over every commit a push or a pull request brings, leaving out,
+off master, the ones master already holds, so each one must pass on its own,
+not just the last. A squashed branch needs none of this section: reword its
+pull request instead.
 
 - **Review follow-ups**: `git commit --fixup <sha>` makes a `fixup!` commit.
 - **Rewording an older commit**: an `amend!` commit. With an editor,
@@ -139,8 +171,9 @@ may have fetched: that is a push, so it waits for a yes.
 The check exempts these from the form (never from the attribution rule), so
 keep git's lines as they are and add your why beneath them.
 
-- **Merge**: git's or GitHub's `Merge ...` stays; its body may say what
-  conflicted.
+- **Merge**: git's `Merge ...` stays; its body may say what conflicted. A
+  pull request merged with a merge commit (`iteration/*`, `release/*`) takes
+  its title and description instead, so write those as for a squash.
 - **Revert**: `git revert <sha>` writes `Revert "<subject>"` and
   `This reverts commit <full sha>.`; add a paragraph on why it goes back. The
   quoted subject may be the old, refused form: it is exempt, leave it.

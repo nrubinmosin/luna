@@ -25,21 +25,28 @@ container arguments.
 git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 ```
 
-- The pre-commit hook refuses anything under `.claude/skills/` that is not a
-  symlink. Skills live in `.agents/skills/<name>/`, with `.claude/skills/<name>`
-  a symlink to it; on Windows that needs Developer Mode and
-  `git config --global core.symlinks true`.
-- The commit-msg hook checks the message against the rules in
-  [CONTRIBUTING.md](../CONTRIBUTING.md#commits): a subject of at most 72
-  characters that says what the change does (a capital, a digit or a path first;
-  no type prefix, no trailing period), a blank line, a body wrapped at 72, and no
-  AI attribution (`Co-Authored-By:`, the robot emoji, "Generated with ...").
-  Merges, reverts and the release bump `Luna X.Y.Z` keep git's own form; a
-  `fixup!`, `squash!` or `amend!` passes the hook and fails CI. CI checks the
-  stored messages of each push or pull request the same way; off `master` it
+- The pre-commit hook refuses a commit on `master`, which changes only
+  through pull requests (a commit there is usually a session outside its
+  worktree; `--no-verify` when it is meant), and anything under
+  `.claude/skills/` that is not a symlink. Skills live in
+  `.agents/skills/<name>/`, with `.claude/skills/<name>` a symlink to it; on
+  Windows that needs Developer Mode and `git config --global core.symlinks true`.
+- The commit-msg hook refuses AI attribution (`Co-Authored-By:`, the robot
+  emoji, "Generated with ...") on every branch. On a branch whose commits reach
+  master as they are — `master`, `iteration/*`, `release/*` — it also checks
+  the form in [CONTRIBUTING.md](../CONTRIBUTING.md#commits): a subject of at
+  most 72 characters that says what the change does (a capital, a digit or a
+  path first; no type prefix, no trailing period), a blank line, a body wrapped
+  at 72. Merges, reverts and the release bump `Luna X.Y.Z` keep git's own form;
+  there a `fixup!`, `squash!` or `amend!` passes the hook and fails CI. Any
+  other branch is squashed on its way in, so the form moves to its pull
+  request's title and description. CI checks the stored messages of each push
+  or pull request the same way, by the branch they are on; off `master` it
   leaves out the commits `origin/master` already holds. By hand:
-  `sh scripts/check-commit-msg.sh FILE` or `--range A..B`; the check's own tests
-  are `scripts/check-commit-msg.test.sh`, run in `gate.ps1 -Group scripts`.
+  `sh scripts/check-commit-msg.sh [--branch NAME] FILE`, `--range A..B` or
+  `--message FILE` (a pull request's title and description as one message);
+  the check's own tests are `scripts/check-commit-msg.test.sh`, run in
+  `gate.ps1 -Group scripts`.
 
 ## Scripts
 
@@ -58,6 +65,7 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/gate.ps1` | US English, PowerShell script tests, toolchain pins, Rust formatting and lints, Linux tests and the macOS bundle script tests. Stops at the first failure and reports a summary |
 | `./scripts/gate.ps1 -Group scripts` | the PowerShell checks and commit-message tests on the host. Other groups are `rust` and `windows`; `-Group scripts,rust` runs several |
 | `./scripts/check-changes.ps1` | validates changelog fragments and requires one for product changes on feature branches |
+| `./scripts/labels.ps1` | creates or updates the issue labels CONTRIBUTING.md lists; `-Prune` deletes every other label, `-DryRun` prints the `gh` calls instead. Needs `gh`, logged in |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine. `-Build` and `-Run` also work separately. `-Dir` selects the staging folder, which defaults to `test-build/windows-tests`. `-Build` writes only into a folder directly in `test-build/`. `-Filter checkout::tests,codex::trust::tests` runs tests matching either name fragment. Pass comma-separated fragments with `pwsh -File` or a string array from a PowerShell session. A filtered run fails if no tests pass. |
 | `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there, the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) included, which the Windows build leaves out (`gate.ps1 -Group rust` and the macOS workflow compile it too). Checkout mounted read-only; caches in named volumes |
@@ -272,6 +280,17 @@ PR merged on the operator's yes. `./scripts/ci-wait.ps1` reads the outcome:
 | `windows-build` | `gate.ps1 -Group windows`, `windows-tests.ps1 -Build` and `third-party-notices.ps1` (as the release makes it on a Linux runner), then uploads the test executables |
 | `windows-tests` | runs those executables on a `windows-2025` runner |
 
+`.github/workflows/pr.yml` runs `pr-message` on every pull request when it is
+opened, edited or pushed to: its title, with GitHub's ` (#N)`, and its
+description, checked as one commit message (`check-commit-msg.sh --message`),
+since a squash or a merge makes them the commit on master.
+
+`.github/workflows/scorecard.yml` runs [OpenSSF
+Scorecard](https://github.com/ossf/scorecard) on pushes to master and weekly:
+its findings land in the Security tab's code scanning and its score is
+published for the README badge. Its code review checks stay low by design,
+with one maintainer.
+
 `.github/workflows/gpui.yml` builds the app with its native window on a
 `macos-15` runner (Apple silicon), on pushes to `gpui/**` and `stage6/0.20`
 and by hand: the dependency graph checked (no gpui-pre-windows, CoreText's
@@ -303,10 +322,12 @@ through an integration branch:
 
 1. Cut `iteration/<name>` from `origin/master`.
 2. Cut each slice's `slice/*` branch from the iteration branch. Once it has
-   passed CI on its own push and its reviews, merge it into the iteration branch
-   with a merge commit. A master that moves is no reason to rebase it. A slice
-   that conflicts with the iteration branch has the iteration branch merged into
-   it, not a rebase, and passes CI again before it is merged.
+   passed CI on its own push and its reviews, squash it into the iteration
+   branch (`git merge --squash slice/<name>`, then one commit that follows the
+   commit rules: the slice's sentence and why). A master that moves is no
+   reason to rebase it. A slice that conflicts with the iteration branch has
+   the iteration branch merged into it, not a rebase, and passes CI again
+   before it is squashed in.
 3. Each push of the iteration branch runs CI on the slices combined so far. A
    slice that fails there is fixed before the PR is opened, by its author: on a
    `slice/<name>-fix` branch cut from the iteration branch and merged back like
@@ -315,9 +336,34 @@ through an integration branch:
 4. At the end of the wave, if master has moved, merge `origin/master` into the
    iteration branch, once. Then open one PR from it into master: one CI run
    there judges the combined result, with no rebase and rerun for each slice.
+   It is merged with a merge commit, so each slice keeps its one commit.
 
-Changelog entries may become fragment files
-([#130](https://github.com/nrubinmosin/luna/issues/130)).
+## Repository settings
+
+Set on GitHub by the maintainer, not from files in the tree, and recorded here
+so they can be checked against what is there:
+
+- **Merging:** squash and merge commits; rebase merging off. A squash takes
+  the pull request's title and description, and so does a merge commit. A
+  `slice/*` or outside pull request is squashed; `iteration/*` and
+  `release/*` ones get a merge commit (CONTRIBUTING.md, "Pull requests"), and
+  so does one whose history holds a finding `.gitleaksignore` lists
+  ([Supply chain](#supply-chain)). The head branch is deleted on merge; auto-merge is
+  allowed.
+- **The `master` ruleset:** a pull request, no approvals required; the
+  checks `scripts`, `rust-linux`, `windows-build`, `windows-tests`,
+  `pr-message`, `supply-chain-tests`, `cargo-deny`, `gitleaks`,
+  `codeql (actions)` and `codeql (rust)` pass first; no force push, no
+  deletion. The `release tags` ruleset guards `v*` tags.
+- **Releases are immutable** once published: assets and tag stay as they
+  were, and a fix is a new version. The release workflow uploads every asset
+  to the draft, before publishing.
+- **Security:** private vulnerability reporting, secret scanning with push
+  protection, Dependabot alerts. Dependabot opens no pull requests:
+  dependencies move by hand ([ADR-0029](adr/0029-dependencies-move-by-hand.md)).
+- **Issues and Discussions:** blank issues closed (`.github/ISSUE_TEMPLATE/`),
+  the issue types Bug, Feature and Task, labels from `scripts/labels.ps1`,
+  Discussions open for questions.
 
 ## Supply chain
 
