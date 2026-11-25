@@ -11,9 +11,9 @@
 //!   `HELD_GAP` (term/io.rs), and the state is written once, as it is let
 //!   go. Another board or layout under a drag ends it, keeping nothing.
 //! - A pane's title bar: the chat's status, a draft, its name, model and
-//!   effort, account, context and the session id to copy; its menu renames,
-//!   copies the id, moves the chat to another pane or swaps it with one;
-//!   `_` takes it off the board.
+//!   effort, account, launch folder, context and the session id to copy; its
+//!   menu renames, copies the id, moves the chat to another pane or swaps it
+//!   with one; `_` takes it off the board.
 //! - The peek: a chat not on the board comes up over it, with To board, Put
 //!   in pane N and Close; a pane of the board held up says Back. It opens
 //!   with the keyboard on its frame, where Esc closes it (root.rs); a click
@@ -30,7 +30,7 @@ use crate::models::{Models, NewEpoch};
 use crate::rename::Renaming;
 use crate::scale::u;
 use crate::selector::Selector;
-use crate::state::{Peek, SPLIT_MAX, SPLIT_MIN, Split, Splits, WindowState};
+use crate::state::{Chat, Peek, SPLIT_MAX, SPLIT_MIN, Split, Splits, WindowState, folder_leaf};
 use crate::term::TermPane;
 use crate::theme::Palette;
 use crate::widgets::{Tipped, button, status_chip, tag, tips_on};
@@ -99,11 +99,30 @@ fn held_to(share: f32, span: Pixels, least: f32) -> f32 {
     share.clamp(floor, 1. - floor)
 }
 
-/// A title bar's details, those it has: each after the first opens with
-/// " · ", which shrinks and is cut short with it, so they never run together
-/// ("Opus · high · Claude Code: backend · ctx 9%").
-fn bar_details(parts: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
-    parts.into_iter().flatten().filter(|s| !s.is_empty()).enumerate().map(|(n, s)| if n == 0 { s } else { format!("· {s}") }).collect()
+struct BarDetail {
+    label: String,
+    tip: Option<(&'static str, Vec<SharedString>)>,
+}
+
+/// Each detail after the first carries its own dot, which shrinks and is
+/// cut short with it.
+fn bar_details(chat: &Chat, folder: Option<&str>, live: &Live) -> Vec<BarDetail> {
+    let launch_folder = chat.worktree_path.as_deref().filter(|p| !p.is_empty()).or(folder).filter(|p| !p.is_empty());
+    let parts = [
+        Some((chat.model_effort(), None)),
+        Some((format!("{}: {}", provider_label(chat.provider), chat.account), None)),
+        launch_folder.map(|path| (folder_leaf(path).to_owned(), Some(("folder", vec![path.into()])))),
+        live.context.map(|c| {
+            (format!("ctx {:.0}%", (c * 100.).clamp(0., 100.)), Some(("ctx", ctx_tip(live.context_auto_compact, live.to_compact))))
+        }),
+    ];
+    parts
+        .into_iter()
+        .flatten()
+        .filter(|(label, _)| !label.is_empty())
+        .enumerate()
+        .map(|(i, (label, tip))| BarDetail { label: if i == 0 { label } else { format!("· {label}") }, tip })
+        .collect()
 }
 
 /// Which side of its bar (where it was last laid out, in a window that
@@ -393,14 +412,19 @@ impl Board {
             MenuAt::Pane(i) => format!("pane-{}", i + 1),
             MenuAt::Peek => "peek".into(),
         };
-        let name: AnyElement = match &self.renaming {
-            Some(r) if r.chat == id => div().flex_1().min_w_0().child(Input::new(&r.input).h(u(18.))).into_any_element(),
-            // Enough of the name to tell chats apart, and no more: the bar's
-            // buttons stay in reach in two panes side by side at the window's
-            // minimum width (fit_tests.rs).
-            _ => div()
+        let renaming = self.renaming.as_ref().filter(|r| r.chat == id);
+        let name_min = u(if roomy { 40. } else { 24. });
+        let name: AnyElement = match renaming {
+            Some(r) => div()
+                .debug_selector(|| format!("{key}-rename"))
                 .flex_1()
-                .min_w(u(if roomy { 40. } else { 24. }))
+                .min_w(name_min)
+                .child(Input::new(&r.input).h(u(18.)))
+                .into_any_element(),
+            None => div()
+                .debug_selector(|| format!("{key}-name"))
+                .flex_1()
+                .min_w(name_min)
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -408,20 +432,24 @@ impl Board {
                 .child(SharedString::from(chat.name.clone()))
                 .into_any_element(),
         };
-        // What says more about the chat gives way first: it shrinks, cut short,
-        // before the name does.
-        let detail = |s: String| div().flex_shrink(1.).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(s);
-        let context = live.context.map(|c| format!("ctx {:.0}%", (c * 100.).clamp(0., 100.)));
-        let mut context_tip = context.as_ref().map(|_| ctx_tip(live.context_auto_compact, live.to_compact));
-        let tips = self.tips;
-        let has_context = context.is_some();
-        let details = if roomy {
-            bar_details([Some(chat.model_effort()), Some(format!("{}: {}", provider_label(chat.provider), chat.account)), context])
-        } else {
-            Vec::new()
-        };
-        // The context, where there is one, is the last of them.
-        let context_at = details.len().checked_sub(1).filter(|_| has_context);
+        // The inline editor gets the room normally shared by the details.
+        let details = (roomy && renaming.is_none()).then(|| {
+            div().flex().flex_shrink(1.).min_w_0().overflow_hidden().items_center().gap(u(4.)).children(
+                bar_details(chat, state.folder_of(id).map(|f| f.path.as_str()), &live).into_iter().map(|BarDetail { label, tip }| {
+                    let detail = div().flex_shrink(1.).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label);
+                    match tip {
+                        Some((suffix, lines)) => detail
+                            // Give the folder the room left by the other details.
+                            .when(suffix == "folder", |d| d.flex_basis(relative(0.)).flex_grow(1.))
+                            .id(SharedString::from(format!("{key}-{suffix}")))
+                            .debug_selector(|| format!("{key}-{suffix}"))
+                            .tip(self.tips, p, lines)
+                            .into_any_element(),
+                        None => detail.into_any_element(),
+                    }
+                }),
+            )
+        });
         let chat_id = id.to_owned();
         let menu_open = self.menu == Some(at);
         let mut bar = div()
@@ -457,18 +485,7 @@ impl Board {
                     .child(tag(p, Some(p.info), t).whitespace_nowrap().overflow_hidden().text_ellipsis())
             }))
             .child(name)
-            .children(details.into_iter().enumerate().map(|(n, s)| {
-                if Some(n) != context_at {
-                    return detail(s).into_any_element();
-                }
-                // The hover test needs its bounds even though this detail can
-                // give way entirely to the bar's buttons.
-                detail(s)
-                    .id(SharedString::from(format!("{key}-ctx")))
-                    .debug_selector(|| format!("{key}-ctx"))
-                    .when_some(context_tip.take(), |d, lines| d.tip(tips, p, lines))
-                    .into_any_element()
-            }));
+            .children(details);
         // A bar with no room leaves what the chat's details say out, and ID,
         // Take off the board and Delete to the menu, which has all three;
         // Delete goes first (`DELETE_BAR`).
@@ -1082,7 +1099,8 @@ impl Render for Board {
 
 #[cfg(test)]
 mod tests {
-    use super::{bar_details, menu_side};
+    use super::{BarDetail, bar_details, menu_side};
+    use crate::{demo, workspace::Live};
     use gpui::{Bounds, point, px, size};
 
     /// Below its bar where it fits or there is no more room above; else
@@ -1099,11 +1117,25 @@ mod tests {
 
     #[test]
     fn a_bars_details_are_set_apart_and_those_it_lacks_leave_no_dot() {
-        let s = |t: &str| Some(t.to_owned());
-        assert_eq!(
-            bar_details([s("Opus · high"), s("Claude Code: backend"), s("ctx 9%")]),
-            ["Opus · high", "· Claude Code: backend", "· ctx 9%"]
-        );
-        assert_eq!(bar_details([s(""), s("Codex: work"), None]), ["Codex: work"]);
+        let state = demo::term_state();
+        let mut chat = state.find(demo::DEMO_CHAT).unwrap().clone();
+        let live = Live { context: Some(0.09), ..Live::default() };
+        let labels = |details: Vec<BarDetail>| details.into_iter().map(|d| d.label).collect::<Vec<_>>();
+        assert_eq!(labels(bar_details(&chat, Some("/work/luna"), &live)), ["Opus · high", "· Claude Code: work", "· luna", "· ctx 9%"]);
+        chat.model = None;
+        chat.effort.clear();
+        assert_eq!(labels(bar_details(&chat, None, &live)), ["Claude Code: work", "· ctx 9%"]);
+        assert_eq!(labels(bar_details(&chat, Some(""), &Live::default())), ["Claude Code: work"]);
+    }
+
+    #[test]
+    fn a_bars_folder_prefers_the_worktree_and_tips_its_full_path() {
+        let state = demo::term_state();
+        let mut chat = state.find(demo::DEMO_CHAT).unwrap().clone();
+        let path = r"C:\work\luna\.claude\worktrees\wt-130\";
+        chat.worktree_path = Some(path.into());
+        let details = bar_details(&chat, Some(r"C:\work\luna"), &Live::default());
+        assert_eq!(details[2].label, "· wt-130");
+        assert_eq!(details[2].tip, Some(("folder", vec![path.into()])));
     }
 }

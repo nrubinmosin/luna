@@ -1712,12 +1712,9 @@ impl Workspace {
     }
 
     pub fn next_board(&mut self, cx: &mut Context<Self>) {
-        if self.frozen {
-            return;
+        if let Some(board) = self.state.next_board() {
+            self.set_board(board, cx);
         }
-        self.state.next_board();
-        self.focus_home();
-        self.changed(cx);
     }
 
     pub fn set_layout(&mut self, n: usize, cx: &mut Context<Self>) {

@@ -163,9 +163,8 @@ pub(super) struct Registry {
     pub(super) stopped: HashMap<(String, String), u64>,
     /// How each pty session last exited, by id, until it runs again.
     pub(super) exits: HashMap<String, Option<u32>>,
-    /// How far each caller has been told a usage window has gone, by (caller,
-    /// `provider/name`, the window's label).
-    pub(super) quota_told: HashMap<(String, String, String), QuotaTold>,
+    /// The highest level seen in each usage window, by (`provider/name`, label).
+    pub(super) quota_told: HashMap<(String, String), QuotaTold>,
     /// Lines for a caller's next notice that no debt brings: by caller.
     pub(super) news: Vec<(String, String)>,
     pub(super) system_news: Vec<SystemNews>,

@@ -74,7 +74,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   efforts).
 - `account` as a list, of one provider: the first signed in with every usage window under 95%
   or unknown, else the most room. `accountChoice` says which and why.
-- The person's top chat gets quota (90%, 95%), breaker, folder-skills and places news.
+- A quota crossing (90%, 95%) goes to each person's top chat with live helpers
+  on the account at that reading. Use `luna_account_list` for current usage.
+- The person's top chat also gets breaker, folder-skills and places news.
   A delegate's own usage-limit stop is a failure reported to its parent.
 - A model the organization does not allow is swapped by the CLI: `resolvedModel` (get diagnostics) says what ran.
 

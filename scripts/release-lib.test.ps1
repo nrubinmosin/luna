@@ -404,6 +404,9 @@ A security and engineering release. Agent tools now follow least privilege.
 [Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.2...HEAD
 [0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.11...v0.10.0
+[0.9.11]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.9.11
+[0.9.10]: https://github.com/nrubinmosin/luna/compare/v0.9.9...v0.9.10
 [details]: https://example.com/details "More details"
 [Details]: https://example.com/second-definition-is-ignored
 [spec]: <https://example.com/spec> 'The spec'
@@ -412,6 +415,221 @@ A security and engineering release. Agent tools now follow least privilege.
 '@ -replace "`r`n", "`n"
     $tree = New-Tree notes
     Set-Content (Join-Path $tree 'CHANGELOG.md') $changelog -NoNewline
+
+    Check 'fragments collect by heading and filename, with compare links from the previous section' {
+        $root = New-Tree fragments
+        $dir = New-Item -ItemType Directory (Join-Path $root 'changes')
+        $repo = Get-RepoUrl $root
+        $before = @"
+# Changelog
+
+## [Unreleased]
+
+## [1.2.3] - 2026-11-08
+
+Previous notes.
+
+## [1.2.2] - 2026-11-07
+
+Older notes.
+
+[Unreleased]: $repo/compare/v1.2.3...HEAD
+[1.2.3]: $repo/compare/v1.2.2...v1.2.3
+[1.2.2]: $repo/compare/v1.2.1...v1.2.2
+"@ -replace '\r?\n', "`r`n"
+        $log = Join-Path $root 'CHANGELOG.md'
+        Set-Content -LiteralPath $log $before -NoNewline
+        Set-Content -LiteralPath (Join-Path $dir 'README.md') 'Instructions.'
+        Set-Content -LiteralPath (Join-Path $dir 'z.md') "### Fixed`n`n- Last fix.`n`n### Added`n`n- A new view."
+        Set-Content -LiteralPath (Join-Path $dir 'a-1.md') "### Fixed`r`n- First fix,`r`n  with a wrapped line.`r`n`r`n### Changed`r`n- A setting."
+        Set-Content -LiteralPath (Join-Path $dir 'internal.md') "### None`n`nAn internal change."
+        $fragments = @(Get-ChangeFragments $root)
+        Assert-Equal ($fragments.Name -join ' ') 'a-1.md internal.md z.md'
+
+        $date = (Get-Date).ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+        $expected = @"
+# Changelog
+
+## [Unreleased]
+
+## [1.2.4] - $date
+
+### Added
+
+- A new view.
+
+### Changed
+
+- A setting.
+
+### Fixed
+
+- First fix,
+  with a wrapped line.
+- Last fix.
+
+## [1.2.3] - 2026-11-08
+
+Previous notes.
+
+## [1.2.2] - 2026-11-07
+
+Older notes.
+
+[Unreleased]: $repo/compare/v1.2.4...HEAD
+[1.2.4]: $repo/compare/v1.2.3...v1.2.4
+[1.2.3]: $repo/compare/v1.2.2...v1.2.3
+[1.2.2]: $repo/compare/v1.2.1...v1.2.2
+"@ -replace '\r?\n', "`r`n"
+        Assert-Equal (New-ReleaseChangelog '1.2.4' $fragments $root) $expected
+        Assert-Equal ([IO.File]::ReadAllText($log)) $before
+        Assert-Throws { New-ReleaseChangelog '1.2.3' $fragments $root } 'already has'
+    }
+
+    Check 'the bump refuses a missing historical link or a stale Unreleased comparison' {
+        $root = New-Tree changelog-links
+        $log = Join-Path $root 'CHANGELOG.md'
+        $before = $changelog.Replace("### Fixed`n`n- Not out yet.`n`n", '')
+        $missing = $before -creplace '(?m)^\[0\.10\.0\]: .*\n', ''
+        Set-Content -LiteralPath $log $missing -NoNewline
+        Assert-Throws { New-ReleaseChangelog '0.10.3' @() $root } 'no link definition for `[0.10.0`]'
+        $stale = $before.Replace('v0.10.2...HEAD', 'v0.10.1...HEAD')
+        Set-Content -LiteralPath $log $stale -NoNewline
+        Assert-Throws { New-ReleaseChangelog '0.10.3' @() $root } 'must compare from v0.10.2 to HEAD'
+    }
+
+    Check 'both release modes require late fragments to be collected into the current version' {
+        $root = New-Tree uncollected
+        Set-ReleaseVersion '1.2.3' $root
+        $scripts = New-Item -ItemType Directory (Join-Path $root 'scripts')
+        foreach ($file in 'lib.ps1', 'release-lib.ps1', 'release.ps1') {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $scripts
+        }
+        $dir = New-Item -ItemType Directory (Join-Path $root 'changes')
+        $late = Join-Path $dir 'late.md'
+        Set-Content -LiteralPath $late "### Fixed`n- A late fix.`n`n### Added`n- A new pane.`n`n### Changed`n- A new default."
+        $log = Join-Path $root 'CHANGELOG.md'
+        $repo = Get-RepoUrl $root
+        $before = @"
+# Changelog
+
+## [Unreleased]
+
+## [1.2.3] - 2026-11-08
+
+A handwritten intro.
+
+### Fixed
+
+- An earlier fix.
+
+## [1.2.2] - 2026-11-07
+
+The previous release.
+
+[Unreleased]: $repo/compare/v1.2.3...HEAD
+[1.2.3]: $repo/compare/v1.2.2...v1.2.3
+[1.2.2]: $repo/compare/v1.2.1...v1.2.2
+"@
+        Set-Content -LiteralPath $log $before -NoNewline
+        $release = Join-Path $scripts 'release.ps1'
+        $advice = 'Run ./scripts/release.ps1 -Bump 1.2.3 to collect them into this release'
+        Assert-Throws { & $release -DryRun } $advice
+        Assert-Throws { & $release -Local -DryRun } $advice
+
+        & $release -Bump '1.2.3' 6>$null
+        $expected = @"
+# Changelog
+
+## [Unreleased]
+
+## [1.2.3] - 2026-11-08
+
+A handwritten intro.
+
+### Added
+
+- A new pane.
+
+### Changed
+
+- A new default.
+
+### Fixed
+
+- An earlier fix.
+
+- A late fix.
+
+## [1.2.2] - 2026-11-07
+
+The previous release.
+
+[Unreleased]: $repo/compare/v1.2.3...HEAD
+[1.2.3]: $repo/compare/v1.2.2...v1.2.3
+[1.2.2]: $repo/compare/v1.2.1...v1.2.2
+"@
+        Assert-Equal ([IO.File]::ReadAllText($log)) $expected
+        Assert-Equal (Get-ReleaseVersion $root) '1.2.3'
+        Assert-Equal (Test-Path -LiteralPath $late) $false
+    }
+
+    Check 'both release modes and their dry runs require the current version intro' {
+        $root = New-Tree release-intro
+        Set-ReleaseVersion '1.2.3' $root
+        $scripts = New-Item -ItemType Directory (Join-Path $root 'scripts')
+        foreach ($file in 'lib.ps1', 'release-lib.ps1', 'release.ps1') {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $scripts
+        }
+        # Stand in for a clean, merged checkout and stop at the notes lookup.
+        function git {
+            $global:LASTEXITCODE = 0
+            switch ($args[0]) {
+                status { }
+                rev-list { '0' }
+                default { throw "Unexpected git command: $args" }
+            }
+        }
+        function gh { throw 'The release notes lookup was reached.' }
+
+        $release = Join-Path $scripts 'release.ps1'
+        $path = Join-Path $root 'CHANGELOG.md'
+        $opening = "# Changelog`n`n## [1.2.3] - 2026-11-08`n`n"
+        $entries = "### Fixed`n`n- A fix."
+        $modes = @(@{}, @{ DryRun = $true }, @{ Local = $true }, @{ Local = $true; DryRun = $true })
+        foreach ($body in $entries, '') {
+            Set-Content -LiteralPath $path ($opening + $body)
+            foreach ($mode in $modes) {
+                Assert-Throws { & $release @mode } 'Write it before the first ### heading'
+            }
+            Set-Content -LiteralPath $path ($opening + "A handwritten intro.`n`n" + $body)
+            foreach ($mode in $modes) {
+                Assert-Throws { & $release @mode } 'The release notes lookup was reached.'
+            }
+        }
+    }
+
+    Check 'fragment format rejects invalid slugs, headings, entries and exemptions' {
+        $root = New-Tree bad-fragments
+        $dir = New-Item -ItemType Directory (Join-Path $root 'changes')
+        $path = Join-Path $dir 'Bad_slug.MD'
+        Set-Content -LiteralPath $path "### Added`n- A view."
+        Assert-Throws { Get-ChangeFragments $root } 'lowercase slug'
+        Remove-Item -LiteralPath $path
+        $path = Join-Path $dir 'bad.md'
+        foreach ($invalid in @(
+            ''
+            "### fixed`n- A view."
+            "### Fixed`n- "
+            "### Added`n### Fixed`n- A view."
+            "### Added`n- A view.`nA bare paragraph."
+            "### None`n"
+            "### None`nNo entry.`n### Fixed`n- A view."
+        )) {
+            Set-Content -LiteralPath $path $invalid
+            Assert-Throws { Get-ChangeFragments $root } 'changes/bad.md'
+        }
+    }
 
     Check 'a CHANGELOG section is extracted exactly, intro and subsections' {
         $section = Get-ChangelogSection '0.10.0' $tree

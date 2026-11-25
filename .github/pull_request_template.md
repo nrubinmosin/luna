@@ -19,7 +19,7 @@
 - [ ] User guide / architecture page updated where behavior or structure changed
 - [ ] `docs/cli-compatibility.md` for a new CLI observation
 - [ ] An ADR for a consequential decision
-- [ ] `CHANGELOG.md` under [Unreleased]
+- [ ] Changelog fragment under `changes/`
 
 ## Checklist
 

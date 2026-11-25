@@ -65,18 +65,21 @@ doubt, prepare and ask.
 ```
 
 Writes the version into `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`,
-the only files that carry it.
-Write the version's section in `CHANGELOG.md`: it is the release notes
-(`release.ps1` refuses a missing or
-empty one), and its opening paragraph is what the update chip shows. Write it
-from the commits, user-facing, short. Commit as `Luna 1.2.3` (the repo's convention) and
+the only files that carry it, and collects the changelog fragments
+(`changes/*.md`, one per change) into the version's section of `CHANGELOG.md`,
+deleting them; it refuses, writing nothing, on a malformed fragment or a broken
+compare link. That section is the release notes (`release.ps1` refuses a
+missing or empty one). Write its opening paragraph by hand: it is what the
+update chip shows, user-facing and short. Read the collected entries through
+once as a user would and tighten them. Commit as `Luna 1.2.3` (the repo's convention) and
 get it onto `master` the way `master` takes changes: a pull request when it is
 protected (`docs/releasing.md`, "One-time setup"), else a push. Wait for CI on
 that commit before tagging.
 
 While the release is being cut, other sessions hold their merges into
-`master`: a merge between the bump PR and the tag conflicts the CHANGELOG
-section and moves the commit the tag must sit on.
+`master`: a merge between the bump PR and the tag moves the commit the tag
+must sit on, and leaves its fragment in `changes/`, which makes `release.ps1`
+refuse to tag until the bump is run again to collect it.
 
 ## 3. Tag
 

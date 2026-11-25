@@ -1,15 +1,14 @@
 #Requires -Version 7.4
 # Waits for CI (.github/workflows/ci.yml) on GitHub to finish for one commit and
-# reports how it ended. The gate a change passes is that run: the operator's
-# mirror pushes each slice/*, gpui/*, core/* and iteration/* branch within about
-# a minute of a commit, and CI runs on the push. Read-only: it never reruns,
-# cancels or triggers anything, and pushes nothing.
+# reports how it ended. The gate a change passes is that run, which starts when
+# the branch is pushed. Read-only: it never reruns, cancels or triggers
+# anything, and pushes nothing.
 #
 #   ./scripts/ci-wait.ps1                          HEAD of this checkout, on its branch
 #   ./scripts/ci-wait.ps1 -Branch slice/x -Sha b41a20a3
 #
-# Waits first for the run to appear (the mirror may lag), then for it to
-# complete. Exit codes:
+# Waits first for the run to appear (GitHub may lag behind the push), then
+# for it to complete. Exit codes:
 #   0  the run succeeded; prints its id, url and every job's conclusion
 #   1  the run did not succeed; prints each failed job with its failing steps
 #      and the tail of its log

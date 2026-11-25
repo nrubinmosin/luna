@@ -23,7 +23,7 @@
 //!   sends Ctrl+_ (Ctrl+Shift+-) as Windows Terminal does, and Ctrl+- is the
 //!   window's, as it is Windows Terminal's.
 //! - Ctrl+Shift+W: the next chat waiting for the person.
-//! - Ctrl+Tab: the next board. Ctrl+Shift+Tab is Claude Code's own.
+//! - Ctrl+Tab: the next board with chats. Ctrl+Shift+Tab is Claude Code's own.
 //! - Esc: what is up over the board goes back, while the peek's frame has
 //!   the keyboard; once its terminal has it, Esc is the CLI's (root.rs).
 //!   Shift+Esc closes the peek whoever has the keyboard.

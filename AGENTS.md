@@ -34,14 +34,17 @@ Rules for anyone (person or agent) changing Luna.
   `src-tauri/rust-toolchain.toml`; the experimental macOS build runs on
   GitHub's macOS runner (`gpui.yml`) on the same pin.
   The scripts take PowerShell 7.4+ (pwsh).
-- **The gate a change passes is `ci.yml` on GitHub.** The operator's mirror
-  pushes every `slice/*`, `gpui/*`, `core/*`, `iteration/*` and `stage6/*` branch to
-  origin within about a minute of a new commit, and CI runs on each push
-  (formatting, lints, the Linux and Windows builds and unit tests,
-  the PowerShell checks and the commit-message check). An agent commits with a proper
-  message, never pushes (the mirror's job, not the agent's), and reads the
-  result with `./scripts/ci-wait.ps1` (or `gh run list` / `gh run view`);
-  it never reruns or cancels a run.
+- **The gate a change passes is `ci.yml` on GitHub.** It runs on each branch
+  push (formatting, lints, the Linux and Windows builds and unit tests,
+  the PowerShell checks and the commit-message check). An agent commits with a
+  proper message, pushes its own `slice/*` and `iteration/*` branches
+  (`git push -u origin <branch>`; never `--force` onto a shared branch), and
+  reads the result with `./scripts/ci-wait.ps1` (or `gh run list` /
+  `gh run view`); it never reruns or cancels a run. It never pushes to master,
+  which changes only through a PR merged on the operator's yes.
+- A single change goes as one slice, one PR. A wave of several slices lands
+  through an `iteration/<name>` branch instead: slices merge into it, and it
+  gets one PR into master (docs/development.md, "Waves of slices").
 - The local scripts below are for the test build, the live tests and the
   narrowest check needed while editing (one test, one lint, one crate
   build), not a full local gate before every commit: every Docker build on
@@ -120,8 +123,9 @@ the code, in the same change.
   is costly to reverse in a new ADR in `docs/adr/`, from `0000-template.md`.
 - What a CLI was seen to do (a flag, a hook, a file format, a quirk) goes in
   `docs/cli-compatibility.md`, with the version it was seen on.
-- Toolchains, scripts and CI are in `docs/development.md`; notable changes go
-  under [Unreleased] in `CHANGELOG.md`.
+- Toolchains, scripts and CI are in `docs/development.md`. Record notable
+  changes in a [fragment under changes/](changes/README.md) and keep
+  [Unreleased] in `CHANGELOG.md` empty.
 
 ## Both providers
 Luna runs Claude Code and Codex side by side, and what one CLI does to a

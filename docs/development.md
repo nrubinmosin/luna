@@ -44,21 +44,20 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 ## Scripts
 
 The gate a change passes is [CI](#ci) on GitHub, not a run of the scripts
-below. The operator's mirror pushes `slice/*`, `gpui/*`, `core/*`,
-`iteration/*` and `stage6/*` branches to origin within about a minute of a
-new commit. `ci.yml` runs on each push. An agent commits with a proper message,
-leaves the push to the mirror, and reads the result with `./scripts/ci-wait.ps1`
-(or `gh run list` and
-`gh run view`). The local scripts are for the test build, the live tests and the
+below. `ci.yml` runs on each branch push. An agent commits with a proper
+message, pushes its branch ([CI](#ci)) and reads the result with
+`./scripts/ci-wait.ps1` (or `gh run list` and `gh run view`). The local
+scripts are for the test build, the live tests and the
 narrowest check needed while editing, not a full gate before every commit: every
 Docker build on one PC holds a machine-wide lock (`Use-BuildLock`), so
 full gates run one after another there, while CI runs them in parallel.
 
 | Command | What it does |
 | --- | --- |
-| `./scripts/ci-wait.ps1` | waits for the `ci.yml` run of a commit (`-Sha`, HEAD by default) on a branch (`-Branch`, the current one by default) in the origin repository (`-Repo`), first for it to appear (the mirror may lag), then to finish; `-TimeoutMinutes` (60) and `-PollSeconds` (30). Read-only: it reruns and cancels nothing. Prints the run's id, url and each job's conclusion; on a failure each failed job with its failing steps and the last `-LogLines` (40) lines of its log. Needs `gh`, logged in. Exits 0 on success, 1 on a failed run, 2 on timeout, 3 when `gh` is missing or not logged in, the repository, branch or commit cannot be worked out, or `gh` fails five times in a row while it polls. Its decisions are tested on sample JSON by `scripts/ci-wait-lib.test.ps1`, a step of the gate |
+| `./scripts/ci-wait.ps1` | waits for the `ci.yml` run of a commit (`-Sha`, HEAD by default) on a branch (`-Branch`, the current one by default) in the origin repository (`-Repo`), first for it to appear (GitHub may lag behind the push), then to finish; `-TimeoutMinutes` (60) and `-PollSeconds` (30). Read-only: it reruns and cancels nothing. Prints the run's id, url and each job's conclusion; on a failure each failed job with its failing steps and the last `-LogLines` (40) lines of its log. Needs `gh`, logged in. Exits 0 on success, 1 on a failed run, 2 on timeout, 3 when `gh` is missing or not logged in, the repository, branch or commit cannot be worked out, or `gh` fails five times in a row while it polls. Its decisions are tested on sample JSON by `scripts/ci-wait-lib.test.ps1`, a step of the gate |
 | `./scripts/gate.ps1` | US English, PowerShell script tests, toolchain pins, Rust formatting and lints, Linux tests and the macOS bundle script tests. Stops at the first failure and reports a summary |
 | `./scripts/gate.ps1 -Group scripts` | the PowerShell checks and commit-message tests on the host. Other groups are `rust` and `windows`; `-Group scripts,rust` runs several |
+| `./scripts/check-changes.ps1` | validates changelog fragments and requires one for product changes on feature branches |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine. `-Build` and `-Run` also work separately. `-Dir` selects the staging folder, which defaults to `test-build/windows-tests`. `-Build` writes only into a folder directly in `test-build/`. `-Filter checkout::tests,codex::trust::tests` runs tests matching either name fragment. Pass comma-separated fragments with `pwsh -File` or a string array from a PowerShell session. A filtered run fails if no tests pass. |
 | `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there, the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) included, which the Windows build leaves out (`gate.ps1 -Group rust` and the macOS workflow compile it too). Checkout mounted read-only; caches in named volumes |
@@ -69,9 +68,24 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Scale 100,125,175` shoots each at those window scales; `-Fit` runs the fit check ([below](#fit-on-small-screens)) and shoots each scene at its sizes into `fit/` under the output folder; `-Out` names another output folder |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md). It runs the test build's managed CLIs, found through their `state.json` record, or else the matching `.exe` on `PATH` (`scripts/live-tests-lib.ps1`, tested on made-up trees by `scripts/live-tests-lib.test.ps1`, a step of the gate) |
-| `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
+| `./scripts/release.ps1` | bump the version and collect changelog fragments, or tag a release for the workflow (see [releasing.md](releasing.md)) |
 | `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny and gitleaks ([below](#supply-chain)) |
 | `./scripts/third-party-notices.ps1 -Out <file>` | the license texts and source for each crate linked into the Windows exe, the Rust standard library inventory, and the components listed in `third-party-licenses/components.json`. The installer ships the notices and the release publishes them. The script fails when a shipped crate has no license text |
+
+Write release notes in `changes/<slug>.md` with a lowercase slug and a
+`###` heading such as `### Fixed`, followed by bullets. Use `### None` with
+a line explaining why when a product change needs no note. The scripts group
+runs `check-changes.ps1` to validate [the fragment format](../changes/README.md)
+and keep `## [Unreleased]` empty. A pull request uses its target branch as
+the base. For a push or local check, the checker chooses the closest merge
+base with `origin/master`, `origin/iteration/*`, `origin/stage6/*`,
+`origin/gpui/*`, or `origin/core/*`, excluding the branch being checked.
+Product changes need a fragment added in the diff or the branch's own
+fragment already present in the tree. Name that fragment after the branch
+without its prefix. The rule covers the app, native UI, installer, shipped
+assets, vendored crates, `Cargo.lock`, and Cargo's product dependency,
+feature, and release profile tables. Dedicated test files are exempt. On
+`master` and versioned release branches, only the content checks run.
 
 `pwsh -File scripts/check-text.ps1` checks every tracked text file for letters
 outside the Latin script and British spellings, and that known text types are
@@ -102,6 +116,10 @@ Test only on the test build, never on the Luna in use
   account folders is tried on throwaway accounts there, never through a junction
   or symlink to a real one: `-Run` refuses links there, and a `-DevAccount`
   outside it.
+- `scripts/test-accounts.ps1 clone` leaves the source login behind. A person
+  gives the throwaway account its own fresh sign-in under
+  `test-build/accounts`. See the Claude Code and Codex sign-in steps in
+  [Testing](testing.md#accounts).
 - `-DevCaller` sets `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`, `LUNA_DEV_ACCOUNT`),
   registering a caller `dev` whose spawns are top-level chats.
 - Drive its UI only with the [test driver file](#native-window-shots) or messages
@@ -242,13 +260,14 @@ an `OPENS` entry.
 ## CI
 
 `.github/workflows/ci.yml` runs on every branch push, every pull request and by
-hand, with the same scripts. It is the gate: a branch the operator's mirror
-pushes (`slice/*`, `gpui/*`, `core/*`, `iteration/*`, `stage6/*`) is checked by it
-within minutes of a commit, and `./scripts/ci-wait.ps1` reads the outcome:
+hand, with the same scripts. It is the gate. An agent pushes its own
+`slice/*` and `iteration/*` branches (`git push -u origin <branch>`), never with
+`--force` onto a shared branch and never to master, which changes only through a
+PR merged on the operator's yes. `./scripts/ci-wait.ps1` reads the outcome:
 
 | Job | Runs |
 | --- | --- |
-| `scripts` | `gate.ps1 -Group scripts` for the US English check and PowerShell tests, then the commit-message check over the pushed range |
+| `scripts` | `gate.ps1 -Group scripts` for the US English and changelog fragment checks and PowerShell tests, then the commit-message check over the pushed range |
 | `rust-linux` | `gate.ps1 -Group rust` in `docker/linux-check.Dockerfile`'s image |
 | `windows-build` | `gate.ps1 -Group windows`, `windows-tests.ps1 -Build` and `third-party-notices.ps1` (as the release makes it on a Linux runner), then uploads the test executables |
 | `windows-tests` | runs those executables on a `windows-2025` runner |
@@ -274,6 +293,31 @@ The project updates the Actions, images, crates and toolchains by hand through
 the gate ([ADR-0029](adr/0029-dependencies-move-by-hand.md)). Cargo-deny and
 Dependabot alerts cover crate advisories. For Actions pinned by SHA and images
 pinned by digest, review the release notes for fixes when moving the pin.
+
+## Waves of slices
+
+A single change goes as one slice, one PR into master. Several slices landed
+that way move master under each other, so each remaining one is rebased and put
+through CI again, possibly more than once. A wave of slices therefore lands
+through an integration branch:
+
+1. Cut `iteration/<name>` from `origin/master`.
+2. Cut each slice's `slice/*` branch from the iteration branch. Once it has
+   passed CI on its own push and its reviews, merge it into the iteration branch
+   with a merge commit. A master that moves is no reason to rebase it. A slice
+   that conflicts with the iteration branch has the iteration branch merged into
+   it, not a rebase, and passes CI again before it is merged.
+3. Each push of the iteration branch runs CI on the slices combined so far. A
+   slice that fails there is fixed before the PR is opened, by its author: on a
+   `slice/<name>-fix` branch cut from the iteration branch and merged back like
+   any slice, or, for a mechanical seam between slices, in a commit on the
+   iteration branch itself. Either way the fix gets its own CI run.
+4. At the end of the wave, if master has moved, merge `origin/master` into the
+   iteration branch, once. Then open one PR from it into master: one CI run
+   there judges the combined result, with no rebase and rerun for each slice.
+
+Changelog entries may become fragment files
+([#130](https://github.com/nrubinmosin/luna/issues/130)).
 
 ## Supply chain
 
@@ -405,7 +449,7 @@ Example: a new core command the UI calls, for both CLIs.
    session; [threat model](security/threat-model.md), section 3), and update
    `src-tauri/src/luna_guide.md` and the threat model's matrix (section 5).
 6. **Check.** CI on the pushed commit (`./scripts/ci-wait.ps1`; or
-   `./scripts/gate.ps1` yourself where there is no mirror),
+   `./scripts/gate.ps1` yourself where the branch cannot be pushed),
    `./scripts/linux-check.ps1` for Unix code, and the test build for anything a
    person sees. Update the user guide and the
    architecture page the change touches, and record a consequential decision as

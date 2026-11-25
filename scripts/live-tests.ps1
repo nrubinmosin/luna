@@ -10,12 +10,12 @@
 #   -NoBuild                                  run what test-build\live-tests holds
 #   -TimeoutS 240                             the most one test waits on its CLI
 #   -Renew                                    also the test that has Claude Code renew the
-#                                             account's token (LUNA_LIVE_RENEW): not on a clone
-#                                             made -WithCredentials, whose source it signs out
+#                                             throwaway account's token (LUNA_LIVE_RENEW)
 #
 # An account is a name in test-build/accounts/<anthropic|openai>/ (make one with
-# scripts/test-accounts.ps1 clone, then sign it in). Each is checked before
-# anything runs: there, no junction or symlink on the way, signed in.
+# scripts/test-accounts.ps1 clone and give it its own fresh sign-in). Before
+# anything runs, the script checks that each account exists, is signed in and
+# has no junction or symlink on the way to it.
 #
 # The tests run from test-build\live-tests, which is then their data folder
 # (paths.rs `data_dir`): their hub, settings and log (luna.log there) share
