@@ -51,7 +51,10 @@ and `sh scripts/check-commit-msg.sh --range origin/master..HEAD` a branch.
   a table row) or a single unbreakable token may run on. An issue is a
   sentence: "Fixes #12."
 - **No attribution trailers**: no `Co-Authored-By:`, no robot emoji, no
-  "Generated with ...". Authorship is git's author field only.
+  "Generated with ...". Authorship is git's author field only. Commit a
+  pull request's work under one name and email: a squash of commits by
+  several authors gets GitHub's own `Co-authored-by:` lines, which master's
+  check then refuses.
 - **The forms git writes itself stay as they are**: `Merge ...`,
   `Revert "..."` and the release bump `Luna X.Y.Z`. On a branch whose
   commits are kept, a `fixup!`, `squash!` or `amend!` commit passes the hook
