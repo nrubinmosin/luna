@@ -34,14 +34,14 @@ Rules for anyone (person or agent) changing Luna.
   `src-tauri/rust-toolchain.toml`; the experimental macOS build runs on
   GitHub's macOS runner (`gpui.yml`) on the same pin.
   The scripts take PowerShell 7.4+ (pwsh).
-- **The gate a change passes is `ci.yml` on GitHub.** The operator's mirror
-  pushes every `slice/*`, `gpui/*`, `core/*`, `iteration/*` and `stage6/*` branch to
-  origin within about a minute of a new commit, and CI runs on each push
-  (formatting, lints, the Linux and Windows builds and unit tests,
-  the PowerShell checks and the commit-message check). An agent commits with a proper
-  message, never pushes (the mirror's job, not the agent's), and reads the
-  result with `./scripts/ci-wait.ps1` (or `gh run list` / `gh run view`);
-  it never reruns or cancels a run.
+- **The gate a change passes is `ci.yml` on GitHub.** It runs on each branch
+  push (formatting, lints, the Linux and Windows builds and unit tests,
+  the PowerShell checks and the commit-message check). An agent commits with a
+  proper message, pushes its own `slice/*` and `iteration/*` branches
+  (`git push -u origin <branch>`; never `--force` onto a shared branch), and
+  reads the result with `./scripts/ci-wait.ps1` (or `gh run list` /
+  `gh run view`); it never reruns or cancels a run. It never pushes to master,
+  which changes only through a PR merged on the operator's yes.
 - A single change goes as one slice, one PR. A wave of several slices lands
   through an `iteration/<name>` branch instead: slices merge into it, and it
   gets one PR into master (docs/development.md, "Waves of slices").
