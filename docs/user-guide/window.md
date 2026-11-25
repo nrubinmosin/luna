@@ -178,8 +178,10 @@ pins it back; there is no slide-out on hover. **New chat** is at its top.
 
 **Panes.** Each pane's title bar shows the chat's status, a draft, its
 helpers (how many work, are idle and ask, as "2 working · 1 idle · !1 asks";
-a click lists them), its name, model and effort, account, how much of its
-context is used and **ID** (copies the session id). A chat whose own turn is
+a click lists them), its name, model and effort, account, launch folder,
+how much of its context is used and **ID** (copies the session id). The
+folder shows its last path component, using the worktree's name when known.
+Hover over it for the full path. A chat whose own turn is
 over while a helper still works on an answer for it is in the background. **...** opens its menu: Rename, Copy session id, Move to
 pane N, Swap with pane N, Take off the board and Delete; **_** takes the chat off the
 board, and **×** asks to delete it, in the same dialog as the sidebar's

@@ -1795,9 +1795,28 @@ mod clicks {
         assert!(w.cx.debug_bounds("tip").is_some(), "offered again back in");
     }
 
-    /// The tooltip gives the denominator and any estimated tokens remaining.
     #[gpui::test]
-    fn the_ctx_meter_tells_the_tokens_to_auto_compaction_on_hover(cx: &mut TestAppContext) {
+    fn a_panes_folder_shrinks_before_its_name(cx: &mut TestAppContext) {
+        let mut state = demo::term_state();
+        state.find_mut(demo::DEMO_CHAT).unwrap().worktree_path = Some(format!("/work/{}", "worktree".repeat(12)));
+        let mut w = open_with(cx, demo::kept(&state), up(), demo::looks());
+        let resize = |w: &mut W<'_>, span| {
+            w.cx.simulate_resize(gpui::size(gpui::px(span), gpui::px(800.)));
+            w.cx.run_until_parked();
+        };
+        resize(&mut w, 1280.);
+        let name = width(&mut w, "pane-1-name");
+        assert!(name > gpui::px(40.));
+        let folder = width(&mut w, "pane-1-folder");
+        resize(&mut w, 1000.);
+        assert_eq!(width(&mut w, "pane-1-name"), name);
+        assert!(width(&mut w, "pane-1-folder") < folder);
+    }
+
+    /// The folder tooltip gives the full path, and the context tooltip
+    /// gives the denominator and any estimated tokens remaining.
+    #[gpui::test]
+    fn a_pane_tips_the_folder_and_context_separately(cx: &mut TestAppContext) {
         let w = open_with(cx, demo::kept(&demo::chats_state(2, true)), up(), demo::looks());
         w.cx.executor().advance_clock(workspace::EVERY);
         w.cx.run_until_parked();
@@ -1808,12 +1827,17 @@ mod clicks {
         assert_eq!(tip(true, Some(347_400)), ["Share of auto-compaction limit", "~347k tokens to auto-compaction (estimated)"]);
         assert_eq!(tip(true, None), ["Share of auto-compaction limit"]);
         assert_eq!(tip(false, None), ["Share of model window"]);
-        for pane in ["pane-1-ctx", "pane-2-ctx"] {
+        for (pane, first_line) in [
+            ("pane-1-folder", r"C:\work\parser"),
+            ("pane-1-ctx", "Share of auto-compaction limit"),
+            ("pane-2-ctx", "Share of model window"),
+        ] {
             let at = w.cx.debug_bounds(pane).unwrap_or_else(|| panic!("no {pane} drawn")).center();
             w.cx.simulate_mouse_move(at, None, Modifiers::none());
             w.cx.executor().advance_clock(Duration::from_secs(1));
             w.cx.run_until_parked();
             assert!(w.cx.debug_bounds("tip").is_some(), "{pane}");
+            crate::widgets::SHOWN_TIP.with(|lines| assert_eq!(lines.borrow()[0].as_str(), first_line, "{pane}"));
             w.cx.simulate_mouse_move(point_far(), None, Modifiers::none());
             w.cx.run_until_parked();
         }

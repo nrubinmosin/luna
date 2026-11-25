@@ -243,8 +243,12 @@ pub struct Folder {
 impl Folder {
     /// The folder's last part, as a sidebar header names it.
     pub fn leaf(&self) -> &str {
-        self.path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).unwrap_or(&self.path)
+        folder_leaf(&self.path)
     }
+}
+
+pub(crate) fn folder_leaf(path: &str) -> &str {
+    path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).unwrap_or(path)
 }
 
 /// The panes of each layout of a board, in pane order; a layout uses its

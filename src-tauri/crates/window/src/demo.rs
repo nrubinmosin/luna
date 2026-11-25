@@ -528,7 +528,12 @@ pub fn scenes() -> Vec<Scene> {
             kept: kept(&term_state()),
             ..one(name, if demo == TermDemo::Waiting { link(LinkState::Starting, None, None) } else { up.clone() }, vec![])
         };
-        let chats = |name, state: crate::state::WindowState| Scene { kept: kept(&state), ..one(name, up.clone(), vec![]) };
+        let chats = |name, mut state: crate::state::WindowState| {
+            let parser = state.find_mut("c-parser").expect("the demo has a parser chat");
+            parser.worktree = true;
+            parser.worktree_path = Some(r"C:\work\parser\.claude\worktrees\wt-130".into());
+            Scene { kept: kept(&state), ..one(name, up.clone(), vec![]) }
+        };
         let mut overflow = chats("skills-overflow", chats_state(2, true));
         overflow.answers.push((cmd::ENSURE_CODEX_SESSION, json!({ "generation": 1, "skillsUnhidden": 12 })));
         let mut peek = chats("peek", chats_state(2, true));
