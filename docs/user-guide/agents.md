@@ -439,8 +439,11 @@ the current `askId`. Set `allow` to `true` to let the call proceed or
   logs the trip and shows a desktop notification. Prompts, questions, exits
   and a pair's first failure still come. Typing lifts the breaker, so the
   caller can hear the replies and the current outcome.
-- Your chat hears when an account used by live delegates under it reaches 90%
-  and then 95% of a usage window, once each per window. It also hears when
+- Your chat hears when an account crosses 90% or 95% of a usage window while
+  it has live helpers on that account at any depth. The first reading above a
+  threshold counts as a crossing, and Luna reports the higher threshold if
+  the reading crosses both. Starting helpers later cannot repeat the notice.
+  Use `luna_account_list` for the current usage. Your chat also hears when
   a delegate turn starts without its folder skills or a delegate's spawn is
   refused for want of places. The caller still gets the spawn error. A
   delegate that stops on a usage limit is reported to its parent as usual.
