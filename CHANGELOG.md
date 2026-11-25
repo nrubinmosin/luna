@@ -8,6 +8,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the option to copy a source account's login with
+  `test-accounts.ps1 clone`. Throwaway accounts get their own sign-in so a
+  token refresh in a clone cannot sign the source account out.
+
 ## [0.22.0] - 2026-11-25
 
 Panes stand apart in the dark theme and have a delete button, Claude Code

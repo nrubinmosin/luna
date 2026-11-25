@@ -2,9 +2,9 @@
 # Throwaway accounts for the test build and the live tests, in test-build/accounts
 # (ignored by git), the test build's default accounts folder.
 #
-#   ./scripts/test-accounts.ps1 clone -Source <account folder> -Provider anthropic|openai [-Name x] [-WithCredentials]
+#   ./scripts/test-accounts.ps1 clone -Source <account folder> -Provider anthropic|openai [-Name x]
 #       an independent copy at test-build/accounts/<provider>/<name> (the source's
-#       folder name by default), without its login unless -WithCredentials
+#       folder name by default), without its login
 #   ./scripts/test-accounts.ps1 list            the accounts there, and which are signed in
 #   ./scripts/test-accounts.ps1 clean [-Name x] [-Provider p]
 #       deletes one account there, or all of them
@@ -16,10 +16,8 @@
 # `clean` deletes nothing through a link either.
 #
 # The conversations, logs and prompt history are left behind (CLAUDE_SKIP,
-# CODEX_SKIP): bulky, personal, and no test needs them. The login is left behind
-# too unless asked for. Copied, it is the same OAuth grant in two folders, and
-# its refresh tokens rotate: whichever folder refreshes first leaves the other
-# holding a token that no longer works, so a test run can sign the original out.
+# CODEX_SKIP): bulky, personal, and no test needs them. A clone gets its own
+# fresh sign-in because refreshing a shared OAuth token can sign the source out.
 param(
     [Parameter(Position = 0, Mandatory)]
     [ValidateSet('clone', 'list', 'clean', 'self-test')]
@@ -27,8 +25,7 @@ param(
     [string]$Source,
     [ValidateSet('anthropic', 'openai')]
     [string]$Provider,
-    [string]$Name,
-    [switch]$WithCredentials
+    [string]$Name
 )
 . "$PSScriptRoot/lib.ps1"
 
@@ -38,11 +35,8 @@ $AccountsRoot = Join-Path $TestBuild 'accounts'
 # What a clone leaves out, by top-level name (wildcards allowed) in the account
 # folder. Codex keeps its logs and thread history in SQLite files too, with
 # their -wal and -shm beside them.
-$CLAUDE_SKIP = @('projects', 'file-history', 'shell-snapshots', 'debug', 'logs', 'history.jsonl')
-$CODEX_SKIP = @('sessions', 'archived_sessions', 'log', 'logs', 'history.jsonl', 'logs_*.sqlite*', 'thread_history_*.sqlite*')
-$CREDENTIALS = @{ anthropic = '.credentials.json'; openai = 'auth.json' }
-
-function Get-Credentials([string]$Provider) { $CREDENTIALS[$Provider] }
+$CLAUDE_SKIP = @('.credentials.json', 'projects', 'file-history', 'shell-snapshots', 'debug', 'logs', 'history.jsonl')
+$CODEX_SKIP = @('auth.json', 'sessions', 'archived_sessions', 'log', 'logs', 'history.jsonl', 'logs_*.sqlite*', 'thread_history_*.sqlite*')
 
 # The one step that signs a copy in, for the copy at $Path.
 function Get-LoginStep([string]$Provider, [string]$Path) {
@@ -93,7 +87,7 @@ function Assert-AccountName([string]$Name) {
     }
 }
 
-function Invoke-Clone([string]$Source, [string]$Provider, [string]$Name, [bool]$WithCredentials) {
+function Invoke-Clone([string]$Source, [string]$Provider, [string]$Name) {
     if (-not $Source -or -not $Provider) { throw 'clone needs -Source and -Provider' }
     $src = [IO.Path]::GetFullPath($Source, (Get-Location).Path)
     if (-not (Test-Path -LiteralPath $src -PathType Container)) { throw "$src is not a folder" }
@@ -107,8 +101,6 @@ function Invoke-Clone([string]$Source, [string]$Provider, [string]$Name, [bool]$
     Assert-NoLinkDown (Split-Path -Parent $dest)
 
     $skip = if ($Provider -eq 'anthropic') { $CLAUDE_SKIP } else { $CODEX_SKIP }
-    $cred = Get-Credentials $Provider
-    if (-not $WithCredentials) { $skip += $cred }
     $looks = if ($Provider -eq 'anthropic') { '.claude.json', '.credentials.json', 'settings.json' } else { 'config.toml', 'auth.json' }
     if (-not ($looks | Where-Object { Test-Path -LiteralPath (Join-Path $src $_) })) {
         Write-Warning "$src has none of $($looks -join ', '): is it a $Provider account folder?"
@@ -131,14 +123,8 @@ function Invoke-Clone([string]$Source, [string]$Provider, [string]$Name, [bool]$
     }
     Write-Host "cloned $src -> $dest ($files files, $([math]::Round($bytes / 1MB, 1)) MB)"
     if ($left) { Write-Host "left out: $($left -join ', ')" }
-    if ($WithCredentials) {
-        Write-Warning ("copied the login ($cred). OAuth refresh tokens rotate: the first of the two folders to refresh " +
-            "leaves the other with a dead token, so using this copy can sign the original out, and the other way round. " +
-            "Sign the copy in on its own instead where you can.")
-    } else {
-        Write-Host 'not signed in; sign it in once with:'
-        Write-Host "  $(Get-LoginStep $Provider $dest)"
-    }
+    Write-Host 'sign in to the clone with:'
+    Write-Host "  $(Get-LoginStep $Provider $dest)"
     $dest
 }
 
@@ -180,7 +166,7 @@ function Invoke-Clean([string]$Name, [string]$Provider) {
 function Invoke-SelfTest {
     $id = [guid]::NewGuid().ToString('n').Substring(0, 8)
     $work = Join-Path $TestBuild "test-accounts-selftest-$id"
-    $names = @("selftest-$id", "selftest-$id-creds")
+    $name = "selftest-$id"
     $link = Join-Path $AccountsRoot 'anthropic' "selftest-$id-link"
     $fails = [Collections.Generic.List[string]]::new()
     function Check([bool]$Ok, [string]$What) {
@@ -208,28 +194,28 @@ function Invoke-SelfTest {
         Write-Fake (Join-Path $codex 'thread_history_1.sqlite-wal') 'x'
         Write-Fake (Join-Path $codex 'state_5.sqlite') 'x'
 
-        $a = Invoke-Clone $claude 'anthropic' $names[0] $false | Select-Object -Last 1
+        $a = Invoke-Clone $claude 'anthropic' $name | Select-Object -Last 1
         Check (Test-Path (Join-Path $a 'plugins/x/plugin.json')) 'clone copies the account tree'
-        Check (-not (Test-Path (Join-Path $a '.credentials.json'))) 'clone leaves the Claude login out by default'
+        Check (-not (Test-Path (Join-Path $a '.credentials.json'))) 'clone leaves the Claude login out'
         Check (-not (Test-Path (Join-Path $a 'projects')) -and -not (Test-Path (Join-Path $a 'history.jsonl'))) 'clone leaves Claude projects/ and history out'
-        $o = Invoke-Clone $codex 'openai' $names[0] $false | Select-Object -Last 1
+        $o = Invoke-Clone $codex 'openai' $name | Select-Object -Last 1
         Check (Test-Path (Join-Path $o 'skills/s/SKILL.md')) 'clone copies a Codex account'
-        Check (-not (Test-Path (Join-Path $o 'auth.json'))) 'clone leaves the Codex login out by default'
+        Check (-not (Test-Path (Join-Path $o 'auth.json'))) 'clone leaves the Codex login out'
         Check (-not (Test-Path (Join-Path $o 'sessions')) -and -not (Test-Path (Join-Path $o 'log'))) 'clone leaves Codex sessions/ and log/ out'
         Check (-not (Test-Path (Join-Path $o 'logs_2.sqlite')) -and -not (Test-Path (Join-Path $o 'thread_history_1.sqlite-wal')) -and (Test-Path (Join-Path $o 'state_5.sqlite'))) 'clone leaves Codex SQLite logs and history out, its state in'
-        $c = Invoke-Clone $claude 'anthropic' $names[1] $true 3>$null | Select-Object -Last 1
-        Check (Test-Path (Join-Path $c '.credentials.json')) '-WithCredentials copies the login'
-        $listed = @(Get-TestAccounts | Where-Object Name -in $names)
-        Check ($listed.Count -eq 3) 'list shows the clones'
-        Check (($listed | Where-Object { $_.Name -eq $names[1] }).SignedIn -and -not ($listed | Where-Object { $_.Name -eq $names[0] -and $_.SignedIn })) 'list tells signed in from not'
+        Write-Fake (Join-Path $a '.credentials.json') '{"claudeAiOauth":{"refreshToken":"clone-fake"}}'
+        $listed = @(Get-TestAccounts | Where-Object Name -eq $name)
+        Check ($listed.Count -eq 2) 'list shows the clones'
+        Check (($listed | Where-Object Provider -eq 'anthropic').SignedIn -and
+            -not ($listed | Where-Object Provider -eq 'openai').SignedIn) 'list shows the sign-in status of each clone'
 
-        $threw = try { Invoke-Clone $claude 'anthropic' $names[0] $false | Out-Null; $false } catch { $true }
+        $threw = try { Invoke-Clone $claude 'anthropic' $name | Out-Null; $false } catch { $true }
         Check $threw 'clone refuses an account that exists'
         $linked = Join-Path $work 'linked'
         New-Item -ItemType Directory $linked | Out-Null
         $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
         New-Item -ItemType $linkType -Path (Join-Path $linked 'inner') -Target $codex | Out-Null
-        $threw = try { Invoke-Clone $linked 'openai' "selftest-$id-linked" $false | Out-Null; $false } catch { $_.Exception.Message -match 'junctions or symlinks' }
+        $threw = try { Invoke-Clone $linked 'openai' "selftest-$id-linked" | Out-Null; $false } catch { $_.Exception.Message -match 'junctions or symlinks' }
         Check ($threw -and -not (Test-Path (Join-Path $AccountsRoot 'openai' "selftest-$id-linked"))) 'clone refuses a source with a link in it'
 
         New-Item -ItemType $linkType -Path $link -Target $claude | Out-Null
@@ -237,11 +223,10 @@ function Invoke-SelfTest {
         Check ($threw -and (Test-Path (Join-Path $claude '.credentials.json'))) 'clean refuses a link and leaves its target alone'
         [IO.Directory]::Delete($link)
 
-        Invoke-Clean $names[0] 'anthropic'
+        Invoke-Clean $name 'anthropic'
         Check (-not (Test-Path $a) -and (Test-Path $o)) 'clean -Name -Provider deletes that one only'
-        Invoke-Clean $names[0] ''
-        Invoke-Clean $names[1] ''
-        Check (-not (Get-TestAccounts | Where-Object Name -in $names)) 'clean -Name deletes the rest'
+        Invoke-Clean $name ''
+        Check (-not (Get-TestAccounts | Where-Object Name -eq $name)) 'clean -Name deletes the rest'
         Check (Test-Path (Join-Path $claude '.credentials.json')) 'the source is untouched'
     } finally {
         if (Test-Path -LiteralPath $link) { [IO.Directory]::Delete($link) }
@@ -249,10 +234,8 @@ function Invoke-SelfTest {
             [IO.Directory]::Delete($inner.FullName)
         }
         foreach ($p in 'anthropic', 'openai') {
-            foreach ($n in $names) {
-                $d = Join-Path $AccountsRoot $p $n
-                if ((Test-Path -LiteralPath $d) -and -not (Test-Link $d)) { Remove-Item -LiteralPath $d -Recurse -Force }
-            }
+            $d = Join-Path $AccountsRoot $p $name
+            if ((Test-Path -LiteralPath $d) -and -not (Test-Link $d)) { Remove-Item -LiteralPath $d -Recurse -Force }
         }
         if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
     }
@@ -261,7 +244,7 @@ function Invoke-SelfTest {
 }
 
 switch ($Command) {
-    'clone' { Invoke-Clone $Source $Provider $Name $WithCredentials.IsPresent | Out-Null }
+    'clone' { Invoke-Clone $Source $Provider $Name | Out-Null }
     'list' { Get-TestAccounts | Format-Table Provider, Name, SignedIn, Link, Path -AutoSize }
     'clean' { Invoke-Clean $Name $Provider }
     'self-test' { Invoke-SelfTest }

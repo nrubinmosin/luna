@@ -102,6 +102,10 @@ Test only on the test build, never on the Luna in use
   account folders is tried on throwaway accounts there, never through a junction
   or symlink to a real one: `-Run` refuses links there, and a `-DevAccount`
   outside it.
+- `scripts/test-accounts.ps1 clone` leaves the source login behind. A person
+  gives the throwaway account its own fresh sign-in under
+  `test-build/accounts`. See the Claude Code and Codex sign-in steps in
+  [Testing](testing.md#accounts).
 - `-DevCaller` sets `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`, `LUNA_DEV_ACCOUNT`),
   registering a caller `dev` whose spawns are top-level chats.
 - Drive its UI only with the [test driver file](#native-window-shots) or messages
