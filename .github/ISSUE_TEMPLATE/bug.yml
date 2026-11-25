@@ -1,0 +1,90 @@
+name: Bug
+description: Something in Luna does not work as described.
+type: Bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go through [private reporting](https://github.com/nrubinmosin/luna/security/advisories/new) (SECURITY.md), never here.
+        Search [open and closed issues](https://github.com/nrubinmosin/luna/issues?q=is%3Aissue) first; a comment on an existing one beats a new one.
+
+  - type: input
+    id: luna-version
+    attributes:
+      label: Luna version
+      description: Settings → Versions.
+      placeholder: "0.23.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: dropdown
+    id: cli
+    attributes:
+      label: Which CLI
+      description: The CLI the session runs, if the problem is in one.
+      options:
+        - Claude Code
+        - Codex
+        - Both
+        - Not about a CLI
+    validations:
+      required: true
+
+  - type: input
+    id: cli-version
+    attributes:
+      label: CLI version
+      description: Settings → Versions. Leave empty if the problem is not about a CLI.
+      placeholder: "Claude Code 2.1.290"
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The symptom, as you saw it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered. If it happens only sometimes, say how often and what was going on.
+      placeholder: |
+        1. Open a Codex chat with a git worktree box.
+        2. Ask it to start a helper.
+        3. The helper's row stays "starting".
+    validations:
+      required: true
+
+  - type: textarea
+    id: session
+    attributes:
+      label: Session details
+      description: Permission mode (Claude Code) or approval and sandbox (Codex); a worktree box, Luna's tools, a helper or a lead — whatever applies.
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Relevant lines from `luna.log`, next to the exe. It holds no chat text, but check it for paths you would rather not share.
+      render: text

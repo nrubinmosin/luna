@@ -1,0 +1,46 @@
+name: Task
+description: A unit of work with a checkable end, for the maintainer and agents. To report a problem or suggest a feature, use those forms.
+type: Task
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The issue is the spec: whoever takes it, a person or an agent, works from this text alone.
+        One outcome per issue; a larger effort is a parent issue with sub-issues.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What is true when this is done, and why it is worth doing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: seen
+    attributes:
+      label: Seen
+      description: The evidence — what was observed, versions, paths, a command that reproduces it. Links over pasted logs.
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Each bullet checkable by someone who did not write the change — a test, a command, a behavior on the test build.
+      placeholder: |
+        - A helper's leftover process idle for 60 minutes is named once in its parent chat.
+        - `cargo test -p luna power::` covers the idle detection.
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: What this deliberately leaves alone.
+
+  - type: textarea
+    id: both-clis
+    attributes:
+      label: Both CLIs
+      description: What Claude Code and Codex each do here and what Luna does about it; "Codex needs nothing, because …" is an answer.

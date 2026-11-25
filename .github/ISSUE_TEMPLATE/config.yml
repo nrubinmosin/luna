@@ -1,0 +1,13 @@
+# Every issue starts from a form (CONTRIBUTING.md, "Issues"). This closes only
+# the web's blank issue: `gh issue create` and the API still file one.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/nrubinmosin/luna/security/advisories/new
+    about: Privately, through GitHub's vulnerability reporting (SECURITY.md). Never in a public issue.
+  - name: Ask a question
+    url: https://github.com/nrubinmosin/luna/discussions
+    about: How to do something with Luna, or whether it can — Discussions, not an issue.
+  - name: Read the user guide
+    url: https://github.com/nrubinmosin/luna/tree/master/docs/user-guide
+    about: What each part of Luna does and how to set it up.
