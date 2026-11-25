@@ -42,6 +42,9 @@ Rules for anyone (person or agent) changing Luna.
   message, never pushes (the mirror's job, not the agent's), and reads the
   result with `./scripts/ci-wait.ps1` (or `gh run list` / `gh run view`);
   it never reruns or cancels a run.
+- A single change goes as one slice, one PR. A wave of several slices lands
+  through an `iteration/<name>` branch instead: slices merge into it, and it
+  gets one PR into master (docs/development.md, "Waves of slices").
 - The local scripts below are for the test build, the live tests and the
   narrowest check needed while editing (one test, one lint, one crate
   build), not a full local gate before every commit: every Docker build on

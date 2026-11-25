@@ -275,6 +275,31 @@ the gate ([ADR-0029](adr/0029-dependencies-move-by-hand.md)). Cargo-deny and
 Dependabot alerts cover crate advisories. For Actions pinned by SHA and images
 pinned by digest, review the release notes for fixes when moving the pin.
 
+## Waves of slices
+
+A single change goes as one slice, one PR into master. Several slices landed
+that way move master under each other, so each remaining one is rebased and put
+through CI again, possibly more than once. A wave of slices therefore lands
+through an integration branch:
+
+1. Cut `iteration/<name>` from `origin/master`.
+2. Cut each slice's `slice/*` branch from the iteration branch. Once it has
+   passed CI on its own push and its reviews, merge it into the iteration branch
+   with a merge commit. A master that moves is no reason to rebase it. A slice
+   that conflicts with the iteration branch has the iteration branch merged into
+   it, not a rebase, and passes CI again before it is merged.
+3. Each push of the iteration branch runs CI on the slices combined so far. A
+   slice that fails there is fixed before the PR is opened, by its author: on a
+   `slice/<name>-fix` branch cut from the iteration branch and merged back like
+   any slice, or, for a mechanical seam between slices, in a commit on the
+   iteration branch itself. Either way the fix gets its own CI run.
+4. At the end of the wave, if master has moved, merge `origin/master` into the
+   iteration branch, once. Then open one PR from it into master: one CI run
+   there judges the combined result, with no rebase and rerun for each slice.
+
+Changelog entries may become fragment files
+([#130](https://github.com/nrubinmosin/luna/issues/130)).
+
 ## Supply chain
 
 `./scripts/supply-chain.ps1` runs these, `deny` and `secrets` in Docker on a pinned tool, `tests` in PowerShell on the host:
