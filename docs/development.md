@@ -59,6 +59,7 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/ci-wait.ps1` | waits for the `ci.yml` run of a commit (`-Sha`, HEAD by default) on a branch (`-Branch`, the current one by default) in the origin repository (`-Repo`), first for it to appear (the mirror may lag), then to finish; `-TimeoutMinutes` (60) and `-PollSeconds` (30). Read-only: it reruns and cancels nothing. Prints the run's id, url and each job's conclusion; on a failure each failed job with its failing steps and the last `-LogLines` (40) lines of its log. Needs `gh`, logged in. Exits 0 on success, 1 on a failed run, 2 on timeout, 3 when `gh` is missing or not logged in, the repository, branch or commit cannot be worked out, or `gh` fails five times in a row while it polls. Its decisions are tested on sample JSON by `scripts/ci-wait-lib.test.ps1`, a step of the gate |
 | `./scripts/gate.ps1` | US English, PowerShell script tests, toolchain pins, Rust formatting and lints, Linux tests and the macOS bundle script tests. Stops at the first failure and reports a summary |
 | `./scripts/gate.ps1 -Group scripts` | the PowerShell checks and commit-message tests on the host. Other groups are `rust` and `windows`; `-Group scripts,rust` runs several |
+| `./scripts/check-changes.ps1` | validates changelog fragments and requires one for product changes on feature branches |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine. `-Build` and `-Run` also work separately. `-Dir` selects the staging folder, which defaults to `test-build/windows-tests`. `-Build` writes only into a folder directly in `test-build/`. `-Filter checkout::tests,codex::trust::tests` runs tests matching either name fragment. Pass comma-separated fragments with `pwsh -File` or a string array from a PowerShell session. A filtered run fails if no tests pass. |
 | `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there, the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) included, which the Windows build leaves out (`gate.ps1 -Group rust` and the macOS workflow compile it too). Checkout mounted read-only; caches in named volumes |
@@ -69,9 +70,18 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Scale 100,125,175` shoots each at those window scales; `-Fit` runs the fit check ([below](#fit-on-small-screens)) and shoots each scene at its sizes into `fit/` under the output folder; `-Out` names another output folder |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md). It runs the test build's managed CLIs, found through their `state.json` record, or else the matching `.exe` on `PATH` (`scripts/live-tests-lib.ps1`, tested on made-up trees by `scripts/live-tests-lib.test.ps1`, a step of the gate) |
-| `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
+| `./scripts/release.ps1` | bump the version and collect changelog fragments, or tag a release for the workflow (see [releasing.md](releasing.md)) |
 | `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny and gitleaks ([below](#supply-chain)) |
 | `./scripts/third-party-notices.ps1 -Out <file>` | the license texts and source for each crate linked into the Windows exe, the Rust standard library inventory, and the components listed in `third-party-licenses/components.json`. The installer ships the notices and the release publishes them. The script fails when a shipped crate has no license text |
+
+Write release notes in `changes/<slug>.md` with a lowercase slug and a
+`###` heading such as `### Fixed`, followed by bullets. Use `### None` with
+a line explaining why when a product change needs no note. The scripts group
+runs `check-changes.ps1` to validate [the fragment format](../changes/README.md)
+and keep `## [Unreleased]` empty. It compares feature branches with their
+merge base with `origin/master` and requires a new fragment for changes to
+the app, native UI, installer, shipped assets, or product dependency
+declarations. Dedicated test files are exempt.
 
 `pwsh -File scripts/check-text.ps1` checks every tracked text file for letters
 outside the Latin script and British spellings, and that known text types are
@@ -248,7 +258,7 @@ within minutes of a commit, and `./scripts/ci-wait.ps1` reads the outcome:
 
 | Job | Runs |
 | --- | --- |
-| `scripts` | `gate.ps1 -Group scripts` for the US English check and PowerShell tests, then the commit-message check over the pushed range |
+| `scripts` | `gate.ps1 -Group scripts` for the US English and changelog fragment checks and PowerShell tests, then the commit-message check over the pushed range |
 | `rust-linux` | `gate.ps1 -Group rust` in `docker/linux-check.Dockerfile`'s image |
 | `windows-build` | `gate.ps1 -Group windows`, `windows-tests.ps1 -Build` and `third-party-notices.ps1` (as the release makes it on a Linux runner), then uploads the test executables |
 | `windows-tests` | runs those executables on a `windows-2025` runner |

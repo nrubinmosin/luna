@@ -44,6 +44,14 @@ $steps = @(
         }
     }
     @{
+        Name  = 'changelog fragments and check-changes tests'
+        Group = 'scripts'
+        Run   = {
+            Invoke-Checked 'check-changes' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/check-changes.ps1') }
+            Invoke-Checked 'check-changes tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/check-changes.test.ps1') }
+        }
+    }
+    @{
         Name  = 'check-commit-msg tests'
         Group = 'scripts'
         Run   = {

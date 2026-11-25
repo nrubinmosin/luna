@@ -161,15 +161,20 @@ $MarkdownLinkDefinition = '^ {0,3}\[(?<name>[^\]]+)\]:\s*(?:<[^>]*>|\S+)(?:\s+(?
 # matches them. A heading, a definition or a ### inside a code fence is text,
 # not structure ($MarkdownFenceOpen), so a `## heading` shown in a code block
 # neither ends a section nor opens one. The release notes come from this
-# file, so a tree without one cannot be released.
+# file, so a tree without one cannot be released. Source line positions let
+# the bump insert its section and compare link without re-rendering old notes.
 function Read-Changelog([string]$Root) {
     $path = Join-Path $Root 'CHANGELOG.md'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "no CHANGELOG.md in $Root; the release notes are made from it" }
+    $text = [IO.File]::ReadAllText($path)
+    $lines = $text -split '\r?\n'
     $sections = [System.Collections.Generic.List[object]]::new()
     $links = @{}
+    $linkLines = @{}
     $current = $null
     $fence = $null
-    foreach ($line in [IO.File]::ReadAllText($path) -split "\r?\n") {
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
         if ($fence) {
             if ($line -match (Get-MarkdownFenceClose $fence)) { $fence = $null }
             if ($current) { $current.Lines.Add($line) }
@@ -185,6 +190,7 @@ function Read-Changelog([string]$Root) {
                 Version  = $Matches.version
                 Date     = $Matches.date
                 Heading  = $line.Substring(3).Trim()
+                Line     = $i
                 Lines    = [System.Collections.Generic.List[string]]::new()
                 IntroEnd = -1
             }
@@ -194,7 +200,10 @@ function Read-Changelog([string]$Root) {
         if ($line -match '^## ') { $current = $null; continue }
         if ($line -match $MarkdownLinkDefinition) {
             $label = $Matches.name.ToLowerInvariant()
-            if (-not $links.ContainsKey($label)) { $links[$label] = $line.Trim() }
+            if (-not $links.ContainsKey($label)) {
+                $links[$label] = $line.Trim()
+                $linkLines[$label] = $i
+            }
             continue
         }
         if ($current) {
@@ -202,7 +211,109 @@ function Read-Changelog([string]$Root) {
             $current.Lines.Add($line)
         }
     }
-    [pscustomobject]@{ Sections = $sections; Links = $links }
+    [pscustomobject]@{
+        Sections = $sections
+        Links = $links
+        LinkLines = $linkLines
+        SourceLines = $lines
+        Newline = [regex]::Match($text, '\r?\n').Value
+    }
+}
+
+$ChangeHeadings = 'Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security'
+
+function Read-ChangeFragment([IO.FileInfo]$File) {
+    $from = "changes/$($File.Name)"
+    if ($File.Name -cnotmatch '^[a-z0-9-]+\.md$' -or $File.LinkTarget) {
+        throw "$($from): expected a regular file named with a lowercase slug (a-z, 0-9, hyphens) and .md"
+    }
+    $text = [IO.File]::ReadAllText($File.FullName) -creplace '^(?:[ \t]*\r?\n)+', ''
+    $blocks = @($text -csplit '(?m)(?<=\n)(?=### )')
+    $sections = foreach ($block in $blocks) {
+        $heading, $body = $block -split '\r?\n', 2
+        $kind = $heading.TrimEnd() -creplace '^### ', ''
+        if ($heading.TrimEnd() -cne "### $kind") {
+            throw "$($from): expected a ### changelog heading"
+        }
+        $body = ([string]$body).TrimEnd() -creplace '^(?:[ \t]*\r?\n)+', ''
+        if ($kind -ceq 'None') {
+            if ($blocks.Count -ne 1 -or $body -cnotmatch '^(?!#|- )\S[^\r\n]*$') {
+                throw "$($from): ### None must stand alone and be followed by a non-empty reason line"
+            }
+            continue
+        }
+        if ($kind -cnotin $ChangeHeadings) {
+            throw "$($from): unknown heading '$heading'; use $($ChangeHeadings -join ', ') or None"
+        }
+        $entryLines = $body -split '\r?\n'
+        if ($entryLines[0] -cnotmatch '^- \S') {
+            throw "$($from): $heading needs at least one bullet beginning with '- '"
+        }
+        foreach ($line in $entryLines) {
+            if ($line.Trim() -and $line -cnotmatch '^(?:- \S| {2,}\S)') {
+                throw "$($from): expected a bullet or an indented continuation under $heading"
+            }
+        }
+        [pscustomobject]@{ Kind = $kind; Lines = $entryLines }
+    }
+    [pscustomobject]@{ Name = $File.Name; Path = $File.FullName; Sections = @($sections) }
+}
+
+function Get-ChangeFragments([string]$Root = $RepoRoot) {
+    $directory = Join-Path $Root 'changes'
+    if (-not (Test-Path -LiteralPath $directory)) { return }
+    $files = Get-ChildItem -LiteralPath $directory -File -Force |
+        Where-Object { $_.Extension -ieq '.md' -and $_.Name -cne 'README.md' }
+    [string[]]$paths = @($files | ForEach-Object FullName)
+    [array]::Sort($paths, [StringComparer]::Ordinal)
+    foreach ($path in $paths) { Read-ChangeFragment (Get-Item -LiteralPath $path -Force) }
+}
+
+function Assert-UnreleasedEmpty($Changelog) {
+    $unreleased = @($Changelog.Sections | Where-Object { $_.Version -ieq 'Unreleased' })
+    if ($unreleased.Count -ne 1 -or $Changelog.Sections[0].Heading -cne '[Unreleased]') {
+        throw 'CHANGELOG.md must start its versions with one ## [Unreleased] section.'
+    }
+    if (($unreleased[0].Lines -join '').Trim()) {
+        throw 'CHANGELOG.md must keep ## [Unreleased] empty. Put entries in changes/<slug>.md.'
+    }
+}
+
+function New-ReleaseChangelog([string]$Version, [object[]]$Fragments, [string]$Root = $RepoRoot) {
+    Assert-VersionFormat $Version
+    $changelog = Read-Changelog $Root
+    Assert-UnreleasedEmpty $changelog
+    if (($changelog.Sections | Where-Object { $_.Version -eq $Version }) -or $changelog.Links.ContainsKey($Version)) {
+        throw "CHANGELOG.md already has a section or link for $Version"
+    }
+    if ($changelog.Sections.Count -lt 2 -or -not $changelog.LinkLines.ContainsKey('unreleased')) {
+        throw 'CHANGELOG.md needs the previous release section and the [Unreleased] compare link.'
+    }
+    $previous = $changelog.Sections[1].Version
+    Assert-VersionFormat $previous
+    $repo = Get-RepoUrl $Root
+    $lines = [System.Collections.Generic.List[string]]::new([string[]]$changelog.SourceLines)
+    $link = $changelog.LinkLines['unreleased']
+    $lines[$link] = @(
+        "[Unreleased]: $repo/compare/v$Version...HEAD"
+        "[$($Version)]: $repo/compare/v$previous...v$Version"
+    ) -join $changelog.Newline
+
+    $date = (Get-Date).ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+    $section = @(
+        ''
+        "## [$Version] - $date"
+        foreach ($kind in $ChangeHeadings) {
+            $groups = @($Fragments.Sections | Where-Object { $_.Kind -ceq $kind })
+            if ($groups.Count -eq 0) { continue }
+            ''
+            "### $kind"
+            ''
+            foreach ($group in $groups) { $group.Lines }
+        }
+    )
+    $lines.InsertRange($changelog.Sections[0].Line + 1, [string[]]$section)
+    $lines -join $changelog.Newline
 }
 
 # The versions CHANGELOG.md has sections for, in the file's order (newest

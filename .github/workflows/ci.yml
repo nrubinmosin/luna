@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0 # the commit-message check walks the pushed range
+          fetch-depth: 0 # commit messages and changelog fragments need origin/master and history
       - run: ./scripts/gate.ps1 -Group scripts
       # Only the commits this push or PR brings, so history from before the rules
       # does not fail it: a PR from its base, a push from its old tip, a new

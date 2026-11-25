@@ -120,8 +120,9 @@ the code, in the same change.
   is costly to reverse in a new ADR in `docs/adr/`, from `0000-template.md`.
 - What a CLI was seen to do (a flag, a hook, a file format, a quirk) goes in
   `docs/cli-compatibility.md`, with the version it was seen on.
-- Toolchains, scripts and CI are in `docs/development.md`; notable changes go
-  under [Unreleased] in `CHANGELOG.md`.
+- Toolchains, scripts and CI are in `docs/development.md`. Record notable
+  changes in a [fragment under changes/](changes/README.md) and keep
+  [Unreleased] in `CHANGELOG.md` empty.
 
 ## Both providers
 Luna runs Claude Code and Codex side by side, and what one CLI does to a
