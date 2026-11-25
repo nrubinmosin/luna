@@ -266,6 +266,11 @@ on from it. Views observe the models they show:
 | `term/` `TermPane` | one session's terminal (below) | `CoreLink`, `Shell`; its parser |
 | `panels/` `PanelLayer` | the library, settings or accounts window up, over a scrim | `Shell`; each panel what it shows |
 
+Ctrl+Tab uses `WindowState::folders_of_board`, the sidebar's source in both
+modes, to find the next board with chats. `Workspace` selects that board
+through the same method as the title bar buttons. With no other board to
+select, the current peek and focus stay in place.
+
 The title bar, the sidebar, the board, the status bar and each terminal are cached views
 (`Entity::cached`): a frame drawn for the banner reuses them, and they lay
 out again only when their own size changes. Frames come on demand (vendor/PATCHES.md, patch 3), so an idle window

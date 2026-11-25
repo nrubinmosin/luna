@@ -159,7 +159,8 @@ captions "Board" and "Panes" go and Auto-tile and the theme button say less
 smallest size. **Menu** opens the library (Library) and the Accounts window;
 Settings is on the status bar. In a window narrower than 800 px, Clear board
 and Auto-tile move into Menu too. A board's or a layout's button names itself (and the layout's
-key) when the pointer rests on it.
+key) when the pointer rests on it. You can click any board's button, including
+one whose sidebar is empty.
 
 **Sidebar.** The chats of the board on screen, by the folder they were
 started from; a folder's header folds it away or opens it, and its **+**
@@ -218,7 +219,7 @@ peek whatever has the keyboard. The peek's top line says which it is now.
 | Ctrl+1..4 | the keyboard into that pane; with one pane, that chat of the list |
 | Alt+1..4 | hold the chat in that pane up over the board (the peek); the same key again puts it back |
 | Ctrl+Shift+W | the next chat waiting for you |
-| Ctrl+Tab | the next board (Ctrl+Shift+Tab is Claude Code's) |
+| Ctrl+Tab | the next board with chats in its sidebar, wrapping from V to I. Chats in folded folders count. If no other board has chats, stay on the current board. Ctrl+Shift+Tab is Claude Code's. |
 | Esc | close a menu, a rename, or a peek whose terminal you have not clicked or typed in; otherwise it goes to the CLI |
 | Shift+Esc | close the peek |
 | Ctrl+= or Ctrl++ / Ctrl+- / Ctrl+0 | window scale a step up / a step down / back to 100% (Ctrl+0 by the key, as the digits) |

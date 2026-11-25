@@ -1176,7 +1176,7 @@ fn the_windows_keys_do_what_the_pages_did(cx: &mut TestAppContext) {
     assert_eq!(w.state().active_pane, 1);
     w.keys("ctrl-tab");
     assert_eq!(w.state().board, 1);
-    w.keys("ctrl-tab ctrl-tab ctrl-tab ctrl-tab");
+    w.keys("ctrl-tab ctrl-tab ctrl-tab");
     assert_eq!(w.state().board, 0);
     // Ctrl+Shift+W: the next chat waiting, up over the board if it has no pane.
     w.ws(|w, cx| {
@@ -1192,23 +1192,51 @@ fn the_windows_keys_do_what_the_pages_did(cx: &mut TestAppContext) {
     assert_eq!(w.state().peek, None);
 }
 
-/// Ctrl+Tab goes round the five boards one press at a time, the empty ones
-/// included, from a board of four with the keyboard in any of its panes: on
-/// an empty board the keyboard is the window's, and the next press is too.
+/// Ctrl+Tab wraps from V back to I and skips IV, which has no chats. II,
+/// III, and V have chats in a folded sidebar folder and no occupied panes.
 #[gpui::test]
-fn ctrl_tab_goes_round_every_board_from_any_pane(cx: &mut TestAppContext) {
+fn ctrl_tab_goes_round_boards_with_chats_from_any_pane(cx: &mut TestAppContext) {
     for pane in ["c-parser", "c-codex", "c-notes", "c-old"] {
         let mut w = chats(cx, 4);
         w.focus(pane);
         assert_eq!(w.focused_terminal().as_deref(), Some(pane));
         let mut seen = Vec::new();
-        for _ in 0..5 {
+        for _ in 0..4 {
             w.keys("ctrl-tab");
             seen.push(w.state().board + 1);
         }
-        assert_eq!(seen, [2, 3, 4, 5, 1], "from {pane}");
+        assert_eq!(seen, [2, 3, 5, 1], "from {pane}");
         assert!(w.focused_terminal().is_some(), "back on the first board, a terminal has the keyboard");
     }
+}
+
+#[gpui::test]
+fn ctrl_tab_keeps_the_peek_and_active_pane_when_only_one_board_has_chats(cx: &mut TestAppContext) {
+    let mut state = demo::chats_state(2, true);
+    for chat in state.folders.iter_mut().flat_map(|folder| &mut folder.chats) {
+        chat.board = 0;
+    }
+    let mut w = open(cx, demo::kept(&state));
+    w.keys("alt-2");
+    let before = w.state();
+    let saves = w.saves().len();
+    assert_eq!((before.peek.as_ref(), before.active_pane), (Some(&Peek::Pane(1)), 1));
+    assert!(w.peek_frame_focused());
+    w.keys("ctrl-tab");
+    assert_eq!(w.state(), before);
+    assert!(w.peek_frame_focused());
+    assert_eq!(w.saves().len(), saves);
+}
+
+#[gpui::test]
+fn ctrl_tab_stays_when_all_boards_are_empty(cx: &mut TestAppContext) {
+    let mut w = open(cx, demo::kept(&WindowState::default()));
+    w.ws(|w, cx| w.set_board(3, cx));
+    let before = w.state();
+    let saves = w.saves().len();
+    w.keys("ctrl-tab");
+    assert_eq!(w.state(), before);
+    assert_eq!(w.saves().len(), saves);
 }
 
 /// Alt+digit holds the chat in that pane up over the board from wherever
@@ -1576,9 +1604,8 @@ mod clicks {
         assert!(width(&mut w, "pane-2") > px(162.), "with room, the share as kept");
     }
 
-    /// The title bar's board buttons, each board in turn and back to the
-    /// first, then Ctrl+Tab round all five: a click leaves the keyboard
-    /// where the window's keys still reach it.
+    /// The buttons reach every board, including empty IV. Ctrl+Tab still
+    /// works after clicking IV and goes to V, then wraps to I.
     #[gpui::test]
     fn ctrl_tab_goes_round_the_boards_after_the_board_buttons(cx: &mut TestAppContext) {
         let mut w = chats(cx, 4);
@@ -1587,13 +1614,11 @@ mod clicks {
             click(&mut w, ["board-1", "board-2", "board-3", "board-4", "board-5"][n - 1]);
             assert_eq!(w.state().board, n - 1);
         }
-        click(&mut w, "board-1");
-        let mut seen = Vec::new();
-        for _ in 0..5 {
-            w.keys("ctrl-tab");
-            seen.push(w.state().board + 1);
-        }
-        assert_eq!(seen, [2, 3, 4, 5, 1]);
+        click(&mut w, "board-4");
+        w.keys("ctrl-tab");
+        assert_eq!(w.state().board, 4);
+        w.keys("ctrl-tab");
+        assert_eq!(w.state().board, 0);
     }
 
     #[gpui::test]
