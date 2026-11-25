@@ -81,6 +81,7 @@
 | [0032](adr/0032-codex-helpers-on-app-server.md) | Run each Codex helper turn as one `codex app-server`, steered and stopped through it | Accepted |
 | [0033](adr/0033-helper-role-layers-appended.md) | Give leads and helpers their role layers in the system prompt, not as memory | Rejected |
 | [0034](adr/0034-luna-default-permission-mode.md) | Luna supplies a permission mode when the CLI config leaves it unset | Accepted |
+| [0035](adr/0035-slices-squashed-waves-merged.md) | Squash a slice into one commit; merge waves and releases | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 

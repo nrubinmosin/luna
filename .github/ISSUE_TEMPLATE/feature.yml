@@ -1,0 +1,34 @@
+name: Feature
+description: Suggest a change or a new feature.
+type: Feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search [open and closed issues](https://github.com/nrubinmosin/luna/issues?q=is%3Aissue) first; a comment on an existing one beats a new one.
+        Not sure Luna can do something already? [Ask in Discussions](https://github.com/nrubinmosin/luna/discussions).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: What should Luna do? Optional — the problem matters more than the solution.
+
+  - type: textarea
+    id: both-clis
+    attributes:
+      label: Both CLIs
+      description: How should this work for Claude Code, and for Codex? If one of them cannot do it, what should Luna do there?
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

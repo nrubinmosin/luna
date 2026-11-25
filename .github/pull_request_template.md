@@ -1,28 +1,11 @@
-## What and why
+Say why this change is needed, then what it changes and where, in plain
+sentences wrapped at 72 characters: this description becomes the commit's
+body when the pull request is squashed, and the title its subject
+(CONTRIBUTING.md, "Pull requests"). No headings or checklists.
 
-<!-- One or two sentences. Link the issue if there is one. -->
+Claude Code: what it does here and what Luna does about it.
+Codex: the same, or "needs nothing, because ...".
 
-## Both providers
+Tested: what you ran and what you tried on the test build.
 
-- Claude Code:
-- Codex:
-<!-- What each CLI does here and what Luna does about it; "needs nothing, because ..." is fine. -->
-
-## Testing
-
-- [ ] `./scripts/gate.ps1` passes (add `-Windows` for Windows-only code)
-- [ ] `./scripts/linux-check.ps1` for Unix code
-- [ ] Tried on the test build, on throwaway accounts (what you checked):
-
-## Docs
-
-- [ ] User guide / architecture page updated where behavior or structure changed
-- [ ] `docs/cli-compatibility.md` for a new CLI observation
-- [ ] An ADR for a consequential decision
-- [ ] Changelog fragment under `changes/`
-
-## Checklist
-
-- [ ] US English (`pwsh -File scripts/check-text.ps1`)
-- [ ] Commit messages follow CONTRIBUTING.md's "Commits": a sentence of at most 72 characters, no type prefix, no attribution trailers (`sh scripts/check-commit-msg.sh --range origin/master..HEAD`)
-- [ ] Nothing obsolete or scratch left in the tree
+Fixes #

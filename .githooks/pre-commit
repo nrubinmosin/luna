@@ -1,4 +1,6 @@
 #!/bin/sh
+# Refuses direct commits to master, which changes through pull requests.
+#
 # Refuses a commit whose index holds anything under .claude/skills/ but a
 # symlink (mode 120000). Each skill lives once, in .agents/skills/<name>/, and
 # Claude Code finds it through .claude/skills/<name>, a symlink to it (AGENTS.md,
@@ -10,6 +12,12 @@
 # Enable once per clone:  git config core.hooksPath .githooks
 #
 # Plain sh and git, so it runs the same from Git for Windows' sh.
+
+if [ "$(git symbolic-ref -q HEAD)" = refs/heads/master ]; then
+    echo 'pre-commit: master changes through pull requests. Switch to a branch to commit.' >&2
+    echo 'Use git commit --no-verify for a deliberate override.' >&2
+    exit 1
+fi
 
 tab=$(printf '\t')
 bad=$(git ls-files -s -- .claude/skills | while IFS= read -r entry; do

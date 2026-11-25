@@ -1,6 +1,6 @@
 #!/bin/sh
-# The rules for commit messages (CONTRIBUTING.md, "Commits"), checked once here
-# for the commit-msg hook and for CI.
+# The rules for commit messages (CONTRIBUTING.md, "Commits"), shared by the
+# commit-msg hook, CI and the check of the PR title and body.
 #
 # Every commit: authorship is git's author field and nothing else, so a
 # message carries no AI attribution. Refused:
@@ -10,7 +10,9 @@
 #     (after blanks, #) and followed by a capitalized word, a [bracketed link]
 #     or a URL. Prose like "generated with drizzle-kit" passes.
 #
-# The form, a sentence saying what the change does:
+# The form applies to master, iteration/* and release/*, where history is
+# kept, and to the PR message. Other branches check only attribution.
+# The form is a sentence saying what the change does:
 #   - the subject is at most 72 characters and does not end in a period,
 #   - it starts with a capital letter, a digit or a path-like name
 #     ("agents/wait.rs:", "check-text", "luna_wait"); lowercase prose is
@@ -18,21 +20,21 @@
 #     "fix(scope)!:"): the type is what the sentence says,
 #   - line 2 is blank, and the body is wrapped at 72, except a line with a
 #     URL, an indented line and a line that is one unbreakable token.
-# Exempt from the form: a merge ("Merge ..."), a revert ('Revert "..."') and
-# the release bump ("Luna X.Y.Z").
-# "fixup!", "squash!" and "amend!" commits (git commit --fixup, --squash,
-# --fixup=amend: and --fixup=reword:) pass the hook, to be squashed, and fail
-# the range check, so they never merge.
+# Exempt from the form: a revert ('Revert "..."') and the release bump
+# ("Luna X.Y.Z"). Git's own merge messages are exempt in the hook and range.
+# "fixup!", "squash!" and "amend!" commits are only allowed on branches whose
+# commits are squashed.
 #
-#   check-commit-msg.sh FILE              one message file (the commit-msg hook)
-#   check-commit-msg.sh --range REVS...   every commit git rev-list REVS selects
-#                                         (CI: A..B, with ^C for what to leave out)
+#   check-commit-msg.sh [--branch NAME] FILE             the commit-msg hook
+#   check-commit-msg.sh [--branch NAME] --range REVS...  every selected commit
+#   check-commit-msg.sh --message FILE                   a stored message
+# An omitted or empty branch name checks the full form.
 #
 # The hook sees the message as git hands it over, before the cleanup: comment
 # lines (core.commentChar) and, after a scissors line, the diff of commit -v are
 # no part of it and are skipped for the form, though an attribution in a comment
 # is refused all the same. What a --cleanup=whitespace or verbatim commit keeps
-# of them is then checked literally, as a stored message, by the range check.
+# of them is then checked literally by --range or --message.
 #
 # Plain sh and git, so it runs the same from Git for Windows' sh and on Linux.
 
@@ -74,11 +76,10 @@ comment_prefix() {
 }
 
 # Checks the message on stdin, printing "line N (rule): text" per problem, and
-# fails on one. $1 is hook or range: the hook skips comment lines (opened by
-# $comment, when set) and stops at the scissors line, and lets a fixup!,
-# squash! or amend! through; the range check takes the stored message as it
-# is. $2 is whether the form is checked at all, besides the attribution: a
-# merge's is not.
+# fails on one. $1 is hook, range or message. The hook skips comment lines
+# (opened by $comment, when set) and stops at the scissors line. The other
+# modes read the text as it is. $2 says whether to check the form as well as
+# attribution.
 check_message() {
     mode=$1
     form=$2
@@ -120,12 +121,11 @@ check_message() {
             [ "$blank" = no ] || continue # leading blank lines go with the commit
             subject=$line
             case $subject in
-                'Merge '* | 'Revert "'*) form=no ;;
+                'Merge '*) [ "$mode" = message ] || form=no ;;
+                'Revert "'*) form=no ;;
                 'fixup! '* | 'squash! '* | 'amend! '*)
-                    if [ "$mode" = range ]; then
-                        printf '  line %s (fixup!/squash!/amend! commit, squash it before merging): %s\n' "$n" "$line"
-                        bad=1
-                    fi
+                    printf '  line %s (fixup!/squash!/amend! commit, squash it before merging): %s\n' "$n" "$line"
+                    bad=1
                     form=no
                     ;;
             esac
@@ -168,21 +168,43 @@ check_message() {
     return $bad
 }
 
-refuse() { # $1 = what was checked, $2 = the problems, $3 = the fix
+refuse() { # $1 = what was checked, $2 = the problems, $3 = the fix, $4 = check form
     {
         echo "commit message refused ($1):"
         echo "$2"
         echo
-        echo 'The rules are in CONTRIBUTING.md, "Commits": a sentence of at most 72'
-        echo 'characters saying what the change does, a blank line, then why, wrapped at'
-        echo '72; no type prefix, no trailing period, no AI attribution.'
+        if [ "$4" = yes ]; then
+            echo 'The rules are in CONTRIBUTING.md, "Commits": a sentence of at most 72'
+            echo 'characters saying what the change does, a blank line, then why, wrapped at'
+            echo '72; no type prefix, no trailing period, no AI attribution.'
+        else
+            echo 'The rules are in CONTRIBUTING.md, "Commits": no AI attribution.'
+        fi
         echo "$3"
     } >&2
 }
 
+usage() {
+    echo 'usage: check-commit-msg.sh [--branch NAME] (FILE | --range REVS...) | --message FILE' >&2
+    exit 2
+}
+
+branch_form=yes
+branch_given=no
+if [ "$1" = --branch ]; then
+    [ "$#" -ge 3 ] || usage
+    branch_given=yes
+    case $2 in
+        '' | master | iteration/* | release/*) ;;
+        *) branch_form=no ;;
+    esac
+    shift 2
+fi
+
 case $1 in
     --range)
         shift
+        [ "$#" -gt 0 ] || usage
         # rev-list has said what is wrong with the revisions; a bad range is
         # not an empty one.
         revs=$(git rev-list "$@") || exit 2
@@ -190,27 +212,32 @@ case $1 in
         for c in $revs; do
             # A merge's message is git's own: it is not held to the form,
             # only to the attribution.
-            form=yes
+            form=$branch_form
             case $(git show -s --format=%P "$c") in *' '*) form=no ;; esac
-            if ! out=$(git show -s --format=%B "$c" | check_message range $form); then
-                refuse "commit $(git rev-parse --short "$c")" "$out" 'Rewrite the commit message before merging.'
+            if ! out=$(git show -s --format=%B "$c" | check_message range "$form"); then
+                refuse "commit $(git rev-parse --short "$c")" "$out" 'Rewrite the commit message before merging.' "$form"
                 bad=1
             fi
         done
         exit $bad
         ;;
-    '')
-        echo 'usage: check-commit-msg.sh FILE | --range REVS...' >&2
-        exit 2
+    --message)
+        [ "$branch_given" = no ] && [ "$#" -eq 2 ] || usage
+        if ! out=$(check_message message yes <"$2"); then
+            refuse 'stored message' "$out" 'Edit the message before merging.' yes
+            exit 1
+        fi
         ;;
+    '' | --*) usage ;;
     *)
+        [ "$#" -eq 1 ] || usage
         comment=$(comment_prefix)
-        if ! out=$(check_message hook yes <"$1"); then
+        if ! out=$(check_message hook "$branch_form" <"$1"); then
             # The refused commit was never made and the change is still staged, so
             # the way on is a new commit from the message; --amend would fold the
             # change into the commit before, unless that was what was being done.
             refuse 'commit-msg hook' "$out" "The commit was not made. Fix the message and commit again: git commit -e -F $1
-(--amend only if the refused commit was an amend)."
+(--amend only if the refused commit was an amend)." "$branch_form"
             exit 1
         fi
         ;;

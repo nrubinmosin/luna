@@ -1,6 +1,7 @@
 # Luna
 
 [![CI](https://github.com/nrubinmosin/luna/actions/workflows/ci.yml/badge.svg)](https://github.com/nrubinmosin/luna/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/nrubinmosin/luna/badge)](https://scorecard.dev/viewer/?uri=github.com/nrubinmosin/luna)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 Luna is a desktop app built with Rust and GPUI that runs Claude Code and Codex CLI

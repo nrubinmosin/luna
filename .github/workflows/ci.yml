@@ -42,12 +42,15 @@ jobs:
       # merge, has master's commits in its before..after. An old tip the clone
       # lacks (a force-push) is fetched; one that is gone fails the run, since
       # a range from the new tip itself would check nothing and pass.
+      # The head branch sets the form rule. For a PR, use its source branch
+      # because github.ref_name names the synthetic merge ref.
       - name: Commit messages follow the rules
         shell: sh
         env:
           BEFORE: ${{ github.event.before }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           if [ -n "$BASE" ]; then
             from=$BASE
@@ -58,12 +61,12 @@ jobs:
           fi
           git cat-file -e "$from^{commit}" 2>/dev/null || git fetch -q origin "$from" 2>/dev/null || true
           if ! git cat-file -e "$from^{commit}" 2>/dev/null; then
-            echo "commit-message check: the range's start $from is not in this clone (a force-push?), so the pushed commits cannot be told from history; fix the range by hand (sh scripts/check-commit-msg.sh --range A..B) rather than let this run check nothing" >&2
+            echo "commit-message check: the range's start $from is not in this clone (a force-push?), so the pushed commits cannot be told from history; fix the range by hand (sh scripts/check-commit-msg.sh --branch \"\$BRANCH\" --range A..B) rather than let this run check nothing" >&2
             exit 1
           fi
           not=
           [ "$GITHUB_REF" = refs/heads/master ] || not=^origin/master
-          sh scripts/check-commit-msg.sh --range "$from..$HEAD" $not
+          sh scripts/check-commit-msg.sh --branch "$BRANCH" --range "$from..$HEAD" $not
 
   # The Linux image (docker/linux-check.Dockerfile) rather than a setup action:
   # one definition of the toolchain and the system libraries for the local gate

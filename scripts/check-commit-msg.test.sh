@@ -1,7 +1,7 @@
 #!/bin/sh
 # Tests for scripts/check-commit-msg.sh: messages it must refuse and accept, in
-# the hook mode (a message file) and the range mode (commits in a throwaway
-# repository made here). Run: sh scripts/check-commit-msg.test.sh
+# the hook, stored message and range modes (commits in a throwaway repository
+# made here). Run: sh scripts/check-commit-msg.test.sh
 # Needs git on PATH: the range mode is git.
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -31,19 +31,25 @@ report() { # $1 = mode, $2 = expected, $3 = got, $4 = message
     fail=1
 }
 
-check() { # $1 = refuse|accept, $2 = message
-    printf '%s\n' "$2" >"$tmp"
-    if sh "$here/check-commit-msg.sh" "$tmp" >/dev/null 2>&1; then got=accept; else got=refuse; fi
-    [ "$got" = "$1" ] || report hook "$1" "$got" "$2"
+check() { # $1 = refuse|accept, $2 = message, remaining args precede the file
+    expected=$1
+    message=$2
+    shift 2
+    printf '%s\n' "$message" >"$tmp"
+    if sh "$here/check-commit-msg.sh" "$@" "$tmp" >/dev/null 2>&1; then got=accept; else got=refuse; fi
+    [ "$got" = "$expected" ] || report "file $*" "$expected" "$got" "$message"
 }
 
 # One commit with the message on top of the base, checked as a range, then
 # taken off again.
-check_range() { # $1 = refuse|accept, $2 = message
-    printf '%s\n' "$2" >"$tmp"
+check_range() { # $1 = refuse|accept, $2 = message, remaining args precede --range
+    expected=$1
+    message=$2
+    shift 2
+    printf '%s\n' "$message" >"$tmp"
     g commit -q --allow-empty --no-verify -F "$tmp"
-    if (cd "$repo" && sh "$here/check-commit-msg.sh" --range "$base..HEAD") >/dev/null 2>&1; then got=accept; else got=refuse; fi
-    [ "$got" = "$1" ] || report range "$1" "$got" "$2"
+    if (cd "$repo" && sh "$here/check-commit-msg.sh" "$@" --range "$base..HEAD") >/dev/null 2>&1; then got=accept; else got=refuse; fi
+    [ "$got" = "$expected" ] || report "range $*" "$expected" "$got" "$message"
     g reset -q --hard "$base"
 }
 
@@ -168,10 +174,10 @@ check accept 'Revert "fix the gate"
 This reverts commit 0123456789abcdef0123456789abcdef01234567.'
 check accept 'Luna 0.10.0'
 check refuse 'Luna 0.10.0.'
-check accept 'fixup! fix the gate'
-check accept 'squash! fix the gate.'
+check refuse 'fixup! fix the gate'
+check refuse 'squash! fix the gate.'
 # What git commit --fixup=amend: and --fixup=reword: write.
-check accept 'amend! fix the gate
+check refuse 'amend! fix the gate
 
 Fix the gate'
 check refuse 'fixup! fix the gate
@@ -180,6 +186,48 @@ Co-Authored-By: Someone <a@b.c>'
 check refuse 'amend! Fix the gate
 
 Co-Authored-By: Someone <a@b.c>'
+
+# --- the rules follow the branch ---
+
+attribution='Fix the gate
+
+Co-Authored-By: Someone <a@b.c>'
+check accept "lowercase $long" --branch slice/gate
+check accept 'fixup! Fix the gate' --branch slice/gate
+check accept 'squash! Fix the gate' --branch feature/gate
+check accept 'amend! Fix the gate' --branch feature/gate
+check refuse "$attribution" --branch slice/gate
+for branch in master iteration/gate release/v0.10.0 ''; do
+    check refuse "lowercase $long" --branch "$branch"
+    check refuse 'fixup! Fix the gate' --branch "$branch"
+    check refuse "$attribution" --branch "$branch"
+done
+check_range accept "lowercase $long" --branch slice/gate
+check_range accept 'fixup! Fix the gate' --branch slice/gate
+check_range refuse "$attribution" --branch slice/gate
+check_range refuse "lowercase $long" --branch iteration/gate
+check_range refuse 'fixup! Fix the gate' --branch release/v0.10.0
+check_range refuse 'fixup! Fix the gate' --branch ''
+
+# --- standalone stored messages (the PR title and body) ---
+
+check accept 'Fix the gate (#12)
+
+The body starts after a blank line.' --message
+check accept 'Fix the gate (#12)' --message
+check refuse "$long (#12)" --message
+check refuse 'fix the gate (#12)' --message
+check refuse 'fixup! Fix the gate (#12)' --message
+check accept 'Merge the gate changes (#12)' --message
+check refuse "Merge $long (#12)" --message
+check refuse 'Fix the gate (#12)
+# A heading that would be a comment in the hook
+
+The body.' --message
+check refuse 'Fix the gate (#12)
+
+# ------------------------ >8 ------------------------
+Co-Authored-By: x' --message
 
 # --- the range mode ---
 
@@ -350,6 +398,28 @@ if (cd "$repo" && sh "$here/check-commit-msg.sh" --range "$base..HEAD" ^other) >
 [ "$got" = accept ] || report range accept "$got" 'the other branch merged in and left out'
 g reset -q --hard "$base"
 g branch -q -D other
+
+# --- a detached checkout uses the branch named by the active rebase ---
+
+mkdir "$repo/scripts"
+cp "$here/check-commit-msg.sh" "$repo/scripts/"
+g switch -q --detach "$base"
+check_detached_hook() { # $1 = refuse|accept, $2 = case description
+    printf 'fixup! Clean up the gate\n' >"$tmp"
+    if (cd "$repo" && sh "$here/../.githooks/commit-msg" "$tmp") >/dev/null 2>&1; then got=accept; else got=refuse; fi
+    [ "$got" = "$1" ] || report 'commit-msg hook' "$1" "$got" "$2"
+}
+check_detached_hook refuse 'a detached HEAD outside a rebase'
+for backend in rebase-merge rebase-apply; do
+    state="$repo/.git/$backend"
+    mkdir "$state"
+    printf 'refs/heads/slice/gate\n' >"$state/head-name"
+    check_detached_hook accept "a slice branch in $backend"
+    printf 'refs/heads/iteration/gate\n' >"$state/head-name"
+    check_detached_hook refuse "a kept-history branch in $backend"
+    rm "$state/head-name"
+    rmdir "$state"
+done
 
 [ "$fail" = 0 ] && echo 'check-commit-msg: all cases passed'
 exit $fail

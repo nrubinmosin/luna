@@ -1,12 +1,21 @@
 #!/bin/sh
-# Refuses a commit message that breaks the rules in CONTRIBUTING.md ("Commits"):
-# a subject over 72 characters, a trailing period, lowercase prose, a type prefix,
-# an unwrapped body, or AI attribution (a Co-Authored-By trailer, the robot
-# emoji, a "Generated with ..." line). The rules live once in
-# scripts/check-commit-msg.sh, which CI runs over every pushed commit too.
+# Applies the branch's commit message rules (CONTRIBUTING.md, "Commits").
+# The rules live in scripts/check-commit-msg.sh, where CI uses them too.
 #
 # Enable once per clone:  git config core.hooksPath .githooks
 #
 # Plain sh and git, so it runs the same from Git for Windows' sh.
 
-exec sh "$(git rev-parse --show-toplevel)/scripts/check-commit-msg.sh" "$1"
+# A rebase detaches HEAD while rewriting the original branch.
+branch=$(git symbolic-ref --short -q HEAD)
+if [ -z "$branch" ]; then
+    for backend in rebase-merge rebase-apply; do
+        head_name=$(git rev-parse --git-path "$backend/head-name")
+        [ -f "$head_name" ] && IFS= read -r ref <"$head_name" || continue
+        case $ref in
+            refs/heads/*) branch=${ref#refs/heads/}; break ;;
+        esac
+    done
+fi
+# Other detached HEADs use the full form.
+exec sh "$(git rev-parse --show-toplevel)/scripts/check-commit-msg.sh" --branch "$branch" "$1"

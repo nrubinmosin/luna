@@ -42,9 +42,12 @@ Rules for anyone (person or agent) changing Luna.
   reads the result with `./scripts/ci-wait.ps1` (or `gh run list` /
   `gh run view`); it never reruns or cancels a run. It never pushes to master,
   which changes only through a PR merged on the operator's yes.
-- A single change goes as one slice, one PR. A wave of several slices lands
-  through an `iteration/<name>` branch instead: slices merge into it, and it
-  gets one PR into master (docs/development.md, "Waves of slices").
+- A single change goes as one slice, one PR, squash-merged: the PR's title
+  and description become its one commit on master, so they follow the
+  commit rules (CONTRIBUTING.md, "Pull requests"). A wave of several slices
+  lands through an `iteration/<name>` branch instead: each slice is squashed
+  into it, and it gets one PR into master, merged with a merge commit, as a
+  `release/*` PR is (docs/development.md, "Waves of slices").
 - The local scripts below are for the test build, the live tests and the
   narrowest check needed while editing (one test, one lint, one crate
   build), not a full local gate before every commit: every Docker build on
@@ -155,12 +158,32 @@ one CLI only.
   releases, CLI upgrades, security review, UI checks, commit messages); each
   one's description says when it applies.
 - Once per clone, `git config core.hooksPath .githooks`: its pre-commit hook
-  refuses a commit with anything under `.claude/skills/` that is not a symlink.
-- A commit message is a sentence saying what the change does, 72 characters at
-  most and no type prefix, then a blank line, then why (CONTRIBUTING.md,
-  "Commits"); the commit-msg hook and CI refuse the rest.
+  refuses a commit on `master` and anything under `.claude/skills/` that is
+  not a symlink.
+- A commit message that reaches master as it is — on `master`, `iteration/*`
+  or `release/*`, and a PR's title and description — is a sentence saying
+  what the change does, 72 characters at most and no type prefix, then a
+  blank line, then why (CONTRIBUTING.md, "Commits"). Commits on a branch that
+  is squashed (`slice/*` and the rest) need only the next rule. The
+  commit-msg hook and CI refuse what strays.
 - No attribution trailers in commits (`Co-Authored-By:`, the robot emoji,
   "Generated with ..."): authorship is git's author field only. Enforced by
   the commit-msg hook and, over every pushed commit, by CI.
 - A setting only one CLI understands goes in that CLI's project file:
-  `.claude/settings.json` or `.codex/config.toml`.
+  `.claude/settings.json` or `.codex/config.toml`. Claude Code's turns off
+  its commit and PR attribution and refuses `docker` with a bind mount from
+  Git Bash (`.agents/hooks/docker-msys.sh`); Codex needs neither, since it
+  adds no trailer here and its shell on Windows is PowerShell.
+
+## Issues
+- Search open and closed issues before filing; a comment or a sub-issue on
+  an existing one beats a new one.
+- An issue starts from a form (`.github/ISSUE_TEMPLATE/`); work an agent
+  files is a Task: one outcome, the evidence seen, "Done when" bullets someone
+  else can check, what is out of scope, what each CLI does. Filed with
+  `gh issue create`, the body carries the form's headings. The issue is the
+  spec: whoever takes it works from its text alone.
+- Labels are the ones in CONTRIBUTING.md ("Issues"), changed only through
+  `scripts/labels.ps1`. A question that blocks the work is a comment on the
+  issue; the answer is a comment opening with `Decision:`.
+- A PR that finishes an issue says `Fixes #N.` in its description.
