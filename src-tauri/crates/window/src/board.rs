@@ -412,16 +412,19 @@ impl Board {
             MenuAt::Pane(i) => format!("pane-{}", i + 1),
             MenuAt::Peek => "peek".into(),
         };
-        let details = if roomy { bar_details(chat, state.folder_of(id).map(|f| f.path.as_str()), &live) } else { Vec::new() };
-        let has_details = !details.is_empty();
         let renaming = self.renaming.as_ref().filter(|r| r.chat == id);
+        let name_min = u(if roomy { 40. } else { 24. });
         let name: AnyElement = match renaming {
-            Some(r) => div().flex_1().min_w_0().child(Input::new(&r.input).h(u(18.))).into_any_element(),
+            Some(r) => div()
+                .debug_selector(|| format!("{key}-rename"))
+                .flex_1()
+                .min_w(name_min)
+                .child(Input::new(&r.input).h(u(18.)))
+                .into_any_element(),
             None => div()
                 .debug_selector(|| format!("{key}-name"))
-                .flex_shrink(1.)
-                .when(!has_details, |d| d.flex_grow(1.))
-                .min_w(u(if roomy { 40. } else { 24. }))
+                .flex_1()
+                .min_w(name_min)
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -429,28 +432,23 @@ impl Board {
                 .child(SharedString::from(chat.name.clone()))
                 .into_any_element(),
         };
-        let details = has_details.then(|| {
-            div()
-                .flex()
-                // Start at zero width and grow into the room left by the name
-                // and buttons. An editor grows into what the details leave it.
-                .when(renaming.is_none(), |d| d.flex_1())
-                .min_w_0()
-                .overflow_hidden()
-                .items_center()
-                .justify_end()
-                .gap(u(4.))
-                .children(details.into_iter().map(|BarDetail { label, tip }| {
+        // The inline editor gets the room normally shared by the details.
+        let details = (roomy && renaming.is_none()).then(|| {
+            div().flex().flex_shrink(1.).min_w_0().overflow_hidden().items_center().gap(u(4.)).children(
+                bar_details(chat, state.folder_of(id).map(|f| f.path.as_str()), &live).into_iter().map(|BarDetail { label, tip }| {
                     let detail = div().flex_shrink(1.).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label);
                     match tip {
                         Some((suffix, lines)) => detail
+                            // Give the folder the room left by the other details.
+                            .when(suffix == "folder", |d| d.flex_basis(relative(0.)).flex_grow(1.))
                             .id(SharedString::from(format!("{key}-{suffix}")))
                             .debug_selector(|| format!("{key}-{suffix}"))
                             .tip(self.tips, p, lines)
                             .into_any_element(),
                         None => detail.into_any_element(),
                     }
-                }))
+                }),
+            )
         });
         let chat_id = id.to_owned();
         let menu_open = self.menu == Some(at);

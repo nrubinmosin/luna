@@ -1771,7 +1771,7 @@ mod clicks {
     }
 
     #[gpui::test]
-    fn a_panes_folder_shrinks_before_its_name(cx: &mut TestAppContext) {
+    fn a_panes_folder_gives_way_before_the_other_details(cx: &mut TestAppContext) {
         let mut state = demo::term_state();
         state.find_mut(demo::DEMO_CHAT).unwrap().worktree_path = Some(format!("/work/{}", "worktree".repeat(12)));
         let mut w = open_with(cx, demo::kept(&state), up(), demo::looks());
@@ -1779,13 +1779,35 @@ mod clicks {
             w.cx.simulate_resize(gpui::size(gpui::px(span), gpui::px(800.)));
             w.cx.run_until_parked();
         };
-        resize(&mut w, 1280.);
+        resize(&mut w, 1600.);
         let name = width(&mut w, "pane-1-name");
-        assert!(name > gpui::px(40.));
         let folder = width(&mut w, "pane-1-folder");
+        let context = width(&mut w, "pane-1-ctx");
         resize(&mut w, 1000.);
-        assert_eq!(width(&mut w, "pane-1-name"), name);
-        assert!(width(&mut w, "pane-1-folder") < folder);
+        let narrowed_name = width(&mut w, "pane-1-name");
+        let narrowed_folder = width(&mut w, "pane-1-folder");
+        assert!(narrowed_name < name, "{name:?} → {narrowed_name:?}");
+        assert!(narrowed_folder < folder, "{folder:?} → {narrowed_folder:?}");
+        assert_eq!(width(&mut w, "pane-1-ctx"), context);
+    }
+
+    #[gpui::test]
+    fn a_long_folder_leaves_room_for_a_panes_rename_editor(cx: &mut TestAppContext) {
+        let mut state = demo::chats_state(2, true);
+        state.find_mut("c-parser").unwrap().worktree_path = Some(format!("/work/{}", "worktree".repeat(32)));
+        let mut w = open_with(cx, demo::kept(&state), up(), demo::looks());
+        w.cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(620.)));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("pane-1-folder").is_some());
+        click(&mut w, "pane-1-menu");
+        click(&mut w, "menu-rename");
+        assert!(width(&mut w, "pane-1-rename") >= crate::scale::u(40.));
+        assert!(w.cx.debug_bounds("pane-1-folder").is_none());
+        let board = w.view.read_with(w.cx, |v, _| v.board.clone());
+        let input = board.read_with(w.cx, |b, _| b.renaming.as_ref().unwrap().input.clone());
+        w.cx.update(|window, cx| input.update(cx, |i, cx| i.set_value("Parser, renamed", window, cx)));
+        w.keys("enter");
+        assert_eq!(w.state().find("c-parser").unwrap().name, "Parser, renamed");
     }
 
     /// The folder tooltip gives the full path, and the context tooltip
