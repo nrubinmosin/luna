@@ -574,6 +574,41 @@ The previous release.
         Assert-Equal (Test-Path -LiteralPath $late) $false
     }
 
+    Check 'both release modes and their dry runs require the current version intro' {
+        $root = New-Tree release-intro
+        Set-ReleaseVersion '1.2.3' $root
+        $scripts = New-Item -ItemType Directory (Join-Path $root 'scripts')
+        foreach ($file in 'lib.ps1', 'release-lib.ps1', 'release.ps1') {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $scripts
+        }
+        # Stand in for a clean, merged checkout and stop at the notes lookup.
+        function git {
+            $global:LASTEXITCODE = 0
+            switch ($args[0]) {
+                status { }
+                rev-list { '0' }
+                default { throw "Unexpected git command: $args" }
+            }
+        }
+        function gh { throw 'The release notes lookup was reached.' }
+
+        $release = Join-Path $scripts 'release.ps1'
+        $path = Join-Path $root 'CHANGELOG.md'
+        $opening = "# Changelog`n`n## [1.2.3] - 2026-11-08`n`n"
+        $entries = "### Fixed`n`n- A fix."
+        $modes = @(@{}, @{ DryRun = $true }, @{ Local = $true }, @{ Local = $true; DryRun = $true })
+        foreach ($body in $entries, '') {
+            Set-Content -LiteralPath $path ($opening + $body)
+            foreach ($mode in $modes) {
+                Assert-Throws { & $release @mode } 'Write it before the first ### heading'
+            }
+            Set-Content -LiteralPath $path ($opening + "A handwritten intro.`n`n" + $body)
+            foreach ($mode in $modes) {
+                Assert-Throws { & $release @mode } 'The release notes lookup was reached.'
+            }
+        }
+    }
+
     Check 'fragment format rejects invalid slugs, headings, entries and exemptions' {
         $root = New-Tree bad-fragments
         $dir = New-Item -ItemType Directory (Join-Path $root 'changes')

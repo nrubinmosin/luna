@@ -85,7 +85,7 @@ try {
     # The notes as the release will carry them, rendered now so a missing or
     # empty section, this version's or one of an unpublished version before
     # it, stops the release before anything is built or tagged.
-    $changelog = Get-ChangelogSection $version
+    $changelog = Get-ChangelogSection $version -RequireIntro
     $notes = New-ReleaseNotes -Version $version -Previous (Get-LatestReleaseTag)
 
     if ($Local) {
