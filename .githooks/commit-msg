@@ -6,6 +6,16 @@
 #
 # Plain sh and git, so it runs the same from Git for Windows' sh.
 
-# An empty branch on detached HEAD asks for the full form.
+# A rebase detaches HEAD while rewriting the original branch.
 branch=$(git symbolic-ref --short -q HEAD)
+if [ -z "$branch" ]; then
+    for backend in rebase-merge rebase-apply; do
+        head_name=$(git rev-parse --git-path "$backend/head-name")
+        [ -f "$head_name" ] && IFS= read -r ref <"$head_name" || continue
+        case $ref in
+            refs/heads/*) branch=${ref#refs/heads/}; break ;;
+        esac
+    done
+fi
+# Other detached HEADs use the full form.
 exec sh "$(git rev-parse --show-toplevel)/scripts/check-commit-msg.sh" --branch "$branch" "$1"

@@ -76,6 +76,7 @@ decision=$(LC_ALL=C awk '
     }
 
     function bind_volume(spec,    source, target) {
+        if (spec ~ /^\/\//) return 0
         # Remove a Windows drive prefix before splitting source and target.
         sub(/^[a-zA-Z]:[/\\]/, "/", spec)
         if (!match(spec, /:/)) return 0
@@ -83,26 +84,74 @@ decision=$(LC_ALL=C awk '
         target = substr(spec, RSTART + 1)
         return target ~ /^([a-zA-Z]:)?[/\\]/ && (source ~ /[/\\]/ || source ~ /^[.$~\140]/)
     }
-    function argument(word) {
+    function save_assignment(word, values,    eq, name) {
+        eq = index(word, "=")
+        name = substr(word, 1, eq - 1)
+        if (name == "MSYS_NO_PATHCONV" || name == "MSYS2_ARG_CONV_EXCL")
+            values[name] = substr(word, eq + 1)
+    }
+    function conversion_setting(name) {
+        if (name in inline) return inline[name]
+        if (exported[name]) return shell_values[name]
+        return ""
+    }
+    function rewrites_mount(kind, spec, arg,    value, prefixes, count, i) {
+        if (kind == "volume" && !bind_volume(spec)) return 0
+        if (kind == "mount" && (tolower(spec) !~ /(^|,)type=bind(,|$)/ ||
+                                tolower(spec) ~ /(^|,)(source|src)=\/\//)) return 0
+        if (conversion_setting("MSYS_NO_PATHCONV") == "1") return 0
+        value = conversion_setting("MSYS2_ARG_CONV_EXCL")
+        if (value == "*") return 0
+        count = split(value, prefixes, ";")
+        for (i = 1; i <= count; i++)
+            if (prefixes[i] != "" && index(arg, prefixes[i]) == 1) return 0
+        return 1
+    }
+    function argument(word,    name, kind, spec) {
         if (!has_command) {
             if (word ~ /^[a-zA-Z_][a-zA-Z_0-9]*=/) {
-                if (word ~ /^MSYS_NO_PATHCONV=/) disabled = (word == "MSYS_NO_PATHCONV=1")
-            } else if (word != "env" && word != "command") {
+                save_assignment(word, inline)
+            } else if (word ~ /^(if|while|until|then|do|else|elif|[{]|!|time)$/) {
+                return 0
+            } else if (word ~ /^(env|command|winpty|exec|sudo|nohup|--)$/) {
+                wrapped = 1
+            } else {
+                shell_builtin = word
                 docker = (tolower(word) ~ /(^|[\/\\])docker(\.exe)?$/)
                 has_command = 1
             }
-        } else if (docker && !disabled) {
-            if (mount == "mount" && tolower(word) ~ /(^|,)type=bind(,|$)/) return 1
-            if (mount == "volume" && bind_volume(word)) return 1
+        } else if (!wrapped && shell_builtin == "export" && word ~ /^(MSYS_NO_PATHCONV|MSYS2_ARG_CONV_EXCL)(=|$)/) {
+            name = word
+            sub(/=.*/, "", name)
+            if (index(word, "=")) save_assignment(word, shell_values)
+            exported[name] = 1
+        } else if (!wrapped && shell_builtin == "unset" && word ~ /^(MSYS_NO_PATHCONV|MSYS2_ARG_CONV_EXCL)$/) {
+            delete shell_values[word]
+            delete exported[word]
+        } else if (docker) {
+            kind = mount
             mount = ""
+            if (kind != "") return rewrites_mount(kind, word, word)
             if (word == "-v" || word == "--volume") mount = "volume"
             else if (word == "--mount") mount = "mount"
-            else if (word ~ /^--volume=/ && bind_volume(substr(word, 10))) return 1
-            else if (word ~ /^-v./ && bind_volume(substr(word, word ~ /^-v=/ ? 4 : 3))) return 1
-            else if (tolower(word) ~ /^--mount=([^,]+,)*type=bind(,|$)/) return 1
+            else if (word ~ /^--volume=/) return rewrites_mount("volume", substr(word, 10), word)
+            else if (word ~ /^-v./) {
+                spec = substr(word, word ~ /^-v=/ ? 4 : 3)
+                return rewrites_mount("volume", spec, word)
+            } else if (word ~ /^--mount=/) return rewrites_mount("mount", substr(word, 9), word)
             else if (word == "--") docker = 0
         }
         return 0
+    }
+    function end_command(    name) {
+        # A standalone assignment can be exported later. A prefix on a
+        # command lasts only as long as that command.
+        for (name in inline) {
+            if (!has_command && !wrapped) shell_values[name] = inline[name]
+            delete inline[name]
+        }
+        has_command = docker = wrapped = 0
+        mount = shell_builtin = ""
     }
 
     # Inspect direct commands and their arguments without expanding variables
@@ -115,8 +164,7 @@ decision=$(LC_ALL=C awk '
                 if (started && argument(word)) return 1
                 word = ""
                 started = 0
-                if (shell ~ /^[\n;&|()]/) has_command = docker = disabled = 0
-                if (!has_command) mount = ""
+                if (shell ~ /^[\n;&|()]/) end_command()
                 shell = substr(shell, 2)
                 continue
             }
@@ -133,15 +181,21 @@ decision=$(LC_ALL=C awk '
 
     { json = json $0 "\n" }
     END {
+        # Most tool calls never mention Docker. Allow JSON Unicode escapes
+        # through this first filter since they can spell part of its name.
+        if (tolower(json) !~ /docker|\\u00/) exit
         escapes["b"] = "\b"; escapes["f"] = "\f"; escapes["n"] = "\n"
         escapes["r"] = "\r"; escapes["t"] = "\t"
         if (peek() != "{") exit
         value("root")
-        if (peek() == "" && tool == "Bash" && unsafe(command)) print "block"
+        if (peek() == "" && tool == "Bash" && tolower(command) ~ /docker/ && unsafe(command)) print "block"
     }
 ' 2>/dev/null) || exit 0
 
 if [ "$decision" = block ]; then
-    echo 'Run Docker bind mounts from pwsh, or prefix the Docker command with MSYS_NO_PATHCONV=1 and give the host path with its drive letter (for example, E:/Projects/x:/app).' >&2
+    printf '%s\n' \
+        'Run Docker bind mounts from pwsh.' \
+        "In Git Bash, prefix the command with MSYS_NO_PATHCONV=1 or MSYS2_ARG_CONV_EXCL='*' (or export either first) and give the host path with its drive letter." \
+        'A host path beginning with // also skips conversion.' >&2
     exit 2
 fi

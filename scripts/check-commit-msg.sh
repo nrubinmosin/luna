@@ -20,8 +20,8 @@
 #     "fix(scope)!:"): the type is what the sentence says,
 #   - line 2 is blank, and the body is wrapped at 72, except a line with a
 #     URL, an indented line and a line that is one unbreakable token.
-# Exempt from the form: a merge ("Merge ..."), a revert ('Revert "..."') and
-# the release bump ("Luna X.Y.Z").
+# Exempt from the form: a revert ('Revert "..."') and the release bump
+# ("Luna X.Y.Z"). Git's own merge messages are exempt in the hook and range.
 # "fixup!", "squash!" and "amend!" commits are only allowed on branches whose
 # commits are squashed.
 #
@@ -76,9 +76,10 @@ comment_prefix() {
 }
 
 # Checks the message on stdin, printing "line N (rule): text" per problem, and
-# fails on one. $1 is hook or stored: the hook skips comment lines (opened by
-# $comment, when set) and stops at the scissors line. A stored message is
-# read as it is. $2 says whether to check the form as well as attribution.
+# fails on one. $1 is hook, range or message. The hook skips comment lines
+# (opened by $comment, when set) and stops at the scissors line. The other
+# modes read the text as it is. $2 says whether to check the form as well as
+# attribution.
 check_message() {
     mode=$1
     form=$2
@@ -120,7 +121,8 @@ check_message() {
             [ "$blank" = no ] || continue # leading blank lines go with the commit
             subject=$line
             case $subject in
-                'Merge '* | 'Revert "'*) form=no ;;
+                'Merge '*) [ "$mode" = message ] || form=no ;;
+                'Revert "'*) form=no ;;
                 'fixup! '* | 'squash! '* | 'amend! '*)
                     printf '  line %s (fixup!/squash!/amend! commit, squash it before merging): %s\n' "$n" "$line"
                     bad=1
@@ -212,7 +214,7 @@ case $1 in
             # only to the attribution.
             form=$branch_form
             case $(git show -s --format=%P "$c") in *' '*) form=no ;; esac
-            if ! out=$(git show -s --format=%B "$c" | check_message stored "$form"); then
+            if ! out=$(git show -s --format=%B "$c" | check_message range "$form"); then
                 refuse "commit $(git rev-parse --short "$c")" "$out" 'Rewrite the commit message before merging.' "$form"
                 bad=1
             fi
@@ -221,7 +223,7 @@ case $1 in
         ;;
     --message)
         [ "$branch_given" = no ] && [ "$#" -eq 2 ] || usage
-        if ! out=$(check_message stored yes <"$2"); then
+        if ! out=$(check_message message yes <"$2"); then
             refuse 'stored message' "$out" 'Edit the message before merging.' yes
             exit 1
         fi
