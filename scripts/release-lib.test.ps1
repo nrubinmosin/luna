@@ -507,10 +507,7 @@ Older notes.
         $dir = New-Item -ItemType Directory (Join-Path $root 'changes')
         Set-Content -LiteralPath (Join-Path $dir 'late.md') "### Fixed`n- A late fix."
         $tag = Join-Path $scripts 'release.ps1'
-        $output = pwsh -NoProfile -File $tag -DryRun 2>&1
-        if ($LASTEXITCODE -ne 1 -or ($output -join ' ') -notmatch 'Bump again to collect them or move them to a later release') {
-            throw "expected the uncollected fragment to block tagging: $output"
-        }
+        Assert-Throws { & $tag -DryRun } 'Bump again to collect them or move them to a later release'
     }
 
     Check 'fragment format rejects invalid slugs, headings, entries and exemptions' {
