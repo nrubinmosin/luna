@@ -24,16 +24,14 @@ Otherwise clone, one per provider the run needs:
 ./scripts/test-accounts.ps1 clone -Source <account folder> -Provider openai -Name live
 ```
 
-- **Default: without credentials.** The clone prints the one step that signs
-  the copy in (`CLAUDE_CONFIG_DIR=... claude` then `/login`, or
-  `CODEX_HOME=... codex login`). That login is a person's step: hand it to
-  them and wait. Do not try to complete it yourself.
-- **Never `-WithCredentials` on a real, in-use account**, even if asked: OAuth
-  refresh tokens rotate, so a token refresh in the copy leaves the original
-  with a dead token and signs it out (it happened to the operator's `frontend`
-  account). A throwaway account gets its own fresh sign-in instead: a folder
-  under `test-build/accounts`, `claude` + `/login` with `CLAUDE_CONFIG_DIR`, or
-  `codex login` with `CODEX_HOME`. The person does the sign-in.
+- **A clone never carries the login.** Copying credentials is not offered:
+  OAuth refresh tokens rotate, so a token refresh in a copy leaves the
+  original with a dead token and signs it out (it happened to the operator's
+  `frontend` account). Do not copy a credential file by hand either, even if
+  asked. The clone prints the one step that signs it in
+  (`CLAUDE_CONFIG_DIR=... claude` then `/login`, or `CODEX_HOME=... codex
+  login`). That fresh sign-in is a person's step: hand it to them and wait. Do
+  not try to complete it yourself.
 - The source must be a real account folder the person named. Never pick one
   yourself, and never point anything at Luna's own install (`E:\Programs\Luna`)
   or its data folder.
@@ -76,8 +74,8 @@ in the background and wait for it rather than polling.
 Hash the same file again. Same hash: the file held the same bytes at both
 reads, no more; it does not prove nothing wrote into the source folder.
 Different: say so first in the report, because it means the source's login may
-have been rotated and the person should check that account still works. With no
-credentials copied, any change points at something writing outside
+have been rotated and the person should check that account still works. Since
+a clone carries no credentials, any change points at something writing outside
 `test-build/accounts` and is a finding in itself.
 
 ## 5. Read failures before blaming code
@@ -104,6 +102,5 @@ yours you started.
   prints which CLI it took).
 - Evidence: the script's summary line, and for a failure the relevant log
   lines and your reading of them (Luna, CLI or model).
-- Credential hash: unchanged / changed, per source account, and whether the
-  clone had credentials copied.
+- Credential hash: unchanged / changed, per source account.
 - What was left behind (kept clones) and what was cleaned.
