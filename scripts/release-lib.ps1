@@ -392,22 +392,26 @@ function Get-ChangelogVersions([string]$Root = $RepoRoot) {
 # One version's section of CHANGELOG.md: Version, Date, Heading, Intro (the
 # text before its first ### subsection, which latest.json carries for the
 # update chip) and Body (intro and subsections as written). Throws when the
-# heading is missing or the section holds no text or bullets, and for
-# [Unreleased], whose content is not released as it is.
-function Get-ChangelogSection([string]$Version, [string]$Root = $RepoRoot) {
+# heading is missing, the section holds no text or bullets, or -RequireIntro
+# is given and there is no intro. [Unreleased] is never a release section.
+function Get-ChangelogSection([string]$Version, [string]$Root = $RepoRoot, [switch]$RequireIntro) {
     Assert-VersionFormat $Version
     $section = (Read-Changelog $Root).Sections | Where-Object { $_.Version -ceq $Version } | Select-Object -First 1
     if (-not $section) { throw "CHANGELOG.md has no section for $Version (## [$Version] - <date>); write its entry first" }
+    $introLines = if ($section.IntroEnd -lt 0) { $section.Lines } elseif ($section.IntroEnd -eq 0) { @() } else { $section.Lines.GetRange(0, $section.IntroEnd) }
+    $intro = (@($introLines) -join "`n").Trim()
+    if ($RequireIntro -and -not $intro) {
+        throw "The $Version section in CHANGELOG.md needs an intro paragraph. Write it before the first ### heading, where the update chip gets its text."
+    }
     $text = ($section.Lines -join "`n").Trim()
     if (-not @($text -split "`n" | Where-Object { $_.Trim() -and $_ -notmatch '^###' })) {
         throw "the $Version section of CHANGELOG.md is empty; write what changed before releasing it"
     }
-    $introLines = if ($section.IntroEnd -lt 0) { $section.Lines } elseif ($section.IntroEnd -eq 0) { @() } else { $section.Lines.GetRange(0, $section.IntroEnd) }
     [pscustomobject]@{
         Version = $Version
         Date    = $section.Date
         Heading = $section.Heading
-        Intro   = (@($introLines) -join "`n").Trim()
+        Intro   = $intro
         Body    = $text
     }
 }

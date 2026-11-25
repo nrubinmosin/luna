@@ -25,6 +25,7 @@ signing job and publishes the draft the workflow leaves.
    the versions agree, the release notes render from `CHANGELOG.md` (the version's
    section is there, and neither it nor the section of any version since the last
    published release is empty), and the tag is free here and on `origin`.
+   Both release modes and their dry runs require the version's opening paragraph.
    If new fragments arrived after the bump, both tag mode and `-Local` stop.
    Run `./scripts/release.ps1 -Bump 1.2.3` again with the same version to
    collect them into that version's existing section. Review the intro and
