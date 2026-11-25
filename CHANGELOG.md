@@ -8,6 +8,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Ctrl+Tab cycles through boards with chats in their sidebars. The title
+  bar buttons still open empty boards.
+
 ## [0.22.0] - 2026-11-25
 
 Panes stand apart in the dark theme and have a delete button, Claude Code

@@ -997,9 +997,9 @@ impl WindowState {
         }
     }
 
-    /// Ctrl+Tab: the next board, round.
-    pub fn next_board(&mut self) {
-        self.set_board((self.board + 1) % BOARDS);
+    /// Ctrl+Tab: the next board whose sidebar has chats, wrapping around.
+    pub fn next_board(&self) -> Option<usize> {
+        (1..BOARDS).map(|offset| (self.board + offset) % BOARDS).find(|&board| !self.folders_of_board(board).is_empty())
     }
 
     pub fn set_layout(&mut self, n: usize) {
@@ -1539,11 +1539,8 @@ mod tests {
         s.set_board(1);
         assert_eq!(s.layout(), 1);
         assert_eq!(live(&s), [None]);
-        s.next_board();
-        s.next_board();
-        s.next_board();
-        s.next_board();
-        assert_eq!(s.board, 0, "round the five");
+        s.set_board(s.next_board().unwrap());
+        assert_eq!(s.board, 0, "wraps to the board with chats");
         assert_eq!(live(&s), [Some("a"), Some("b")]);
         s.clear_board(0);
         assert_eq!(live(&s), [None, None]);
