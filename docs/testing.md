@@ -191,8 +191,7 @@ has let it go, the account still signed in (issue #75). It rotates the test
 account's refresh token, as any session near expiry would, so it runs only
 when asked for: `./scripts/live-tests.ps1 -ClaudeAccount live -Renew`
 (`LUNA_LIVE_RENEW=1`); without it the script leaves it out (`--skip`) and
-reports it as skipped, not passed. Never on a clone made with `-WithCredentials` (below): the renewal there leaves the
-source account's refresh token dead, and the source signed out.
+reports it as skipped. Run it on a throwaway account with its own fresh sign-in.
 
 ### Accounts
 
@@ -211,16 +210,19 @@ the test build also uses by default:
 (all of them with no `-Provider`), and refuses a name both providers have
 unless `-Provider` says which.
 
-A clone is a plain copy of the account's settings, skills and plugins, without
-its conversations, logs and prompt history, and without its login: sign the
-copy in once with the step `clone` prints. A source or destination with a
-junction or symlink in it is refused, and so is `clean` through one: a link
-there once let test helpers write into a real account.
+A clone copies the account's settings, skills and plugins and leaves its
+conversations, logs, prompt history and login behind. A source or destination
+with a junction or symlink in it is refused, and so is `clean` through one.
+A link there once let test helpers write into a real account.
 
-`-WithCredentials` copies the login too, and warns why that is risky: OAuth
-refresh tokens rotate, so whichever of the two folders refreshes first leaves
-the other holding a dead token. A live run on the copy can sign the original
-out. Prefer signing the copy in on its own.
+A person signs in to the throwaway account using the step `clone` prints.
+This gives the clone a fresh login so its OAuth token refreshes cannot sign the
+source account out. Both sign-in commands use the clone's folder under
+`test-build/accounts`.
+
+- For Claude Code, set `CLAUDE_CONFIG_DIR` to the clone, run `claude`, then
+  enter `/login`.
+- For Codex, set `CODEX_HOME` to the clone and run `codex login`.
 
 For a run of the test build on such a copy, `LUNA_TEST_NO_TOKEN_USE=1` in its
 environment keeps Luna itself off the accounts' tokens (`token_use.rs`): no

@@ -812,8 +812,8 @@ fn codex_an_mcp_call_authenticates() {
 /// and never shown.
 ///
 /// Only with `LUNA_LIVE_RENEW=1` too (live-tests.ps1 `-Renew`): it rotates the
-/// account's refresh token, and on a clone made with its source's login
-/// (test-accounts.ps1 `-WithCredentials`) that leaves the source signed out.
+/// throwaway account's refresh token. The throwaway account needs its own
+/// sign-in so the renewal uses a separate OAuth grant.
 #[test]
 #[ignore = "live: needs LUNA_LIVE=1, LUNA_LIVE_RENEW=1 and a signed-in test account"]
 fn claude_the_model_ask_leaves_a_renewed_token_saved() {
