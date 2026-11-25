@@ -404,6 +404,9 @@ A security and engineering release. Agent tools now follow least privilege.
 [Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.2...HEAD
 [0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.11...v0.10.0
+[0.9.11]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.9.11
+[0.9.10]: https://github.com/nrubinmosin/luna/compare/v0.9.9...v0.9.10
 [details]: https://example.com/details "More details"
 [Details]: https://example.com/second-definition-is-ignored
 [spec]: <https://example.com/spec> 'The spec'
@@ -426,7 +429,12 @@ A security and engineering release. Agent tools now follow least privilege.
 
 Previous notes.
 
-[Unreleased]: $repo/compare/v1.2.2...HEAD
+## [1.2.2] - 2026-11-07
+
+Older notes.
+
+[Unreleased]: $repo/compare/v1.2.3...HEAD
+[1.2.3]: $repo/compare/v1.2.2...v1.2.3
 [1.2.2]: $repo/compare/v1.2.1...v1.2.2
 "@ -replace '\r?\n', "`r`n"
         $log = Join-Path $root 'CHANGELOG.md'
@@ -464,13 +472,45 @@ Previous notes.
 
 Previous notes.
 
+## [1.2.2] - 2026-11-07
+
+Older notes.
+
 [Unreleased]: $repo/compare/v1.2.4...HEAD
 [1.2.4]: $repo/compare/v1.2.3...v1.2.4
+[1.2.3]: $repo/compare/v1.2.2...v1.2.3
 [1.2.2]: $repo/compare/v1.2.1...v1.2.2
 "@ -replace '\r?\n', "`r`n"
         Assert-Equal (New-ReleaseChangelog '1.2.4' $fragments $root) $expected
         Assert-Equal ([IO.File]::ReadAllText($log)) $before
         Assert-Throws { New-ReleaseChangelog '1.2.3' $fragments $root } 'already has'
+    }
+
+    Check 'the bump refuses a missing historical link or a stale Unreleased comparison' {
+        $root = New-Tree changelog-links
+        $log = Join-Path $root 'CHANGELOG.md'
+        $before = $changelog.Replace("### Fixed`n`n- Not out yet.`n`n", '')
+        $missing = $before -creplace '(?m)^\[0\.10\.0\]: .*\n', ''
+        Set-Content -LiteralPath $log $missing -NoNewline
+        Assert-Throws { New-ReleaseChangelog '0.10.3' @() $root } 'no link definition for `[0.10.0`]'
+        $stale = $before.Replace('v0.10.2...HEAD', 'v0.10.1...HEAD')
+        Set-Content -LiteralPath $log $stale -NoNewline
+        Assert-Throws { New-ReleaseChangelog '0.10.3' @() $root } 'must compare from v0.10.2 to HEAD'
+    }
+
+    Check 'tag mode refuses an uncollected fragment before tagging' {
+        $root = New-Tree uncollected
+        $scripts = New-Item -ItemType Directory (Join-Path $root 'scripts')
+        foreach ($file in 'lib.ps1', 'release-lib.ps1', 'release.ps1') {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $scripts
+        }
+        $dir = New-Item -ItemType Directory (Join-Path $root 'changes')
+        Set-Content -LiteralPath (Join-Path $dir 'late.md') "### Fixed`n- A late fix."
+        $tag = Join-Path $scripts 'release.ps1'
+        $output = pwsh -NoProfile -File $tag -DryRun 2>&1
+        if ($LASTEXITCODE -ne 1 -or ($output -join ' ') -notmatch 'Bump again to collect them or move them to a later release') {
+            throw "expected the uncollected fragment to block tagging: $output"
+        }
     }
 
     Check 'fragment format rejects invalid slugs, headings, entries and exemptions' {

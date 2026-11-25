@@ -39,9 +39,15 @@ function Initialize-Fixture {
     Invoke-FixtureGit switch --quiet --create slice/example
 }
 
-function Assert-Check([string]$Branch, [string]$Message = '') {
-    $output = pwsh -NoProfile -File "$PSScriptRoot/check-changes.ps1" -Root $root -Branch $Branch 2>&1
-    $code = $LASTEXITCODE
+function Assert-Check([string]$Branch, [string]$Message = '', [string]$PullRequestBase) {
+    $savedBase = $env:GITHUB_BASE_REF
+    try {
+        $env:GITHUB_BASE_REF = $PullRequestBase
+        $output = pwsh -NoProfile -File "$PSScriptRoot/check-changes.ps1" -Root $root -Branch $Branch 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $env:GITHUB_BASE_REF = $savedBase
+    }
     if ($Message) {
         if ($code -ne 1 -or -not ($output -join ' ').Contains($Message)) {
             throw "expected exit 1 and '$Message', got exit $code with $output"
@@ -68,13 +74,28 @@ try {
         Assert-Check 'slice/example'
     }
 
-    Check 'only production dependency tables count in a modified manifest' {
+    Check 'production dependency, feature and profile tables count in a modified manifest' {
         $manifest = 'src-tauri/Cargo.toml'
-        Set-FixtureFile $manifest "[package]`nversion = '1.0.1'`n`n[dependencies]`n# Comment.`na = '1.0'`n`n[dev-dependencies]`nb = '2.0'"
+        $metadata = "[package]`nversion = '1.0.1'`n`n[dependencies]`n# Comment.`na = '1.0'`n`n[dev-dependencies]`nb = '2.0'"
+        Set-FixtureFile $manifest $metadata
         Assert-Check 'slice/example'
-        Add-Content -LiteralPath (Join-Path $root $manifest) "`n[target.'cfg(windows)'.dependencies]`nb = '2.0'"
-        Assert-Check 'slice/example' 'require a new changes/<slug>.md'
+        foreach ($table in @(
+            "[target.'cfg(windows)'.dependencies]`nb = '2.0'"
+            '[features]' + "`nnew = []"
+            "[profile.release]`nlto = true"
+        )) {
+            Set-FixtureFile $manifest "$metadata`n`n$table"
+            Assert-Check 'slice/example' $manifest
+        }
         Invoke-FixtureGit restore -- $manifest
+    }
+
+    Check 'vendored source and a lockfile change each need a fragment' {
+        foreach ($path in 'src-tauri/vendor/gpui-pre-windows/src/lib.rs', 'src-tauri/Cargo.lock') {
+            Set-FixtureFile $path 'Changed.'
+            try { Assert-Check 'slice/example' $path }
+            finally { Remove-Item -LiteralPath (Join-Path $root $path) }
+        }
     }
 
     Check 'the window and installer need a fragment and a new exemption satisfies it' {
@@ -107,11 +128,37 @@ try {
         Remove-Item -LiteralPath (Join-Path $root 'changes/example.md')
         Assert-Check 'master'
         Assert-Check 'release/v1.1.0'
+        Assert-Check 'release-1.1.0-rc.1'
+        Assert-Check 'release-tooling' 'require a new changes/<slug>.md'
+        Assert-Check 'release/v1.1' 'require a new changes/<slug>.md'
+        Assert-Check 'release/v01.1.0' 'require a new changes/<slug>.md'
         Set-FixtureFile 'changes/example.md' "### Added`nMissing bullet."
         Assert-Check 'release/v1.1.0' 'changes/example.md'
         Remove-Item -LiteralPath (Join-Path $root 'changes/example.md')
         Set-FixtureFile 'CHANGELOG.md' "# Changelog`n`n## [Unreleased]`n`n### Added`n`n- Misplaced entry."
         Assert-Check 'master' 'keep ## [Unreleased] empty'
+    }
+
+    $root = (New-Item -ItemType Directory -Path (Join-Path $work 'bases')).FullName
+    Initialize-Fixture
+    Check 'pushes use the nearest integration merge base and exclude their own remote ref' {
+        Set-FixtureFile 'src-tauri/src/main.rs' 'fn main() { println!("integration"); }'
+        Invoke-FixtureGit add src-tauri/src/main.rs
+        Invoke-FixtureGit commit --quiet -m 'Change the integration branch'
+        Invoke-FixtureGit update-ref refs/remotes/origin/iteration/train HEAD
+        Invoke-FixtureGit update-ref refs/remotes/origin/stage6/older HEAD^
+        Set-FixtureFile 'docs/guide.md' 'A guide from the feature branch.'
+        Invoke-FixtureGit add docs/guide.md
+        Invoke-FixtureGit commit --quiet -m 'Add a guide'
+        Assert-Check 'slice/example'
+        Assert-Check 'slice/example' 'src-tauri/src/main.rs' -PullRequestBase 'master'
+        Assert-Check 'slice/example' -PullRequestBase 'iteration/train'
+
+        Set-FixtureFile 'src-tauri/src/main.rs' 'fn main() { println!("feature"); }'
+        Invoke-FixtureGit add src-tauri/src/main.rs
+        Invoke-FixtureGit commit --quiet -m 'Change the feature branch'
+        Invoke-FixtureGit update-ref refs/remotes/origin/gpui/example HEAD
+        Assert-Check 'gpui/example' 'src-tauri/src/main.rs'
     }
 } finally {
     $resolved = (Resolve-Path -LiteralPath $work -ErrorAction SilentlyContinue).ProviderPath

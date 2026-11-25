@@ -78,10 +78,14 @@ Write release notes in `changes/<slug>.md` with a lowercase slug and a
 `###` heading such as `### Fixed`, followed by bullets. Use `### None` with
 a line explaining why when a product change needs no note. The scripts group
 runs `check-changes.ps1` to validate [the fragment format](../changes/README.md)
-and keep `## [Unreleased]` empty. It compares feature branches with their
-merge base with `origin/master` and requires a new fragment for changes to
-the app, native UI, installer, shipped assets, or product dependency
-declarations. Dedicated test files are exempt.
+and keep `## [Unreleased]` empty. A pull request uses its target branch as
+the base. For a push or local check, the checker chooses the closest merge
+base with `origin/master`, `origin/iteration/*`, `origin/stage6/*`, or
+`origin/gpui/*`, excluding the branch being checked. It requires a new
+fragment for changes to the app, native UI, installer, shipped assets,
+vendored crates, `Cargo.lock`, or product dependency, feature, or profile
+tables. Dedicated test files are exempt. On `master` and versioned release
+branches, only the content checks run.
 
 `pwsh -File scripts/check-text.ps1` checks every tracked text file for letters
 outside the Latin script and British spellings, and that known text types are

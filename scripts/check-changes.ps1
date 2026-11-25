@@ -1,6 +1,6 @@
 #Requires -Version 7.4
 # Checks every fragment and the empty Unreleased section. On a feature branch
-# it also checks the changes since the branch split from origin/master.
+# it also checks the changes since the branch split from its base.
 param(
     [string]$Root,
     [string]$Branch
@@ -8,14 +8,15 @@ param(
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/release-lib.ps1"
 
-# The app, native UI and other workspace crates, installer, and shipped assets
-# live here. Dedicated tests, fixtures and the window's test/screenshot harness
-# are outside the rule. Mixed production and test files use the None form for
-# test-only edits. Cargo manifests count only for shipped dependency tables.
-$productPaths = '^src-tauri/(?:(?:src|crates|windows|icons|resources)/|(?:build\.rs|updater\.json)$)'
+# The app, native UI, workspace and vendored crates, installer, shipped assets,
+# and Cargo's resolved dependencies live here. Dedicated tests, fixtures and
+# the window's test/screenshot harness are outside the rule. Mixed production
+# and test files use the None form for test-only edits. App and workspace
+# manifests count for production dependencies, features and build profiles.
+$productPaths = '^src-tauri/(?:(?:src|crates|vendor|windows|icons|resources)/|(?:build\.rs|updater\.json|Cargo\.lock)$)'
 $testPaths = '(?:^|/)(?:tests?|fixtures|testdata|testkit|test_support)(?:/|\.rs$)|_tests?\.rs$|^src-tauri/crates/window/src/(?:(?:[^/]+/)?demo\.rs$|drive\.rs$|(?:bin/)?shots\.rs$|term/bench/)'
 $manifestPaths = '^src-tauri/(?:crates/.+/)?Cargo\.toml$'
-$dependencyTables = '^(?:(?:target\..+|workspace)\.)?(?:build-)?dependencies(?:\.|$)|^patch\.'
+$productTables = '^(?:(?:target\..+|workspace)\.)?(?:build-)?dependencies(?:\.|$)|^(?:patch\.|features$|profile\.)'
 
 function Get-GitPaths([string[]]$GitArgs) {
     # NUL-delimited paths keep the actual file names, including Git's usual
@@ -37,7 +38,7 @@ function Get-GitPaths([string[]]$GitArgs) {
     }
 }
 
-function Get-DependencyLines([string[]]$Lines) {
+function Get-ProductManifestLines([string[]]$Lines) {
     $include = $false
     foreach ($line in $Lines) {
         $line = $line.Trim()
@@ -45,18 +46,50 @@ function Get-DependencyLines([string[]]$Lines) {
         # Handles the table and subtable forms used by Cargo, including
         # quoted cfg expressions in [target.'cfg(...)'.dependencies].
         if ($line -cmatch '^\[\[?(?<table>.+?)\]\]?\s*(?:#.*)?$') {
-            $include = $Matches.table -cmatch $dependencyTables
+            $include = $Matches.table -cmatch $productTables
         }
         if ($include) { $line }
     }
 }
 
-function Test-DependencyChange([string]$Base, [string]$Path) {
+function Test-ProductManifestChange([string]$Base, [string]$Path) {
     $old = Invoke-Checked 'git ls-tree' { git -C $Root ls-tree --name-only $Base -- $Path }
     $before = if ($old) { Invoke-Checked 'git show' { git -C $Root show "$($Base):$Path" } }
     $file = Join-Path $Root $Path
     $after = if (Test-Path -LiteralPath $file -PathType Leaf) { Get-Content -LiteralPath $file }
-    ((Get-DependencyLines $before) -join [char]10) -cne ((Get-DependencyLines $after) -join [char]10)
+    ((Get-ProductManifestLines $before) -join [char]10) -cne ((Get-ProductManifestLines $after) -join [char]10)
+}
+
+function Get-BranchMergeBase([string]$Branch, [string]$PullRequestBase) {
+    if ($PullRequestBase) {
+        return Invoke-Checked "git merge-base HEAD origin/$PullRequestBase (fetch the PR base first)" {
+            git -C $Root merge-base HEAD "refs/remotes/origin/$PullRequestBase"
+        }
+    }
+
+    # Exclude the branch being checked, since a push also updates its remote
+    # ref. Start with master so it wins ties with integration branches.
+    $refs = @(
+        'refs/remotes/origin/master'
+        Invoke-Checked 'git for-each-ref' {
+            git -C $Root for-each-ref '--format=%(refname)' refs/remotes/origin/iteration/ refs/remotes/origin/stage6/ refs/remotes/origin/gpui/
+        }
+    )
+    $nearest = $null
+    $distance = [long]::MaxValue
+    foreach ($ref in $refs) {
+        if ($ref -ceq "refs/remotes/origin/$Branch") { continue }
+        $mergeBase = git -C $Root merge-base HEAD $ref
+        if ($LASTEXITCODE -eq 1) { continue } # no common ancestor
+        if ($LASTEXITCODE) { throw "git merge-base HEAD $ref failed (exit $LASTEXITCODE). Fetch origin and retry." }
+        $commits = [long](Invoke-Checked 'git rev-list' { git -C $Root rev-list --count "$mergeBase..HEAD" })
+        if ($commits -lt $distance) {
+            $nearest = $mergeBase
+            $distance = $commits
+        }
+    }
+    if (-not $nearest) { throw 'No merge base with origin/master or an integration branch. Fetch origin and retry.' }
+    $nearest
 }
 
 if (-not $Root) { $Root = $RepoRoot }
@@ -70,11 +103,12 @@ if (-not $Branch -and $env:GITHUB_ACTIONS -ceq 'true') {
 if (-not $Branch) {
     $Branch = Invoke-Checked 'git branch' { git -C $Root branch --show-current }
 }
-if ($Branch -cmatch '^(?:master$|release(?:$|/|-))') { return }
+$number = '(?:0|[1-9][0-9]*)'
+$prerelease = "(?:$number|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+$releaseBranch = "\Arelease(?:/v|-)$number\.$number\.$number(?:-$prerelease(?:\.$prerelease)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z"
+if ($Branch -ceq 'master' -or $Branch -cmatch $releaseBranch) { return }
 
-$base = Invoke-Checked 'git merge-base HEAD origin/master (fetch origin/master first)' {
-    git -C $Root merge-base HEAD origin/master
-}
+$base = Get-BranchMergeBase $Branch $env:GITHUB_BASE_REF
 # Include staged, unstaged and untracked work so the same check can run before
 # committing. CI checks a clean checkout of the branch or its PR merge.
 $changed = @(
@@ -84,7 +118,7 @@ $changed = @(
 foreach ($path in $changed) {
     if ($path -cmatch $testPaths) { continue }
     if ($path -cmatch $manifestPaths) {
-        if (-not (Test-DependencyChange $base $path)) { continue }
+        if (-not (Test-ProductManifestChange $base $path)) { continue }
     } elseif ($path -cnotmatch $productPaths) {
         continue
     }

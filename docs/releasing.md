@@ -11,9 +11,10 @@ signing job and publishes the draft the workflow leaves.
    `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. It collects
    [changelog fragments](../changes/README.md) into a dated section below an
    empty `## [Unreleased]`, updates the compare links, and removes the
-   collected files. A malformed fragment stops the bump before any file is
-   written. Write the new section's opening paragraph by hand, ahead of its
-   first `###` subsection. The update chip shows that paragraph, and the
+   collected files. A malformed fragment, a missing version link, or an
+   `[Unreleased]` comparison from the wrong version stops the bump before
+   any file is written. Write the new section's opening paragraph by hand,
+   ahead of its first `###` subsection. The update chip shows that paragraph, and the
    release notes use the whole section. Commit (`Luna 1.2.3`) on a branch
    of its own. `master` is
    protected (see [One-time setup](#one-time-setup)), so the bump goes in through a
@@ -23,7 +24,9 @@ signing job and publishes the draft the workflow leaves.
    `./scripts/release.ps1` checks that the tree is clean, HEAD is on `origin/master`,
    the versions agree, the release notes render from `CHANGELOG.md` (the version's
    section is there, and neither it nor the section of any version since the last
-   published release is empty), and the tag is free here and on `origin`. It then makes the annotated tag
+   published release is empty), and the tag is free here and on `origin`.
+   If new fragments arrived after the bump, bump again to collect them or
+   move them to a later release before tagging. It then makes the annotated tag
    `v1.2.3` (message `Luna 1.2.3`) and prints `git push origin v1.2.3`. `-DryRun`
    checks without tagging.
 3. **The workflow** runs on the tag push:

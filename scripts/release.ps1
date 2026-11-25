@@ -77,6 +77,9 @@ try {
         return
     }
 
+    if ($PSCmdlet.ParameterSetName -eq 'Tag' -and (Get-ChangeFragmentFiles)) {
+        throw 'Uncollected changelog fragments remain in changes/. Bump again to collect them or move them to a later release before tagging.'
+    }
     $version = Get-ReleaseVersion
     $tag = "v$version"
     Assert-Pushed

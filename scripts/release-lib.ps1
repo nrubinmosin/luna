@@ -150,7 +150,7 @@ function Get-MarkdownFenceClose([string]$Fence) { "^ {0,3}[$($Fence[0])]{$($Fenc
 
 # A reference-link definition (CommonMark 4.7): the label, a colon, the
 # destination (bare or in <>), an optional title in quotes or parentheses.
-$MarkdownLinkDefinition = '^ {0,3}\[(?<name>[^\]]+)\]:\s*(?:<[^>]*>|\S+)(?:\s+(?:"[^"]*"|''[^'']*''|\([^)]*\)))?\s*$'
+$MarkdownLinkDefinition = '^ {0,3}\[(?<name>[^\]]+)\]:\s*(?<destination><[^>]*>|\S+)(?:\s+(?:"[^"]*"|''[^'']*''|\([^)]*\)))?\s*$'
 
 # CHANGELOG.md read once: Sections, in the file's order, each with Version,
 # Date, Heading (the line's text after "## "), Lines (its body as written, up
@@ -259,12 +259,15 @@ function Read-ChangeFragment([IO.FileInfo]$File) {
     [pscustomobject]@{ Name = $File.Name; Path = $File.FullName; Sections = @($sections) }
 }
 
-function Get-ChangeFragments([string]$Root = $RepoRoot) {
+function Get-ChangeFragmentFiles([string]$Root = $RepoRoot) {
     $directory = Join-Path $Root 'changes'
     if (-not (Test-Path -LiteralPath $directory)) { return }
-    $files = Get-ChildItem -LiteralPath $directory -File -Force |
+    Get-ChildItem -LiteralPath $directory -File -Force |
         Where-Object { $_.Extension -ieq '.md' -and $_.Name -cne 'README.md' }
-    [string[]]$paths = @($files | ForEach-Object FullName)
+}
+
+function Get-ChangeFragments([string]$Root = $RepoRoot) {
+    [string[]]$paths = @(Get-ChangeFragmentFiles $Root | ForEach-Object FullName)
     [array]::Sort($paths, [StringComparer]::Ordinal)
     foreach ($path in $paths) { Read-ChangeFragment (Get-Item -LiteralPath $path -Force) }
 }
@@ -292,6 +295,16 @@ function New-ReleaseChangelog([string]$Version, [object[]]$Fragments, [string]$R
     $previous = $changelog.Sections[1].Version
     Assert-VersionFormat $previous
     $repo = Get-RepoUrl $Root
+    foreach ($past in ($changelog.Sections | Select-Object -Skip 1)) {
+        if (-not $changelog.Links.ContainsKey($past.Version)) {
+            throw "CHANGELOG.md has no link definition for [$($past.Version)]."
+        }
+    }
+    $expected = "$repo/compare/v$previous...HEAD"
+    if ($changelog.Links['unreleased'] -notmatch $MarkdownLinkDefinition -or
+        ($Matches.destination -creplace '^<(.*)>$', '$1') -cne $expected) {
+        throw "CHANGELOG.md [Unreleased] must compare from v$previous to HEAD. Expected $expected."
+    }
     $lines = [System.Collections.Generic.List[string]]::new([string[]]$changelog.SourceLines)
     $link = $changelog.LinkLines['unreleased']
     $lines[$link] = @(
