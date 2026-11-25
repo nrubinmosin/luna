@@ -498,16 +498,80 @@ Older notes.
         Assert-Throws { New-ReleaseChangelog '0.10.3' @() $root } 'must compare from v0.10.2 to HEAD'
     }
 
-    Check 'tag mode refuses an uncollected fragment before tagging' {
+    Check 'both release modes require late fragments to be collected into the current version' {
         $root = New-Tree uncollected
+        Set-ReleaseVersion '1.2.3' $root
         $scripts = New-Item -ItemType Directory (Join-Path $root 'scripts')
         foreach ($file in 'lib.ps1', 'release-lib.ps1', 'release.ps1') {
             Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $scripts
         }
         $dir = New-Item -ItemType Directory (Join-Path $root 'changes')
-        Set-Content -LiteralPath (Join-Path $dir 'late.md') "### Fixed`n- A late fix."
-        $tag = Join-Path $scripts 'release.ps1'
-        Assert-Throws { & $tag -DryRun } 'Bump again to collect them or move them to a later release'
+        $late = Join-Path $dir 'late.md'
+        Set-Content -LiteralPath $late "### Fixed`n- A late fix.`n`n### Added`n- A new pane.`n`n### Changed`n- A new default."
+        $log = Join-Path $root 'CHANGELOG.md'
+        $repo = Get-RepoUrl $root
+        $before = @"
+# Changelog
+
+## [Unreleased]
+
+## [1.2.3] - 2026-11-08
+
+A handwritten intro.
+
+### Fixed
+
+- An earlier fix.
+
+## [1.2.2] - 2026-11-07
+
+The previous release.
+
+[Unreleased]: $repo/compare/v1.2.3...HEAD
+[1.2.3]: $repo/compare/v1.2.2...v1.2.3
+[1.2.2]: $repo/compare/v1.2.1...v1.2.2
+"@
+        Set-Content -LiteralPath $log $before -NoNewline
+        $release = Join-Path $scripts 'release.ps1'
+        $advice = 'Run ./scripts/release.ps1 -Bump 1.2.3 to collect them into this release'
+        Assert-Throws { & $release -DryRun } $advice
+        Assert-Throws { & $release -Local -DryRun } $advice
+
+        & $release -Bump '1.2.3' 6>$null
+        $expected = @"
+# Changelog
+
+## [Unreleased]
+
+## [1.2.3] - 2026-11-08
+
+A handwritten intro.
+
+### Added
+
+- A new pane.
+
+### Changed
+
+- A new default.
+
+### Fixed
+
+- An earlier fix.
+
+- A late fix.
+
+## [1.2.2] - 2026-11-07
+
+The previous release.
+
+[Unreleased]: $repo/compare/v1.2.3...HEAD
+[1.2.3]: $repo/compare/v1.2.2...v1.2.3
+[1.2.2]: $repo/compare/v1.2.1...v1.2.2
+"@
+        Assert-Equal ([IO.File]::ReadAllText($log)) $expected
+        Assert-Equal (Get-ReleaseVersion $root) '1.2.3'
+        Assert-Equal (Test-Path -LiteralPath $late) $false
     }
 
     Check 'fragment format rejects invalid slugs, headings, entries and exemptions' {

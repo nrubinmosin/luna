@@ -33,6 +33,7 @@ function Initialize-Fixture {
     Set-FixtureFile 'changes/existing.md' "### Fixed`n- An earlier fix."
     Set-FixtureFile 'src-tauri/src/main.rs' 'fn main() {}'
     Set-FixtureFile 'src-tauri/Cargo.toml' "[package]`nversion = '1.0.0'`n`n[dependencies]`na = '1.0'"
+    Set-FixtureFile 'src-tauri/Cargo.lock' 'version = 4'
     Invoke-FixtureGit add --all
     Invoke-FixtureGit commit --quiet -m 'Create fixture'
     Invoke-FixtureGit update-ref refs/remotes/origin/master HEAD
@@ -74,15 +75,35 @@ try {
         Assert-Check 'slice/example'
     }
 
-    Check 'production dependency, feature and profile tables count in a modified manifest' {
+    Check 'production dependency, feature and release profile tables count in a modified manifest' {
         $manifest = 'src-tauri/Cargo.toml'
-        $metadata = "[package]`nversion = '1.0.1'`n`n[dependencies]`n# Comment.`na = '1.0'`n`n[dev-dependencies]`nb = '2.0'"
+        $metadata = @"
+[package]
+version = '1.0.1'
+
+[dependencies]
+# Comment.
+a = '1.0'
+
+[dev-dependencies]
+b = '2.0'
+
+[profile.dev]
+debug = true
+
+[profile.test]
+debug = true
+
+[profile.shots]
+inherits = "release"
+"@
         Set-FixtureFile $manifest $metadata
         Assert-Check 'slice/example'
         foreach ($table in @(
             "[target.'cfg(windows)'.dependencies]`nb = '2.0'"
             '[features]' + "`nnew = []"
             "[profile.release]`nlto = true"
+            "[profile.release.package.a]`nopt-level = 2"
         )) {
             Set-FixtureFile $manifest "$metadata`n`n$table"
             Assert-Check 'slice/example' $manifest
@@ -90,12 +111,18 @@ try {
         Invoke-FixtureGit restore -- $manifest
     }
 
-    Check 'vendored source and a lockfile change each need a fragment' {
-        foreach ($path in 'src-tauri/vendor/gpui-pre-windows/src/lib.rs', 'src-tauri/Cargo.lock') {
-            Set-FixtureFile $path 'Changed.'
-            try { Assert-Check 'slice/example' $path }
-            finally { Remove-Item -LiteralPath (Join-Path $root $path) }
-        }
+    Check 'vendored source needs a fragment' {
+        $path = 'src-tauri/vendor/gpui-pre-windows/src/lib.rs'
+        Set-FixtureFile $path 'Changed.'
+        try { Assert-Check 'slice/example' $path }
+        finally { Remove-Item -LiteralPath (Join-Path $root $path) }
+    }
+
+    Check 'an existing lockfile changed on its own needs a fragment' {
+        $path = 'src-tauri/Cargo.lock'
+        Set-FixtureFile $path "version = 4`n`n[[package]]`nname = 'a'`nversion = '1.1.0'"
+        try { Assert-Check 'slice/example' $path }
+        finally { Invoke-FixtureGit restore -- $path }
     }
 
     Check 'the window and installer need a fragment and a new exemption satisfies it' {
@@ -159,6 +186,20 @@ try {
         Invoke-FixtureGit commit --quiet -m 'Change the feature branch'
         Invoke-FixtureGit update-ref refs/remotes/origin/gpui/example HEAD
         Assert-Check 'gpui/example' 'src-tauri/src/main.rs'
+    }
+
+    $root = (New-Item -ItemType Directory -Path (Join-Path $work 'follow-up')).FullName
+    Initialize-Fixture
+    Check 'follow-up pushes can use their own fragment inherited from a core integration branch' {
+        Set-FixtureFile 'changes/example.md' "### Fixed`n- A fix from this slice."
+        Invoke-FixtureGit add changes/example.md
+        Invoke-FixtureGit commit --quiet -m 'Record the slice'
+        Invoke-FixtureGit update-ref refs/remotes/origin/core/train HEAD
+        Set-FixtureFile 'src-tauri/src/main.rs' 'fn main() { println!("follow-up"); }'
+        Invoke-FixtureGit add src-tauri/src/main.rs
+        Invoke-FixtureGit commit --quiet -m 'Follow up after integration'
+        Assert-Check 'slice/example'
+        Assert-Check 'slice/other' 'require a new changes/<slug>.md'
     }
 } finally {
     $resolved = (Resolve-Path -LiteralPath $work -ErrorAction SilentlyContinue).ProviderPath

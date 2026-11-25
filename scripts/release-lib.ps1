@@ -162,7 +162,8 @@ $MarkdownLinkDefinition = '^ {0,3}\[(?<name>[^\]]+)\]:\s*(?<destination><[^>]*>|
 # not structure ($MarkdownFenceOpen), so a `## heading` shown in a code block
 # neither ends a section nor opens one. The release notes come from this
 # file, so a tree without one cannot be released. Source line positions let
-# the bump insert its section and compare link without re-rendering old notes.
+# the bump insert its section, subsections, and compare link without
+# re-rendering existing notes.
 function Read-Changelog([string]$Root) {
     $path = Join-Path $Root 'CHANGELOG.md'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "no CHANGELOG.md in $Root; the release notes are made from it" }
@@ -186,18 +187,25 @@ function Read-Changelog([string]$Root) {
             continue
         }
         if ($line -match $ChangelogHeading) {
+            if ($current) { $current.End = $i }
             $current = [pscustomobject]@{
-                Version  = $Matches.version
-                Date     = $Matches.date
-                Heading  = $line.Substring(3).Trim()
-                Line     = $i
-                Lines    = [System.Collections.Generic.List[string]]::new()
-                IntroEnd = -1
+                Version     = $Matches.version
+                Date        = $Matches.date
+                Heading     = $line.Substring(3).Trim()
+                Line        = $i
+                End         = $lines.Count
+                Lines       = [System.Collections.Generic.List[string]]::new()
+                Subsections = [System.Collections.Generic.List[object]]::new()
+                IntroEnd    = -1
             }
             $sections.Add($current)
             continue
         }
-        if ($line -match '^## ') { $current = $null; continue }
+        if ($line -match '^## ') {
+            if ($current) { $current.End = $i }
+            $current = $null
+            continue
+        }
         if ($line -match $MarkdownLinkDefinition) {
             $label = $Matches.name.ToLowerInvariant()
             if (-not $links.ContainsKey($label)) {
@@ -207,7 +215,10 @@ function Read-Changelog([string]$Root) {
             continue
         }
         if ($current) {
-            if ($current.IntroEnd -lt 0 -and $line -match '^### ') { $current.IntroEnd = $current.Lines.Count }
+            if ($line -match '^### ') {
+                if ($current.IntroEnd -lt 0) { $current.IntroEnd = $current.Lines.Count }
+                $current.Subsections.Add([pscustomobject]@{ Kind = $line.Substring(4).Trim(); Line = $i })
+            }
             $current.Lines.Add($line)
         }
     }
@@ -282,17 +293,54 @@ function Assert-UnreleasedEmpty($Changelog) {
     }
 }
 
+function Add-LateReleaseEntries($Changelog, $Section, $Entries) {
+    $end = $Section.End
+    $linksAt = $Changelog.LinkLines['unreleased']
+    if ($linksAt -gt $Section.Line -and $linksAt -lt $end) { $end = $linksAt }
+
+    $edits = foreach ($kind in $Entries.Keys) {
+        $rank = [array]::IndexOf($ChangeHeadings, $kind)
+        $existing = $Section.Subsections | Where-Object { $_.Kind -ceq $kind } | Select-Object -First 1
+        $next = if ($existing) {
+            $Section.Subsections | Where-Object { $_.Line -gt $existing.Line } | Select-Object -First 1
+        } else {
+            $Section.Subsections | Where-Object { [array]::IndexOf($ChangeHeadings, $_.Kind) -gt $rank } | Select-Object -First 1
+        }
+        $at = if ($next) { $next.Line } else { $end }
+        while ($at -gt $Section.Line + 1 -and -not $Changelog.SourceLines[$at - 1].Trim()) { $at-- }
+        $addition = @(
+            ''
+            if (-not $existing) {
+                "### $kind"
+                ''
+            }
+            $Entries[$kind]
+        )
+        [pscustomobject]@{ Index = $at; Rank = $rank; Lines = [string[]]$addition }
+    }
+    # Lower insertions cannot move the offsets above them. At the same
+    # offset, insert later categories first so they stay after earlier ones.
+    $lines = [System.Collections.Generic.List[string]]::new([string[]]$Changelog.SourceLines)
+    foreach ($edit in ($edits | Sort-Object Index, Rank -Descending)) {
+        $lines.InsertRange($edit.Index, $edit.Lines)
+    }
+    $lines -join $Changelog.Newline
+}
+
 function New-ReleaseChangelog([string]$Version, [object[]]$Fragments, [string]$Root = $RepoRoot) {
     Assert-VersionFormat $Version
     $changelog = Read-Changelog $Root
     Assert-UnreleasedEmpty $changelog
-    if (($changelog.Sections | Where-Object { $_.Version -eq $Version }) -or $changelog.Links.ContainsKey($Version)) {
-        throw "CHANGELOG.md already has a section or link for $Version"
-    }
     if ($changelog.Sections.Count -lt 2 -or -not $changelog.LinkLines.ContainsKey('unreleased')) {
         throw 'CHANGELOG.md needs the previous release section and the [Unreleased] compare link.'
     }
-    $previous = $changelog.Sections[1].Version
+    $latest = $changelog.Sections[1]
+    $previous = $latest.Version
+    $collectingLate = $previous -ceq $Version -and $Fragments.Count -gt 0 -and (Get-ReleaseVersion $Root) -ceq $Version
+    if (-not $collectingLate -and
+        (($changelog.Sections | Where-Object { $_.Version -eq $Version }) -or $changelog.Links.ContainsKey($Version))) {
+        throw "CHANGELOG.md already has a section or link for $Version"
+    }
     Assert-VersionFormat $previous
     $repo = Get-RepoUrl $Root
     foreach ($past in ($changelog.Sections | Select-Object -Skip 1)) {
@@ -305,6 +353,14 @@ function New-ReleaseChangelog([string]$Version, [object[]]$Fragments, [string]$R
         ($Matches.destination -creplace '^<(.*)>$', '$1') -cne $expected) {
         throw "CHANGELOG.md [Unreleased] must compare from v$previous to HEAD. Expected $expected."
     }
+
+    $entries = [ordered]@{}
+    foreach ($kind in $ChangeHeadings) {
+        $entryLines = @($Fragments.Sections | Where-Object { $_.Kind -ceq $kind } | ForEach-Object { $_.Lines })
+        if ($entryLines.Count) { $entries[$kind] = $entryLines }
+    }
+    if ($collectingLate) { return Add-LateReleaseEntries $changelog $latest $entries }
+
     $lines = [System.Collections.Generic.List[string]]::new([string[]]$changelog.SourceLines)
     $link = $changelog.LinkLines['unreleased']
     $lines[$link] = @(
@@ -316,13 +372,11 @@ function New-ReleaseChangelog([string]$Version, [object[]]$Fragments, [string]$R
     $section = @(
         ''
         "## [$Version] - $date"
-        foreach ($kind in $ChangeHeadings) {
-            $groups = @($Fragments.Sections | Where-Object { $_.Kind -ceq $kind })
-            if ($groups.Count -eq 0) { continue }
+        foreach ($kind in $entries.Keys) {
             ''
             "### $kind"
             ''
-            foreach ($group in $groups) { $group.Lines }
+            $entries[$kind]
         }
     )
     $lines.InsertRange($changelog.Sections[0].Line + 1, [string[]]$section)

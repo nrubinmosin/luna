@@ -12,11 +12,11 @@ param(
 # and Cargo's resolved dependencies live here. Dedicated tests, fixtures and
 # the window's test/screenshot harness are outside the rule. Mixed production
 # and test files use the None form for test-only edits. App and workspace
-# manifests count for production dependencies, features and build profiles.
+# manifests count for production dependencies, features and the release profile.
 $productPaths = '^src-tauri/(?:(?:src|crates|vendor|windows|icons|resources)/|(?:build\.rs|updater\.json|Cargo\.lock)$)'
 $testPaths = '(?:^|/)(?:tests?|fixtures|testdata|testkit|test_support)(?:/|\.rs$)|_tests?\.rs$|^src-tauri/crates/window/src/(?:(?:[^/]+/)?demo\.rs$|drive\.rs$|(?:bin/)?shots\.rs$|term/bench/)'
 $manifestPaths = '^src-tauri/(?:crates/.+/)?Cargo\.toml$'
-$productTables = '^(?:(?:target\..+|workspace)\.)?(?:build-)?dependencies(?:\.|$)|^(?:patch\.|features$|profile\.)'
+$productTables = '^(?:(?:target\..+|workspace)\.)?(?:build-)?dependencies(?:\.|$)|^(?:patch\.|features$|profile\.release(?:\.|$))'
 
 function Get-GitPaths([string[]]$GitArgs) {
     # NUL-delimited paths keep the actual file names, including Git's usual
@@ -72,7 +72,7 @@ function Get-BranchMergeBase([string]$Branch, [string]$PullRequestBase) {
     $refs = @(
         'refs/remotes/origin/master'
         Invoke-Checked 'git for-each-ref' {
-            git -C $Root for-each-ref '--format=%(refname)' refs/remotes/origin/iteration/ refs/remotes/origin/stage6/ refs/remotes/origin/gpui/
+            git -C $Root for-each-ref '--format=%(refname)' refs/remotes/origin/iteration/ refs/remotes/origin/stage6/ refs/remotes/origin/gpui/ refs/remotes/origin/core/
         }
     )
     $nearest = $null
@@ -109,6 +109,7 @@ $releaseBranch = "\Arelease(?:/v|-)$number\.$number\.$number(?:-$prerelease(?:\.
 if ($Branch -ceq 'master' -or $Branch -cmatch $releaseBranch) { return }
 
 $base = Get-BranchMergeBase $Branch $env:GITHUB_BASE_REF
+$slug = ($Branch -csplit '/', 2)[-1]
 # Include staged, unstaged and untracked work so the same check can run before
 # committing. CI checks a clean checkout of the branch or its PR merge.
 $changed = @(
@@ -122,10 +123,12 @@ foreach ($path in $changed) {
     } elseif ($path -cnotmatch $productPaths) {
         continue
     }
+    # A branch may already have brought its own fragment into this base.
+    if ($fragments.Name -ccontains "$slug.md") { return }
     $previous = @(Get-GitPaths @('ls-tree', '-r', '--name-only', '-z', $base, '--', 'changes/'))
     foreach ($fragment in $fragments) {
         $name = "changes/$($fragment.Name)"
         if ($name -cin $changed -and $name -cnotin $previous) { return }
     }
-    throw "Product changes ($path) require a new changes/<slug>.md changelog fragment. Add an entry or use ### None followed by a non-empty line explaining why no entry is needed."
+    throw "Product changes ($path) require a new changes/<slug>.md changelog fragment or the branch's existing fragment. Name it after the branch without its prefix and add an entry or use ### None followed by a non-empty line explaining why no entry is needed."
 }

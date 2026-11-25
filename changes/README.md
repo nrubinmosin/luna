@@ -1,8 +1,9 @@
 # Changelog fragments
 
-Write each change's release notes in its own `changes/<slug>.md` file. Use a
-unique slug of lowercase letters, digits, and hyphens, for example the branch
-name after `slice/`. Keep `## [Unreleased]` in `CHANGELOG.md` empty.
+Write each change's release notes in its own `changes/<slug>.md` file. Name
+it after the branch without its prefix. For example, `slice/pane-focus` uses
+`changes/pane-focus.md`. Choose a unique slug of lowercase letters, digits,
+and hyphens. Keep `## [Unreleased]` in `CHANGELOG.md` empty.
 
 Use one or more of `### Added`, `### Changed`, `### Deprecated`, `### Removed`,
 `### Fixed`, and `### Security`. Give each heading at least one `- ` bullet.

@@ -69,18 +69,17 @@ try {
         [IO.File]::WriteAllText((Join-Path $RepoRoot 'CHANGELOG.md'), $changelog)
         foreach ($fragment in $fragments) { Remove-Item -LiteralPath $fragment.Path }
         Write-Host "Bumped to $Bump and collected $($fragments.Count) changelog fragment(s)." -ForegroundColor Green
-        Write-Host 'Next: write the new CHANGELOG.md section''s intro paragraph by hand, commit on a branch and'
-        Write-Host 'merge it into master through a pull request (master takes no direct pushes):'
-        Write-Host "  git switch -c release/v$Bump; git commit -am `"Luna $Bump`"; git push -u origin release/v$Bump"
+        Write-Host 'Next: write or update the CHANGELOG.md intro paragraph by hand.'
+        Write-Host "Commit as `"Luna $Bump`" on a versioned release branch and merge it into master through a pull request."
         Write-Host 'Once it is merged, release from master as merged:'
         Write-Host '  git switch master; git pull --ff-only; ./scripts/release.ps1'
         return
     }
 
-    if ($PSCmdlet.ParameterSetName -eq 'Tag' -and (Get-ChangeFragmentFiles)) {
-        throw 'Uncollected changelog fragments remain in changes/. Bump again to collect them or move them to a later release before tagging.'
-    }
     $version = Get-ReleaseVersion
+    if (Get-ChangeFragmentFiles) {
+        throw "Uncollected changelog fragments remain in changes/. Run ./scripts/release.ps1 -Bump $version to collect them into this release, then merge the update into master before releasing."
+    }
     $tag = "v$version"
     Assert-Pushed
     # The notes as the release will carry them, rendered now so a missing or
