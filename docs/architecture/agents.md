@@ -757,11 +757,13 @@ turn, stopped on a prompt (once per stop) or exited.
   the last threshold starts a new window. Crossing state and queued notices
   are saved together in `<data>/chat-ties.json`. On upgrade, each account and
   label inherits the highest unexpired threshold from the per-chat rows in
-  `<data>/quota-told.json`. Breaker lines, folder-skills failures and places
-  notices also go to the top chat. Folder-skills news is told once until the
-  cause changes or clears. Queued news can wait for a top chat to return after
-  a restart. Leads still hear their delegates' outcomes, including failures
-  on a usage limit.
+  `<data>/quota-told.json`, which Luna removes after saving the new snapshot.
+  Reset time drift updates the running core's estimate. The saved reset time
+  stays as it was when the threshold was reached. Breaker lines, folder-skills
+  failures and places notices also go to the top chat. Folder-skills news is
+  told once until the cause changes or clears. Queued news can wait for a top
+  chat to return after a restart. Leads still hear their delegates' outcomes,
+  including failures on a usage limit.
 - **Context.** The pane meter and on-demand `luna_session_get` are the two
   places Luna shows context use (`background::Context`). Its basis is the CLI's estimated
   auto-compaction point where resolved, and otherwise the model window.

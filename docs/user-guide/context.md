@@ -180,7 +180,7 @@ included. Checked by `context_page.rs`.
 | `notice-tag` | 37 | 9 |
 | `guide-index` | 449 | 112 |
 | `guide-sessions` | 4,829 | 1,207 |
-| `guide-accounts` | 1,284 | 321 |
+| `guide-accounts` | 1,392 | 348 |
 | `guide-spawning` | 1,490 | 373 |
 | `guide-getting` | 1,649 | 412 |
 | `guide-answering` | 2,616 | 654 |

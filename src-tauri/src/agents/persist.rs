@@ -15,6 +15,7 @@ use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 /// How long into a core's life a chat the last core knew (`restore_chats`) is
@@ -756,14 +757,16 @@ pub fn save_chats() {
     save_in_order(
         &CHATS_LAST,
         || snapshot_unless(&CHATS_FROZEN, || serde_json::to_vec_pretty(&chats_now()).ok()),
-        |bytes| match crate::secret::write_private(&path, bytes) {
-            Ok(()) => true,
-            Err(e) => {
-                crate::log::warn("agents", &format!("could not save the chats' ties to {}: {e}", path.display()));
-                false
-            }
-        },
+        |bytes| write_chats(&path, bytes),
     );
+}
+
+fn write_chats(path: &Path, bytes: &[u8]) -> bool {
+    if let Err(e) = crate::secret::write_private(path, bytes) {
+        crate::log::warn("agents", &format!("could not save the chats' ties to {}: {e}", path.display()));
+        return false;
+    }
+    true
 }
 
 /// `snapshot`, unless `frozen` is set: asked as the snapshot is taken, under
@@ -797,22 +800,54 @@ fn save_in_order(last: &Mutex<Vec<u8>>, snapshot: impl FnOnce() -> Option<Vec<u8
 /// anything can ask after them. They are known again as they were, though not
 /// running until the window starts them (`Known::waiting`).
 pub fn restore_chats() {
-    let mut saved: SavedChats = match std::fs::read(chat_ties_file()) {
+    restore_chats_from(&chat_ties_file());
+    CHATS_READ.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn restore_chats_from(path: &Path) {
+    let mut saved: SavedChats = match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
             crate::log::warn("agents", &format!("could not read chat-ties.json: {e}"));
             SavedChats::default()
         }),
         Err(_) => SavedChats::default(),
     };
-    if saved.quota_told.is_none() {
-        let path = crate::paths::data_dir().join("quota-told.json");
-        saved.quota_told = Some(std::fs::read(path).map_or_else(|_| Vec::new(), |bytes| legacy_quota_rows(&bytes)));
-    }
+    migrate_quota(path, &mut saved);
     let n = saved.chats.len();
     take_up_chats(saved);
-    CHATS_READ.store(true, std::sync::atomic::Ordering::SeqCst);
     if n > 0 {
         crate::log::warn("agents", &format!("took up the ties of {n} chat(s) the last core left"));
+    }
+}
+
+fn migrate_quota(path: &Path, saved: &mut SavedChats) {
+    let legacy = path.with_file_name("quota-told.json");
+    let bytes = match std::fs::read(&legacy) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            crate::log::warn("agents", &format!("could not read {}: {e}", legacy.display()));
+            return;
+        }
+    };
+    let rows = match legacy_quota_rows(&bytes) {
+        Ok(rows) => rows,
+        Err(e) => {
+            crate::log::warn("agents", &format!("could not read {}: {e}", legacy.display()));
+            return;
+        }
+    };
+    if saved.quota_told.is_none() {
+        saved.quota_told = Some(quota_rows(&quota_from(rows, now_ms())));
+        // Keep the rest of the saved snapshot intact. The helpers have yet to
+        // be restored, so a snapshot of the live registry is premature here.
+        let Ok(bytes) = serde_json::to_vec_pretty(saved) else { return };
+        if !write_chats(path, &bytes) {
+            return;
+        }
+    }
+    if let Err(e) = std::fs::remove_file(&legacy) {
+        crate::log::warn("agents", &format!("could not remove {} after quota migration: {e}", legacy.display()));
     }
 }
 
@@ -1836,6 +1871,50 @@ mod tests {
         reg().lock().unwrap().news.retain(|l| *l != line);
         let older: SavedChats = serde_json::from_str(r#"{"chats":[],"sends":[]}"#).unwrap();
         assert!(older.news.is_empty(), "a file from before reads as none");
+    }
+
+    #[test]
+    fn quota_migration_and_queued_notices_survive_a_core_restart() {
+        let dir = crate::paths::data_dir().join(format!("quota-restore-{}", crate::agents::mint()));
+        let path = dir.join("chat-ties.json");
+        let legacy = dir.join("quota-told.json");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let account = "claude/quota-restore";
+        let line = ("quota-restore-top".to_string(), "Account claude/quota-restore crossed 95%".to_string());
+        let future = crate::background::iso(now_ms() + 3_600_000);
+        let past = crate::background::iso(now_ms() - 60_000);
+        let saved = SavedChats { news: vec![line.clone()], ..SavedChats::default() };
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let rows = serde_json::json!([
+            ["top-a", account, "week", 95, future],
+            ["top-b", account, "week", 90, future],
+            ["top-a", account, "5 hours", 90, past],
+        ]);
+        std::fs::write(&legacy, serde_json::to_vec(&rows).unwrap()).unwrap();
+
+        let expected = [(account.to_string(), "week".to_string(), 95, future)];
+        let assert_restored = || {
+            let state = chats_now();
+            let rows: Vec<_> = state.quota_told.unwrap().into_iter().filter(|row| row.0 == account).collect();
+            assert_eq!(rows, expected);
+            assert!(state.news.contains(&line));
+        };
+        let clear = || {
+            let mut r = reg().lock().unwrap();
+            r.quota_told.retain(|(name, _), _| name != account);
+            r.news.retain(|queued| *queued != line);
+        };
+        restore_chats_from(&path);
+        assert_restored();
+        assert!(!legacy.exists(), "the saved migration replaced the legacy file");
+        clear();
+
+        restore_chats_from(&path);
+        assert_restored();
+        clear();
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     /// What 0.19's handoff and moves queued for a chat, word for word as it
