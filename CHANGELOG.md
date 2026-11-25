@@ -8,6 +8,32 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-25
+
+Pane title bars show the folder a chat was started in, Ctrl+Tab skips
+boards with no chats, and an account's quota notice comes once, when its
+window crosses 90% or 95%, rather than to every chat that starts a helper
+on it.
+
+### Changed
+
+- Contributors record changelog entries in separate files. The release bump
+  collects them into the new version's notes, so branches can record their
+  changes without editing the same section of the changelog.
+- Ctrl+Tab cycles through boards with chats in their sidebars. The title
+  bar buttons still open empty boards.
+- Pane title bars show the chat's launch folder after the account, with
+  the full path on hover. Chats in worktrees show their worktree folder.
+- Quota notices go to top chats with live helpers on an account when its
+  usage window crosses 90% or 95%. Starting a helper later on the same
+  account no longer repeats the notice.
+
+### Removed
+
+- Removed the option to copy a source account's login with
+  `test-accounts.ps1 clone`. Throwaway accounts get their own sign-in so a
+  token refresh in a clone cannot sign the source account out.
+
 ## [0.22.0] - 2026-11-25
 
 Panes stand apart in the dark theme and have a delete button, Claude Code
@@ -2235,7 +2261,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/nrubinmosin/luna/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/nrubinmosin/luna/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/nrubinmosin/luna/compare/v0.20.2...v0.21.0
 [0.20.2]: https://github.com/nrubinmosin/luna/compare/v0.20.1...v0.20.2
