@@ -8,6 +8,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Pane title bars show the chat's launch folder after the account, with
+  the full path on hover. Chats in worktrees show their worktree folder.
+
 ## [0.22.0] - 2026-11-25
 
 Panes stand apart in the dark theme and have a delete button, Claude Code
