@@ -13,7 +13,7 @@ use crate::agents::notifier::lines::{
     count_notice, is_wake, last_notice, notice_turn, pair_stopped, render_notice, BACKGROUND_GRACE_MS, BREAKER_NOTICES, BREAKER_WINDOW_MS,
 };
 use crate::agents::notifier::system::SystemNews;
-use crate::agents::notifier::usage::{quota_file, quota_from, quota_news, save_quota_told, your_helper, QuotaNews};
+use crate::agents::notifier::usage::{quota_news, your_helper};
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
 use crate::agents::registry::{chat_name, is_dev, is_persons_chat, label, reg, waits_on_helpers, Known, Registry};
@@ -373,9 +373,6 @@ fn hold_for_company(
 /// answer, checks whether one came and tells the caller once it is idle; and
 /// deletes the `autoDelete` helpers that are done (see `reap`).
 pub(super) fn notifier() {
-    if let Ok(bytes) = std::fs::read(quota_file()) {
-        reg().lock().unwrap_or_else(|e| e.into_inner()).quota_told = quota_from(&bytes, now_ms());
-    }
     let mut idle_looks: HashMap<String, u32> = HashMap::new();
     // When each caller's notice was first ready while another of its helpers
     // worked on (`hold_for_company`).
@@ -383,6 +380,7 @@ pub(super) fn notifier() {
     loop {
         std::thread::sleep(NOTIFY_EVERY);
         let pty = crate::pty::manager();
+        quota_news(pty);
         notify_once(
             pty,
             &mut idle_looks,
@@ -507,12 +505,6 @@ fn notify_once_since_start(
             ),
         );
     }
-    // A caller owed nothing still hears of the quota its helpers run on,
-    // and of a spawn of its own that a core's going cut off.
-    let mut quota = quota_news(pty);
-    for caller in quota.keys() {
-        by_caller.entry(caller.clone()).or_default();
-    }
     settle_spawns();
     let mut news: HashMap<String, Vec<String>> = HashMap::new();
     {
@@ -623,8 +615,6 @@ fn notify_once_since_start(
                 _ => {}
             }
         }
-        let quota_lines = quota.remove(&caller).unwrap_or_default();
-        lines.extend(quota_lines.iter().map(|n| n.line.clone()));
         let mut news_lines: Vec<String> = news.remove(&caller).unwrap_or_default();
         lines.extend(news_lines.iter().cloned());
         let system_lines = system_news.remove(&caller).unwrap_or_default();
@@ -715,7 +705,7 @@ fn notify_once_since_start(
         let Some(typing) = TypingInto::claim(&caller) else { continue };
         idle_looks.insert(caller.clone(), 0);
         let text = format!("{NOTICE_TAG} {}", lines.join(" "));
-        let notice = Notice { text, settled, quota_lines, spawn_lines, news_lines, system_news, held_for, evidence, losses };
+        let notice = Notice { text, settled, spawn_lines, news_lines, system_news, held_for, evidence, losses };
         deliveries.push((typing, caller, notice));
     }
     // Finish the look before any of its replies can settle. Waking the first
@@ -1029,8 +1019,6 @@ struct Notice {
     text: String,
     /// The session, what became of it, the debt as it was announced.
     settled: Vec<(String, Settled, Owed)>,
-    /// The usage windows it told of.
-    quota_lines: Vec<QuotaNews>,
     /// The spawns cut off by a core going.
     spawn_lines: Vec<(u64, String)>,
     /// The queued lines.
@@ -1045,12 +1033,7 @@ struct Notice {
 
 impl Notice {
     fn len(&self) -> usize {
-        self.settled.len()
-            + self.losses.len()
-            + self.quota_lines.len()
-            + self.spawn_lines.len()
-            + self.news_lines.len()
-            + self.system_news.len()
+        self.settled.len() + self.losses.len() + self.spawn_lines.len() + self.news_lines.len() + self.system_news.len()
     }
 
     fn about(&self) -> String {
@@ -1058,7 +1041,6 @@ impl Notice {
             .iter()
             .map(|(id, how, _)| format!("{} ({})", label(id), kind_of(how)))
             .chain(self.losses.iter().map(|(id, _)| format!("{} (losses)", label(id))))
-            .chain(self.quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
             .chain(self.spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
             .chain(self.news_lines.iter().map(|_| "news no debt brings".to_string()))
             .chain(self.system_news.iter().map(|_| "system news".to_string()))
@@ -1199,7 +1181,7 @@ fn apply_delivery(
 
 fn finish_notice(pty: &crate::pty::PtyManager, caller: &str, notice: Notice, joined: bool, turn: Option<u32>) {
     let about = notice.about();
-    let Notice { settled, quota_lines, spawn_lines, news_lines, system_news, held_for, mut evidence, losses, .. } = notice;
+    let Notice { settled, spawn_lines, news_lines, system_news, held_for, mut evidence, losses, .. } = notice;
     let held = held_for.map_or(String::new(), |d| format!("; held {} s for company", d.as_secs()));
     let into = if joined { "; on the stdin of its running process" } else { "" };
     if turn.is_some() {
@@ -1241,10 +1223,6 @@ fn finish_notice(pty: &crate::pty::PtyManager, caller: &str, notice: Notice, joi
             stopped.push(id);
         }
     }
-    let told_quota = !quota_lines.is_empty();
-    for n in quota_lines {
-        r.quota_told.insert(n.key, n.told);
-    }
     r.news.retain(|(c, line)| !(c == caller && news_lines.contains(line)));
     system::told(&mut r, &system_news);
     places_told(&mut r, caller, &news_lines);
@@ -1255,9 +1233,6 @@ fn finish_notice(pty: &crate::pty::PtyManager, caller: &str, notice: Notice, joi
         r.spawns.remove(&request);
     }
     drop(r);
-    if told_quota {
-        save_quota_told();
-    }
     if told_debts || told_news || told_spawns {
         crate::background::save();
     }

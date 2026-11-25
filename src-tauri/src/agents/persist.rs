@@ -5,6 +5,7 @@
 
 use crate::agents::held::{GoingIn, Held};
 use crate::agents::notifier::system::{read_saved, SystemNews};
+use crate::agents::notifier::usage::{legacy_quota_rows, quota_from, quota_rows, QuotaRow};
 use crate::agents::owed::{Owed, Requests, WakeState};
 use crate::agents::read::transcripts;
 use crate::agents::registry::{account_name, is_dev, label, reg, register, without_retired, Known, Registry, CODEX_TRUST};
@@ -254,6 +255,10 @@ pub(super) struct SavedChats {
     /// took over is told of once, whatever comes between.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) news: Vec<(String, String)>,
+    /// Account crossings and their notices are saved in one snapshot. An
+    /// absent field is from before account-wide tracking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) quota_told: Option<Vec<QuotaRow>>,
     #[serde(default, deserialize_with = "read_saved", skip_serializing_if = "Vec::is_empty")]
     pub(super) system_news: Vec<SystemNews>,
     /// Written by a core with no handoff (0.20 on): nothing in it is 0.19's
@@ -690,7 +695,7 @@ fn freeze(last: &Mutex<Vec<u8>>, frozen: &std::sync::atomic::AtomicBool) {
 /// What there is to keep of the sessions the window runs, and the rest the next
 /// core is to tell. A chat also keeps the person's Codex trust choice.
 pub(super) fn chats_now() -> SavedChats {
-    let (mut chats, sends, mut spawns, news, system_news) = {
+    let (mut chats, sends, mut spawns, news, system_news, quota_told) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let sends: Vec<SavedSend> = r
             .held
@@ -727,7 +732,7 @@ pub(super) fn chats_now() -> SavedChats {
             })
             .collect();
         let system_news = r.system_news.iter().filter(|n| n.survives_restart()).cloned().collect();
-        (chats, sends, r.spawns.values().cloned().collect::<Vec<SpawnTaken>>(), r.news.clone(), system_news)
+        (chats, sends, r.spawns.values().cloned().collect::<Vec<SpawnTaken>>(), r.news.clone(), system_news, quota_rows(&r.quota_told))
     };
     for c in &mut chats {
         c.turns_ended = crate::activity::turns_counted(&c.id).unwrap_or(0);
@@ -737,7 +742,7 @@ pub(super) fn chats_now() -> SavedChats {
     }
     chats.sort_by(|a, b| a.id.cmp(&b.id));
     spawns.sort_by_key(|s| s.request);
-    SavedChats { chats, sends, spawns, news, system_news, no_handoff: true }
+    SavedChats { chats, sends, spawns, news, quota_told: Some(quota_told), system_news, no_handoff: true }
 }
 
 /// Writes `chats_now` out if it changed since the last write (background/persist.rs
@@ -792,13 +797,17 @@ fn save_in_order(last: &Mutex<Vec<u8>>, snapshot: impl FnOnce() -> Option<Vec<u8
 /// anything can ask after them. They are known again as they were, though not
 /// running until the window starts them (`Known::waiting`).
 pub fn restore_chats() {
-    let saved: SavedChats = match std::fs::read(chat_ties_file()) {
+    let mut saved: SavedChats = match std::fs::read(chat_ties_file()) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
             crate::log::warn("agents", &format!("could not read chat-ties.json: {e}"));
             SavedChats::default()
         }),
         Err(_) => SavedChats::default(),
     };
+    if saved.quota_told.is_none() {
+        let path = crate::paths::data_dir().join("quota-told.json");
+        saved.quota_told = Some(std::fs::read(path).map_or_else(|_| Vec::new(), |bytes| legacy_quota_rows(&bytes)));
+    }
     let n = saved.chats.len();
     take_up_chats(saved);
     CHATS_READ.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -812,6 +821,9 @@ pub(super) fn take_up_chats(saved: SavedChats) {
     let mut migrated: Vec<String> = Vec::new();
     let mut retired = 0usize;
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(rows) = saved.quota_told {
+        r.quota_told = quota_from(rows, now_ms());
+    }
     for c in saved.chats {
         let ties = c.ties;
         // A chat the window runs is the person's own: one an earlier Luna had

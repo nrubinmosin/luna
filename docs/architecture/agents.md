@@ -749,13 +749,19 @@ turn, stopped on a prompt (once per stop) or exited.
   first failure after a trip. If its report file cannot be written, the
   notice carries the text itself: up to 2000 characters, shared evenly
   among the messages.
-- **System news.** The person's top chat hears when an account used by live
-  delegates at any depth reaches 90%, then 95%, once per account, level and
-  window (`<data>/quota-told.json`). Breaker lines, folder-skills failures and places notices
-  also go to the top chat. Folder-skills news is told once until the cause
-  changes or clears. News can wait for a top chat to register after a restart.
-  With no chat above the delegates there is no recipient. Leads
-  still hear their delegates' outcomes, including failures on a usage limit.
+- **System news.** The notifier tracks the highest threshold reached in each
+  account's usage window, including accounts with no live helpers. It queues
+  a notice for each known top chat with live helpers on the account at any
+  depth when a reading first reaches 90% or 95%. A jump past both queues the
+  higher threshold. A passed reset time or a drop more than five points below
+  the last threshold starts a new window. Crossing state and queued notices
+  are saved together in `<data>/chat-ties.json`. On upgrade, each account and
+  label inherits the highest unexpired threshold from the per-chat rows in
+  `<data>/quota-told.json`. Breaker lines, folder-skills failures and places
+  notices also go to the top chat. Folder-skills news is told once until the
+  cause changes or clears. Queued news can wait for a top chat to return after
+  a restart. Leads still hear their delegates' outcomes, including failures
+  on a usage limit.
 - **Context.** The pane meter and on-demand `luna_session_get` are the two
   places Luna shows context use (`background::Context`). Its basis is the CLI's estimated
   auto-compaction point where resolved, and otherwise the model window.

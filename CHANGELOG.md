@@ -8,6 +8,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Quota notices go to top chats with live helpers on an account when its
+  usage window crosses 90% or 95%. Starting a helper later on the same
+  account no longer repeats the notice.
+
 ## [0.22.0] - 2026-11-25
 
 Panes stand apart in the dark theme and have a delete button, Claude Code
