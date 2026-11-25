@@ -218,6 +218,8 @@ check accept 'Fix the gate (#12)' --message
 check refuse "$long (#12)" --message
 check refuse 'fix the gate (#12)' --message
 check refuse 'fixup! Fix the gate (#12)' --message
+check accept 'Merge the gate changes (#12)' --message
+check refuse "Merge $long (#12)" --message
 check refuse 'Fix the gate (#12)
 # A heading that would be a comment in the hook
 
@@ -396,6 +398,28 @@ if (cd "$repo" && sh "$here/check-commit-msg.sh" --range "$base..HEAD" ^other) >
 [ "$got" = accept ] || report range accept "$got" 'the other branch merged in and left out'
 g reset -q --hard "$base"
 g branch -q -D other
+
+# --- a detached checkout uses the branch named by the active rebase ---
+
+mkdir "$repo/scripts"
+cp "$here/check-commit-msg.sh" "$repo/scripts/"
+g switch -q --detach "$base"
+check_detached_hook() { # $1 = refuse|accept, $2 = case description
+    printf 'fixup! Clean up the gate\n' >"$tmp"
+    if (cd "$repo" && sh "$here/../.githooks/commit-msg" "$tmp") >/dev/null 2>&1; then got=accept; else got=refuse; fi
+    [ "$got" = "$1" ] || report 'commit-msg hook' "$1" "$got" "$2"
+}
+check_detached_hook refuse 'a detached HEAD outside a rebase'
+for backend in rebase-merge rebase-apply; do
+    state="$repo/.git/$backend"
+    mkdir "$state"
+    printf 'refs/heads/slice/gate\n' >"$state/head-name"
+    check_detached_hook accept "a slice branch in $backend"
+    printf 'refs/heads/iteration/gate\n' >"$state/head-name"
+    check_detached_hook refuse "a kept-history branch in $backend"
+    rm "$state/head-name"
+    rmdir "$state"
+done
 
 [ "$fail" = 0 ] && echo 'check-commit-msg: all cases passed'
 exit $fail
