@@ -7,11 +7,16 @@ signing job and publishes the draft the workflow leaves.
 
 ## How a release flows
 
-1. **Bump.** `./scripts/release.ps1 -Bump 1.2.3` writes the version into the files
-   that carry it: `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Write the
-   version's section in `CHANGELOG.md` (`## [1.2.3] - <date>`): it is the release notes, and its text
-   before the first `###` subsection (the whole section if it has none) is what the update chip shows in
-   installed copies. Commit (`Luna 1.2.3`) on a branch of its own. `master` is
+1. **Bump.** `./scripts/release.ps1 -Bump 1.2.3` writes the version into
+   `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. It collects
+   [changelog fragments](../changes/README.md) into a dated section below an
+   empty `## [Unreleased]`, updates the compare links, and removes the
+   collected files. A malformed fragment, a missing version link, or an
+   `[Unreleased]` comparison from the wrong version stops the bump before
+   any file is written. Write the new section's opening paragraph by hand,
+   ahead of its first `###` subsection. The update chip shows that paragraph, and the
+   release notes use the whole section. Commit (`Luna 1.2.3`) on a branch
+   of its own. `master` is
    protected (see [One-time setup](#one-time-setup)), so the bump goes in through a
    pull request like any other change: push the branch, open the PR, and merge it once
    CI has passed.
@@ -19,8 +24,12 @@ signing job and publishes the draft the workflow leaves.
    `./scripts/release.ps1` checks that the tree is clean, HEAD is on `origin/master`,
    the versions agree, the release notes render from `CHANGELOG.md` (the version's
    section is there, and neither it nor the section of any version since the last
-   published release is empty), and the tag is free here and on `origin`. It then makes the annotated tag
-   `v1.2.3` (message `Luna 1.2.3`) and prints `git push origin v1.2.3`. `-DryRun`
+   published release is empty), and the tag is free here and on `origin`.
+   If new fragments arrived after the bump, both tag mode and `-Local` stop.
+   Run `./scripts/release.ps1 -Bump 1.2.3` again with the same version to
+   collect them into that version's existing section. Review the intro and
+   merge the updated notes into `master` before releasing. Tag mode makes the
+   annotated tag `v1.2.3` (message `Luna 1.2.3`) and prints `git push origin v1.2.3`. `-DryRun`
    checks without tagging.
 3. **The workflow** runs on the tag push:
 

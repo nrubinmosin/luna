@@ -70,6 +70,10 @@ From this repository's history:
 
 ## Pull requests
 
+Record notable changes in a [changelog fragment](changes/README.md). Product
+changes that need no release note still need a fragment with `### None` and
+a line explaining why.
+
 CI runs the PowerShell checks, the commit-message check, the Linux Rust gate,
 the Windows build and the Windows unit tests. Fill in the pull request template: what changed, what each CLI does, how you tested, and which docs
 you updated (user guide, architecture page, ADR, CLI compatibility notes).

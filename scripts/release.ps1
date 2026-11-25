@@ -3,7 +3,7 @@
 # (.github/workflows/release.yml, docs/releasing.md). The version is written in
 # src-tauri/Cargo.toml and Cargo.lock (release-lib.ps1 $ReleaseVersionFiles).
 #
-#   ./scripts/release.ps1 -Bump 1.2.3       write 1.2.3 into the version files, and nothing else
+#   ./scripts/release.ps1 -Bump 1.2.3       bump the version and collect changelog fragments
 #   ./scripts/release.ps1                   check the pushed HEAD and tag it v<version>
 #   ./scripts/release.ps1 -DryRun           check everything, tag nothing
 #
@@ -63,18 +63,23 @@ function Assert-Pushed {
 Push-Location $RepoRoot
 try {
     if ($PSCmdlet.ParameterSetName -eq 'Bump') {
+        $fragments = @(Get-ChangeFragments)
+        $changelog = New-ReleaseChangelog $Bump $fragments
         Set-ReleaseVersion $Bump
-        $version = Get-ReleaseVersion
-        Write-Host "Version files now say $version." -ForegroundColor Green
-        Write-Host 'Next: write its CHANGELOG.md section (the release notes), commit on a branch and'
-        Write-Host 'merge it into master through a pull request (master takes no direct pushes):'
-        Write-Host "  git switch -c release-$version; git commit -am `"Luna $version`"; git push -u origin release-$version"
+        [IO.File]::WriteAllText((Join-Path $RepoRoot 'CHANGELOG.md'), $changelog)
+        foreach ($fragment in $fragments) { Remove-Item -LiteralPath $fragment.Path }
+        Write-Host "Bumped to $Bump and collected $($fragments.Count) changelog fragment(s)." -ForegroundColor Green
+        Write-Host 'Next: write or update the CHANGELOG.md intro paragraph by hand.'
+        Write-Host "Commit as `"Luna $Bump`" on a versioned release branch and merge it into master through a pull request."
         Write-Host 'Once it is merged, release from master as merged:'
         Write-Host '  git switch master; git pull --ff-only; ./scripts/release.ps1'
         return
     }
 
     $version = Get-ReleaseVersion
+    if (Get-ChangeFragmentFiles) {
+        throw "Uncollected changelog fragments remain in changes/. Run ./scripts/release.ps1 -Bump $version to collect them into this release, then merge the update into master before releasing."
+    }
     $tag = "v$version"
     Assert-Pushed
     # The notes as the release will carry them, rendered now so a missing or
