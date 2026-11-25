@@ -52,7 +52,7 @@ $steps = @(
         }
     }
     @{
-        Name  = 'check-commit-msg tests'
+        Name  = 'shell script tests'
         Group = 'scripts'
         Run   = {
             $shell = (Get-Command sh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
@@ -62,9 +62,10 @@ $steps = @(
                 $shell = Join-Path $gitRoot 'bin/sh.exe'
             }
             if (-not $shell -or -not (Test-Path -LiteralPath $shell -PathType Leaf)) {
-                throw 'check-commit-msg tests need sh (included with Git for Windows)'
+                throw 'shell script tests need sh (included with Git for Windows)'
             }
             Invoke-Checked 'check-commit-msg tests' { & $shell (Join-Path $RepoRoot 'scripts/check-commit-msg.test.sh') }
+            Invoke-Checked 'docker-msys tests' { & $shell (Join-Path $RepoRoot '.agents/hooks/docker-msys.test.sh') }
         }
     }
     @{
